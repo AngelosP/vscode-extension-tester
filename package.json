@@ -1,0 +1,25 @@
+{
+  "name": "vscode-extension-tester",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Copilot CLI-powered agent for testing VS Code extensions like a real user",
+  "workspaces": [
+    "packages/cli",
+    "packages/controller-extension"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "clean": "turbo run clean",
+    "test": "turbo run test",
+    "lint": "turbo run lint"
+  },
+  "devDependencies": {
+    "turbo": "^2.4.0",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "npm@10.0.0"
+}

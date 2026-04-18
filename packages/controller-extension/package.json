@@ -1,0 +1,42 @@
+{
+  "name": "vscode-extension-tester-controller",
+  "displayName": "Extension Tester Controller",
+  "description": "VS Code extension that provides remote control via WebSocket for automated testing",
+  "version": "0.1.0",
+  "publisher": "vscode-extension-tester",
+  "main": "dist/extension.js",
+  "activationEvents": [
+    "*"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "Extension Tester Controller",
+      "properties": {
+        "extensionTester.controllerPort": {
+          "type": "number",
+          "default": 9788,
+          "description": "Port for the controller WebSocket server"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "bundle": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "clean": "rimraf dist",
+    "package": "npm run clean && npm run bundle && vsce package --no-dependencies --allow-missing-repository --allow-star-activation --skip-license"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.96.0",
+    "@types/ws": "^8.5.0",
+    "esbuild": "^0.24.0",
+    "rimraf": "^6.0.0",
+    "@vscode/vsce": "^3.0.0"
+  },
+  "engines": {
+    "vscode": "^1.96.0"
+  }
+}
