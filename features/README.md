@@ -76,6 +76,8 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 | `When I open file "<path>"` | Open a file in the editor |
 | `When I run "<command>" in the terminal` | Run a terminal command |
 | `When I wait <N> seconds` | Wait for a specified duration |
+| `When I capture the output channel "<name>"` | Start capturing a specific output channel (allow-list mode) |
+| `When I stop capturing the output channel "<name>"` | Stop capturing a specific output channel |
 
 ### Assertions (Then)
 
@@ -84,6 +86,8 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 | `Then I should see notification "<text>"` | Assert a notification appeared |
 | `Then the editor should contain "<text>"` | Assert editor content |
 | `Then the output channel "<name>" should contain "<text>"` | Assert output channel content |
+| `Then the output channel "<name>" should not contain "<text>"` | Assert output channel does NOT contain text |
+| `Then the output channel "<name>" should have been captured` | Assert that any content was captured for the channel |
 | `Then the status bar should show "<text>"` | Assert status bar text |
 
 ## Variables

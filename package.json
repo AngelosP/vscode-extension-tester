@@ -10,13 +10,14 @@
   "scripts": {
     "build": "turbo run build",
     "clean": "turbo run clean",
-    "test": "turbo run test",
+    "test": "vitest run",
     "lint": "turbo run lint"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "turbo": "^2.4.0",
     "typescript": "^5.7.0",
-    "@types/node": "^22.0.0"
+    "vitest": "^4.1.4"
   },
   "engines": {
     "node": ">=20.0.0"

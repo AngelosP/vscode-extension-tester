@@ -1,5 +1,9 @@
 {
     "chat.tools.terminal.autoApprove": {
-        "npx turbo": true
+        "npx turbo": true,
+        "/^npx vitest run 2>&1$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }

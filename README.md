@@ -4,7 +4,15 @@ End-to-end tests for VS Code extensions as if a real user was operating them, op
 
 Write tests (or better yet, let the agent write the tests) in plain English using [Gherkin](https://cucumber.io/docs/gherkin/) `.feature` files. The framework interprets the steps, drives VS Code through a WebSocket-controlled extension, and reports results.
 
+Here is an example of me asking Copilot to test the auto-completion of SQL statements in my VS Code extension:
+
+![Do not stop until it works, verify using e2e testing](media/images/do-not-stop-until-it-works.png)
+
+![The test running](media/gifs/the-test-running.gif)
+
 ## Quick Start
+
+Just init the extension project you want to enable this for, and a SKILLS.md file (and other artifacts) will be added and you are good to go.
 
 ```bash
 # Install globally
@@ -15,7 +23,7 @@ cd your-extension/
 vscode-ext-test init                     # scaffolds configs + installs controller
 ```
 
-## Writing Tests
+## Writing Tests Manually
 
 Tests use standard Gherkin syntax:
 
@@ -89,9 +97,50 @@ npm run package
 | `--timeout <ms>` | `30000` | Per-step timeout |
 | `--parallel` | `false` | Run reset-boundary groups in parallel |
 
+## Capturing Output Channels
+
+The framework automatically intercepts all VS Code output channels (including those created by other extensions) so you can assert on their content in tests. By default, **every channel is captured** — no setup required for simple assertions:
+
+```gherkin
+Scenario: Extension logs startup message
+  When I execute command "myExtension.activate"
+  Then the output channel "My Extension" should contain "Initialized"
+```
+
+### Allow-list mode
+
+If you only care about specific channels, use the `I capture the output channel` step. This switches to **allow-list mode** — only explicitly declared channels are included when querying captured output:
+
+```gherkin
+Scenario: Monitor only the channels I care about
+  Given I capture the output channel "My Extension"
+  When I execute command "myExtension.doWork"
+  Then the output channel "My Extension" should contain "Work complete"
+  And I stop capturing the output channel "My Extension"
+```
+
+### Available steps
+
+| Step | Type | Description |
+| ---- | ---- | ----------- |
+| `I capture the output channel "<name>"` | Given/When | Start capturing a specific channel (switches to allow-list mode) |
+| `I stop capturing the output channel "<name>"` | When | Stop capturing a specific channel |
+| `the output channel "<name>" should contain "<text>"` | Then | Assert the channel contains the given text |
+| `the output channel "<name>" should not contain "<text>"` | Then | Assert the channel does NOT contain the given text |
+| `the output channel "<name>" should have been captured` | Then | Assert that any content was captured for the channel |
+
+### How it works
+
+The controller extension patches `vscode.window.createOutputChannel` at two levels:
+
+1. **Prototype-level** — intercepts writes on channels created *before* the controller activated (solves activation-order races)
+2. **Instance-level** — wraps channels created *after* the controller, including `LogOutputChannel` methods (`trace`, `debug`, `info`, `warn`, `error`)
+
+This means you can assert on output from any extension, regardless of activation order.
+
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed breakdown. 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed breakdown.
 
 ## Contributing
 
