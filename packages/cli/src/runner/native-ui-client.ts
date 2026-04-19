@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import * as readline from 'node:readline';
 
 /**
- * Client for the FlaUI bridge — automates native Windows dialogs.
+ * Client for the FlaUI bridge - automates native Windows dialogs.
  * Spawns a .NET process that uses Windows UI Automation to interact
  * with OS-level dialogs (Save As, Open File, etc.).
  */
@@ -169,7 +169,7 @@ export class NativeUIClient {
 
   /**
    * Click an element by name/text inside the Dev Host window.
-   * Searches the entire UI tree — works for webview elements too since
+   * Searches the entire UI tree - works for webview elements too since
    * Windows UI Automation sees through Chromium's accessibility layer.
    */
   async clickInDevHost(elementName: string, controlType?: string): Promise<void> {
@@ -195,7 +195,7 @@ export class NativeUIClient {
   }
 
   /**
-   * Get the accessibility tree of the Dev Host window — useful for debugging
+   * Get the accessibility tree of the Dev Host window - useful for debugging
    * what elements are available to click/focus.
    */
   async getDevHostTree(): Promise<unknown> {

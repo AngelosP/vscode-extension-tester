@@ -4,6 +4,7 @@ import { installCommand } from './commands/install.js';
 import { uninstallCommand } from './commands/uninstall.js';
 import { initCommand } from './commands/init.js';
 import { testsAddCommand } from './commands/tests-add.js';
+import { openProfile, deleteProfile, listProfiles } from './profile.js';
 
 const program = new Command();
 
@@ -15,18 +16,24 @@ program
 program
   .command('run')
   .description('Run E2E tests against a VS Code extension')
-  .option('--ci', 'Force CI mode (launch new VS Code instance)', false)
-  .option('--wait-for-devhost', 'Poll until Extension Development Host appears', false)
+  .option('--attach-devhost', 'Attach to an already-running Dev Host instead of launching one', false)
   .option('--extension-path <dir>', 'Path to extension project', '.')
-  .option('--features <dir>', 'Path to .feature files', 'tests/vscode-extension-tester/e2e')
-  .option('--vscode-version <version>', 'VS Code version for CI mode', 'stable')
+  .option('--features <dir>', 'Root profile-aware e2e directory', 'tests/vscode-extension-tester/e2e')
+  .option('--test-id <slug>', 'Test slug - selects features from e2e/<profile>/<slug>/, writes artifacts to runs/<profile>/<slug>/')
+  .option('--vscode-version <version>', 'VS Code version to download for isolated launch', 'stable')
   .option('--record', 'Enable screen recording', false)
   .option('--record-on-failure', 'Record only if tests fail', false)
   .option('--reporter <type>', 'Output format: console, json, html', 'console')
-  .option('--port <number>', 'Controller WebSocket port', '9788')
+  .option('--controller-port <number>', 'Controller WebSocket port', '9788')
+  .option('--cdp-port <number>', 'Chrome DevTools Protocol port', '9222')
   .option('--xvfb', 'Use xvfb for headless Linux', false)
   .option('--timeout <ms>', 'Per-step timeout in ms', '30000')
-  .option('--run-id <slug>', 'Run ID — reads features from runs/<slug>/, writes artifacts there')
+  .option('--reuse-named-profile <name>', 'Use an existing named profile (fails if missing)')
+  .option('--reuse-or-create-named-profile <name>', 'Use a named profile, creating it if missing')
+  .option('--clone-named-profile <name>', 'Clone a named profile into an ephemeral worker, delete after run')
+  .option('--auto-reset', 'Force a clean-start reset before every scenario', false)
+  .option('--parallel', 'Opt into parallel execution of reset-boundary groups', false)
+  .option('--max-workers <n>', 'Max parallel workers (requires --parallel)')
   .action(runCommand);
 
 program
@@ -60,5 +67,51 @@ testsCmd
   .option('--model <name>', 'LLM model to use')
   .option('--port <number>', 'Controller WebSocket port', '9788')
   .action(testsAddCommand);
+
+// ─── Profile management ──────────────────────────────────────────────────────
+
+const profileCmd = program
+  .command('profile')
+  .description('Manage named test profiles');
+
+profileCmd
+  .command('open <name>')
+  .description('Open a named profile in VS Code so you can authenticate or prepare prerequisites')
+  .option('--extension-path <dir>', 'Path to extension project to load in the profile')
+  .action((name: string, opts: { extensionPath?: string }) => {
+    try {
+      openProfile(name, opts.extensionPath);
+    } catch (err: unknown) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
+profileCmd
+  .command('delete <name>')
+  .description('Delete a named profile and all its data')
+  .action((name: string) => {
+    try {
+      deleteProfile(name);
+    } catch (err: unknown) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
+profileCmd
+  .command('list')
+  .description('List all named profiles')
+  .action(() => {
+    const profiles = listProfiles();
+    if (profiles.length === 0) {
+      console.log('No named profiles found.');
+    } else {
+      console.log('Named profiles:');
+      for (const p of profiles) {
+        console.log(`  - ${p}`);
+      }
+    }
+  });
 
 program.parse();

@@ -42,7 +42,7 @@ export class AuthHandler {
         };
       }
 
-      // Trigger session creation — this will show the auth UI
+      // Trigger session creation - this will show the auth UI
       // The orchestrator's OS automation layer will handle any dialogs
       const newSession = await vscode.authentication.getSession(
         provider,

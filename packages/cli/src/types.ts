@@ -106,16 +106,40 @@ export interface NotificationInfo {
 
 /** CLI run options. */
 export interface RunOptions {
-  ci: boolean;
-  waitForDevhost: boolean;
+  // ─── Execution mode ───
+  /** If true, attach to an already-running Dev Host instead of launching one. */
+  attachDevhost: boolean;
+
+  // ─── Paths & identity ───
   extensionPath: string;
+  /** Root profile-aware e2e directory, e.g. tests/vscode-extension-tester/e2e */
   features: string;
+  /** Leaf test-slug directory under the effective profile folder. */
+  testId?: string;
+
+  // ─── Launch options (ignored in attach mode) ───
   vscodeVersion: string;
+  xvfb: boolean;
+
+  // ─── Ports ───
+  controllerPort: number;
+  cdpPort: number;
+
+  // ─── Recording & reporting ───
   record: boolean;
   recordOnFailure: boolean;
   reporter: 'console' | 'json' | 'html';
-  port: number;
-  xvfb: boolean;
   timeout: number;
-  runId?: string;
+
+  // ─── Profile strategy (mutually exclusive, launch mode only) ───
+  reuseNamedProfile?: string;
+  reuseOrCreateNamedProfile?: string;
+  cloneNamedProfile?: string;
+
+  // ─── Reset policy ───
+  autoReset: boolean;
+
+  // ─── Parallelism (launch mode only) ───
+  parallel: boolean;
+  maxWorkers?: number;
 }

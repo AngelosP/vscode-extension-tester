@@ -93,7 +93,7 @@ let cachedModel: string | null = null;
  */
 export async function probeModels(token: string, override?: string): Promise<string> {
   if (override) {
-    // User explicitly chose a model — validate it supports function calling
+    // User explicitly chose a model - validate it supports function calling
     const works = await testModel(token, override);
     if (works) return override;
     throw new Error(

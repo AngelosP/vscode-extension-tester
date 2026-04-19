@@ -533,7 +533,7 @@ function toolGitDiff(ctx: ToolContext, args: Record<string, unknown>): string {
     }
     return output || '(no changes)';
   } catch {
-    return '(git diff failed — not a git repository or no commits)';
+    return '(git diff failed - not a git repository or no commits)';
   }
 }
 

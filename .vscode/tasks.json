@@ -4,10 +4,15 @@
     {
       "label": "vscode-ext-test: run",
       "type": "shell",
-      "command": "vscode-ext-test",
+      "command": "node",
       "args": [
+        "packages/cli/bin/vscode-ext-test.js",
         "run",
-        "--wait-for-devhost"
+        "--attach-devhost",
+        "--extension-path",
+        "packages/controller-extension",
+        "--features",
+        "tests/vscode-extension-tester/e2e"
       ],
       "isBackground": true,
       "presentation": {
@@ -22,7 +27,7 @@
         "background": {
           "activeOnStart": true,
           "beginsPattern": "^Running \\\\d+ feature",
-          "endsPattern": "^Waiting for Extension Development Host"
+          "endsPattern": "^Found Extension Development Host"
         }
       }
     }

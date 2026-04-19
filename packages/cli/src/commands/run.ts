@@ -1,35 +1,83 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { RunOptions, TestRunResult } from '../types.js';
-import { CONTROLLER_WS_PORT, STEP_TIMEOUT_MS, DEFAULT_FEATURES_DIR } from '../types.js';
-import { devMode } from '../modes/dev-mode.js';
-import { ciMode } from '../modes/ci-mode.js';
+import { CONTROLLER_WS_PORT, CDP_PORT, STEP_TIMEOUT_MS, DEFAULT_FEATURES_DIR } from '../types.js';
+import { launchMode } from '../modes/ci-mode.js';
+import { attachMode } from '../modes/dev-mode.js';
 import { printResults, writeReportFile, writeRunArtifacts } from '../utils/reporter.js';
-import { ControllerClient } from '../runner/controller-client.js';
-import { runFeatures } from '../modes/dev-mode.js';
+import { profileExists, getProfileDir, getProfileUserDataDir } from '../profile.js';
 
 export async function runCommand(opts: Record<string, string | boolean>): Promise<void> {
   const options: RunOptions = {
-    ci: opts['ci'] === true,
-    waitForDevhost: opts['waitForDevhost'] === true,
+    attachDevhost: opts['attachDevhost'] === true,
     extensionPath: String(opts['extensionPath'] ?? '.'),
     features: String(opts['features'] ?? DEFAULT_FEATURES_DIR),
+    testId: opts['testId'] ? String(opts['testId']) : undefined,
     vscodeVersion: String(opts['vscodeVersion'] ?? 'stable'),
+    xvfb: opts['xvfb'] === true,
+    controllerPort: parseInt(String(opts['controllerPort'] ?? CONTROLLER_WS_PORT), 10),
+    cdpPort: parseInt(String(opts['cdpPort'] ?? CDP_PORT), 10),
     record: opts['record'] === true,
     recordOnFailure: opts['recordOnFailure'] === true,
     reporter: (opts['reporter'] as RunOptions['reporter']) ?? 'console',
-    port: parseInt(String(opts['port'] ?? CONTROLLER_WS_PORT), 10),
-    xvfb: opts['xvfb'] === true,
     timeout: parseInt(String(opts['timeout'] ?? STEP_TIMEOUT_MS), 10),
-    runId: opts['runId'] ? String(opts['runId']) : undefined,
+    reuseNamedProfile: opts['reuseNamedProfile'] ? String(opts['reuseNamedProfile']) : undefined,
+    reuseOrCreateNamedProfile: opts['reuseOrCreateNamedProfile'] ? String(opts['reuseOrCreateNamedProfile']) : undefined,
+    cloneNamedProfile: opts['cloneNamedProfile'] ? String(opts['cloneNamedProfile']) : undefined,
+    autoReset: opts['autoReset'] === true,
+    parallel: opts['parallel'] === true,
+    maxWorkers: opts['maxWorkers'] ? parseInt(String(opts['maxWorkers']), 10) : undefined,
   };
 
   try {
-    if (options.runId) {
-      await runWithId(options);
-    } else {
-      await runDefault(options);
+    // ─── Validate flag combinations ───
+    validateFlags(options);
+
+    // ─── Resolve paths ───
+    const cwd = path.resolve(options.extensionPath);
+    const effectiveProfile = getEffectiveProfile(options);
+    const { featuresDir, runDir, artifactRunId } = resolvePaths(cwd, options, effectiveProfile);
+
+    // Verify features exist
+    if (!fs.existsSync(featuresDir)) {
+      throw new Error(
+        `Features directory not found: ${featuresDir}\n` +
+        (options.testId
+          ? `Create .feature files in ${path.relative(cwd, featuresDir)}/`
+          : `Run 'vscode-ext-test init' to create example tests.`)
+      );
     }
+    const featureFiles = fs.readdirSync(featuresDir).filter((f) => f.endsWith('.feature'));
+    if (featureFiles.length === 0) {
+      throw new Error(`No .feature files found in ${featuresDir}`);
+    }
+
+    // Prepare artifacts directory
+    fs.rmSync(runDir, { recursive: true, force: true });
+    fs.mkdirSync(runDir, { recursive: true });
+
+    // Override options.features so runFeatures resolves the correct directory
+    const runOptions: RunOptions = {
+      ...options,
+      features: path.relative(cwd, featuresDir),
+    };
+
+    // ─── Execute ───
+    let result: TestRunResult;
+    if (options.attachDevhost) {
+      result = await attachMode(runOptions, runDir);
+    } else {
+      result = await launchMode(runOptions, runDir);
+    }
+
+    // ─── Report ───
+    printResults(result, options.reporter);
+    writeReportFile(result, options.extensionPath);
+    writeRunArtifacts(result, cwd, artifactRunId, featureFiles, '');
+
+    console.log(`\nArtifacts written to: ${path.relative(cwd, runDir)}/\n`);
+
+    process.exit(result.totalFailed > 0 ? 1 : 0);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`\nError: ${message}\n`);
@@ -37,84 +85,126 @@ export async function runCommand(opts: Record<string, string | boolean>): Promis
   }
 }
 
-/** Standard run (no --run-id). */
-async function runDefault(options: RunOptions): Promise<void> {
-  const result = options.ci
-    ? await ciMode(options)
-    : await devMode(options);
+// ─── Flag validation ──────────────────────────────────────────────────────────
 
-  printResults(result, options.reporter);
-
-  const reportPath = writeReportFile(result, options.extensionPath);
-  console.log(`Report written to: ${reportPath}\n`);
-
-  process.exit(result.totalFailed > 0 ? 1 : 0);
-}
-
-/**
- * Run-ID mode. Assumes the Dev Host is already running (user launched it via F5
- * using the launch config we created during init). Connects, runs tests, writes artifacts.
- */
-async function runWithId(options: RunOptions): Promise<void> {
-  const runId = options.runId!;
-  const cwd = path.resolve(options.extensionPath);
-  const featuresDir = path.join(cwd, 'tests', 'vscode-extension-tester', 'e2e', runId);
-  const runDir = path.join(cwd, 'tests', 'vscode-extension-tester', 'runs', runId);
-
-  // 1. Locate feature files in e2e/<run-id>/
-  if (!fs.existsSync(featuresDir)) {
-    throw new Error(`Features directory not found: ${featuresDir}\nCreate .feature files in tests/vscode-extension-tester/e2e/${runId}/`);
-  }
-  const featureFiles = fs.readdirSync(featuresDir).filter((f) => f.endsWith('.feature'));
-  if (featureFiles.length === 0) {
-    throw new Error(`No .feature files in ${featuresDir}`);
-  }
-
-  // Ensure artifacts directory exists
-  fs.mkdirSync(runDir, { recursive: true });
-
-  // 2. Connect to the controller — poll up to 60s so the agent can start the
-  //    debug session and we wait for the Dev Host to come up.
-  const client = new ControllerClient(options.port);
-  console.log('Waiting for Dev Host controller...');
-  let connected = false;
-  for (let i = 0; i < 60; i++) {
-    try {
-      await client.connect();
-      connected = true;
-      break;
-    } catch {
-      await delay(1000);
-    }
-  }
-  if (!connected) {
+function validateFlags(options: RunOptions): void {
+  // Profile flags are mutually exclusive
+  const profileFlags = [
+    options.reuseNamedProfile && '--reuse-named-profile',
+    options.reuseOrCreateNamedProfile && '--reuse-or-create-named-profile',
+    options.cloneNamedProfile && '--clone-named-profile',
+  ].filter(Boolean);
+  if (profileFlags.length > 1) {
     throw new Error(
-      'Could not connect to the Dev Host controller within 60s.\n' +
-      'Make sure the debug session "Debug extension with automation support" is running.'
+      `Only one profile strategy can be used at a time. Got: ${profileFlags.join(', ')}`
     );
   }
-  console.log('Connected to Dev Host.\n');
 
-  let result: TestRunResult;
-  try {
-    await client.ping();
-
-    const runOptions: RunOptions = { ...options, features: path.relative(cwd, featuresDir) };
-    result = await runFeatures(client, runOptions, Date.now(), runDir);
-
-    printResults(result, options.reporter);
-  } finally {
-    client.disconnect();
+  // Attach mode restrictions
+  if (options.attachDevhost) {
+    if (options.parallel) {
+      throw new Error(
+        '--parallel is not compatible with --attach-devhost.\n' +
+        'Parallel execution requires isolated launch-mode workers. Remove --attach-devhost to use parallelism.'
+      );
+    }
+    if (profileFlags.length > 0) {
+      throw new Error(
+        `Profile flags are not compatible with --attach-devhost.\n` +
+        'In attach mode, you use the existing Dev Host session as-is. Remove --attach-devhost to use named profiles.'
+      );
+    }
   }
 
-  // 3. Write artifacts
-  writeRunArtifacts(result, cwd, runId, featureFiles, '');
+  // Parallel restrictions
+  if (options.maxWorkers !== undefined && !options.parallel) {
+    throw new Error('--max-workers requires --parallel.');
+  }
+  if (options.parallel && !options.cloneNamedProfile) {
+    // Parallel with no profile is allowed (fresh ephemeral workers).
+    // Parallel with in-place reuse is not.
+    if (options.reuseNamedProfile || options.reuseOrCreateNamedProfile) {
+      throw new Error(
+        '--parallel is not compatible with in-place profile reuse.\n' +
+        'Use --clone-named-profile instead so each worker gets its own isolated copy.'
+      );
+    }
+  }
 
-  console.log(`\nArtifacts written to: ${path.relative(cwd, runDir)}/\n`);
+  // Profile validation
+  if (options.reuseNamedProfile) {
+    if (!profileExists(options.reuseNamedProfile)) {
+      throw new Error(
+        `Profile "${options.reuseNamedProfile}" not found.\n` +
+        `Create it first with: vscode-ext-test profile open ${options.reuseNamedProfile}`
+      );
+    }
+  }
+  if (options.reuseOrCreateNamedProfile) {
+    if (!profileExists(options.reuseOrCreateNamedProfile)) {
+      const dir = getProfileDir(options.reuseOrCreateNamedProfile);
+      const userDataDir = getProfileUserDataDir(dir);
+      fs.mkdirSync(userDataDir, { recursive: true });
+      console.log(`Created new profile "${options.reuseOrCreateNamedProfile}"`);
+    }
+  }
+  if (options.cloneNamedProfile) {
+    if (!profileExists(options.cloneNamedProfile)) {
+      throw new Error(
+        `Profile "${options.cloneNamedProfile}" not found - cannot clone a non-existent profile.\n` +
+        `Create it first with: vscode-ext-test profile open ${options.cloneNamedProfile}`
+      );
+    }
+    // Clone support is not yet implemented - the profile must exist but cloning is Phase 6
+    throw new Error(
+      'Clone-named-profile execution is not yet implemented.\n' +
+      `The profile "${options.cloneNamedProfile}" exists, but cloned worker execution is planned for a future release.\n` +
+      `For now, use --reuse-named-profile ${options.cloneNamedProfile} for serial execution.`
+    );
+  }
 
-  process.exit(result.totalFailed > 0 ? 1 : 0);
+  // Parallel not yet implemented
+  if (options.parallel) {
+    throw new Error(
+      'Parallel execution is not yet implemented.\n' +
+      'This feature is planned. For now, run without --parallel.'
+    );
+  }
+
+  // Auto-reset not yet implemented
+  if (options.autoReset) {
+    throw new Error(
+      'Auto-reset is not yet implemented.\n' +
+      'This feature is planned. For now, use @clean-start tags in your feature files (coming soon).'
+    );
+  }
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+// ─── Path resolution ──────────────────────────────────────────────────────────
+
+function getEffectiveProfile(options: RunOptions): string {
+  return options.reuseNamedProfile
+    ?? options.reuseOrCreateNamedProfile
+    ?? options.cloneNamedProfile
+    ?? 'default';
+}
+
+function resolvePaths(
+  cwd: string,
+  options: RunOptions,
+  effectiveProfile: string,
+): { featuresDir: string; runDir: string; artifactRunId: string } {
+  if (options.testId) {
+    // New convention: e2e/<profile>/<test-id>/
+    const featuresDir = path.join(cwd, options.features, effectiveProfile, options.testId);
+    const artifactRunId = `${effectiveProfile}/${options.testId}`;
+    const runDir = path.join(cwd, 'tests', 'vscode-extension-tester', 'runs', effectiveProfile, options.testId);
+    return { featuresDir, runDir, artifactRunId };
+  }
+
+  // Backward-compatible: use --features directly
+  const featuresDir = path.resolve(cwd, options.features);
+  const artifactRunId = 'latest';
+  const runDir = path.join(cwd, 'tests', 'vscode-extension-tester', 'runs', artifactRunId);
+  return { featuresDir, runDir, artifactRunId };
 }

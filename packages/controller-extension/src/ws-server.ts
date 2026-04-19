@@ -141,6 +141,16 @@ export class WSServer {
         );
       case 'getOutputChannels':
         return this.services.outputMonitor.listChannels();
+      case 'getCapturedChannels':
+        return this.services.outputMonitor.getCapturedChannels();
+      case 'startCaptureChannel':
+        this.services.outputMonitor.startCapture(p['name'] as string);
+        return { status: 'ok' };
+      case 'stopCaptureChannel':
+        this.services.outputMonitor.stopCapture(p['name'] as string);
+        return { status: 'ok' };
+      case 'getOutputChannelOffset':
+        return { offset: this.services.outputMonitor.getOffset(p['name'] as string) };
 
       // ─── Auth ───
       case 'handleAuth':

@@ -83,7 +83,7 @@ QUALITY STANDARDS:
 - Include meaningful assertions (not just "I wait 2 seconds")
 - Handle QuickPick and InputBox interactions when commands show them
 - Test both happy paths and edge cases where reasonable
-- Keep scenarios independent — no state dependencies between scenarios`;
+- Keep scenarios independent - no state dependencies between scenarios`;
 
 const RESUME_SYSTEM_PROMPT = `You are an expert VS Code extension test engineer fixing failing tests.
 
@@ -160,9 +160,9 @@ export async function testsAddCommand(
   if (shouldExplore) {
     client = await tryConnect(port);
     if (client) {
-      console.log('Connected to Dev Host — live exploration enabled.\n');
+      console.log('Connected to Dev Host - live exploration enabled.\n');
     } else {
-      console.log('Dev Host not available — generating tests from code analysis only.');
+      console.log('Dev Host not available - generating tests from code analysis only.');
       console.log('Start a debug session (F5) for live validation.\n');
     }
   }
@@ -263,7 +263,7 @@ async function resumeFlow(
   if (marker.failures && marker.failures.length > 0) {
     initialMessage += '\n\nFailing scenarios:\n';
     for (const f of marker.failures) {
-      initialMessage += `- ${f.scenario}: ${f.step} — ${f.error}\n`;
+      initialMessage += `- ${f.scenario}: ${f.step} - ${f.error}\n`;
     }
   }
 

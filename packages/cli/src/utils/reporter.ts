@@ -74,7 +74,7 @@ ${f.scenarios.map((s) => `
  * Write a Markdown report file and return its path.
  */
 export function writeReportFile(result: TestRunResult, extensionPath: string): string {
-  const dir = path.resolve(extensionPath, 'tests', 'vscode-extension-tester', 'e2e', 'results');
+  const dir = path.resolve(extensionPath, 'tests', 'vscode-extension-tester', 'results');
   fs.mkdirSync(dir, { recursive: true });
 
   const reportPath = path.join(dir, 'report.md');
@@ -87,7 +87,7 @@ function generateMarkdown(result: TestRunResult, screenshots?: string[], runDirR
   const total = result.totalPassed + result.totalFailed + result.totalSkipped;
   const status = result.totalFailed === 0 ? 'All Passed' : `${result.totalFailed} Failed`;
   const lines: string[] = [
-    `# Test Results — ${status}`,
+    `# Test Results - ${status}`,
     '',
     `${result.totalPassed} passed, ${result.totalFailed} failed, ${result.totalSkipped} skipped (${result.durationMs}ms)`,
     '',
@@ -145,7 +145,7 @@ export function writeRunArtifacts(
   // Find screenshot files already in the run dir
   const screenshots = fs.readdirSync(runDir).filter(f => f.endsWith('.png')).sort();
 
-  // results.json — include screenshot paths
+  // results.json - include screenshot paths
   const resultsWithScreenshots = {
     ...result,
     runId,
@@ -158,11 +158,11 @@ export function writeRunArtifacts(
     'utf-8',
   );
 
-  // report.md — include screenshot listing
+  // report.md - include screenshot listing
   const md = generateMarkdown(result, screenshots, path.relative(cwd, runDir));
   fs.writeFileSync(path.join(runDir, 'report.md'), md, 'utf-8');
 
-  // console.log — structured output log split by scenario/step
+  // console.log - structured output log split by scenario/step
   const consoleLog = generateConsoleLog(result);
   if (consoleLog || consoleOutput) {
     const combined = [consoleLog, consoleOutput].filter(Boolean).join('\n\n');

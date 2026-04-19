@@ -1,8 +1,51 @@
+# Dependencies
 node_modules/
+
+# Build outputs
 dist/
-*.vsix
-.turbo/
 *.tsbuildinfo
+
+# Turbo
+.turbo/
+
+# VS Code extension packages
+*.vsix
+
+# .NET build outputs
+dotnet/bin/
+dotnet/obj/
+
+# Test artifacts
+tests/vscode-extension-tester/runs/
+tests/vscode-extension-tester/profiles/
+packages/controller-extension/tests/vscode-extension-tester/runs/
+**/results/
+.vscode-test/
+
+# Test profiles (ephemeral VS Code user-data created by runs)
+.vscode-ext-test-profiles/
+
+# Agent memory & resume state
+.agent-memory/
+.agent-resume.json
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# OS junk
 .DS_Store
 Thumbs.db
-tests/vscode-extension-tester/runs/
+Desktop.ini
+ehthumbs.db
+
+# Editor / IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+npm-debug.log*

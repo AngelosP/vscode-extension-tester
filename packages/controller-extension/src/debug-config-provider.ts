@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 const CDP_PORT = 9222;
+const DEFAULT_USER_DATA_DIR = '${workspaceFolder}/.vscode-test-user-data';
 
 /**
  * Registers a DebugConfigurationProvider for the 'extensionHost' debug type.
@@ -31,6 +32,20 @@ export class DebugConfigProvider implements vscode.DebugConfigurationProvider {
     );
     if (!hasDebugPort) {
       (config.args as string[]).push(`--remote-debugging-port=${CDP_PORT}`);
+    }
+
+    const hasUserDataDir = (config.args as string[]).some(
+      (arg: string) => arg.includes('--user-data-dir')
+    );
+    if (!hasUserDataDir) {
+      (config.args as string[]).push(`--user-data-dir=${DEFAULT_USER_DATA_DIR}`);
+    }
+
+    const hasWorkspaceTrustFlag = (config.args as string[]).some(
+      (arg: string) => arg.includes('--disable-workspace-trust')
+    );
+    if (!hasWorkspaceTrustFlag) {
+      (config.args as string[]).push('--disable-workspace-trust');
     }
 
     // Set env var so the controller extension in the Dev Host knows the port

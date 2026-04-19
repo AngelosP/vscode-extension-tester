@@ -2,7 +2,7 @@ import CDP from 'chrome-remote-interface';
 
 /**
  * Chrome DevTools Protocol client for sending real input events to VS Code.
- * Works with any focused element — regular editors, webview Monaco, dialogs, etc.
+ * Works with any focused element - regular editors, webview Monaco, dialogs, etc.
  *
  * For webview interactions, discovers webview targets via CDP Target API
  * since VS Code webviews are cross-origin iframes that can't be accessed
@@ -151,19 +151,339 @@ export class CdpClient {
     return result.result.value;
   }
 
+  // ─── Webview-aware operations ──────────────────────────────────────────
+
+  /**
+   * Run a JS expression inside a webview. If `webviewTitle` is provided, only
+   * targets whose title contains that substring (case-insensitive) are tried.
+   * If omitted, every webview target is tried in turn until one returns a
+   * non-null value.
+   *
+   * The expression is wrapped in `(() => { ... })()` and the return value is
+   * marshalled back via `returnByValue`. If the expression throws, the error
+   * propagates.
+   */
+  async evaluateInWebview(expression: string, webviewTitle?: string): Promise<unknown> {
+    const targets = await this.getWebviewTargets(webviewTitle);
+    if (targets.length === 0) {
+      throw new Error(
+        webviewTitle
+          ? `No webview found matching title "${webviewTitle}". Open the webview first, or check the spelling.`
+          : 'No webviews are currently open.',
+      );
+    }
+
+    let lastError: Error | undefined;
+    for (const target of targets) {
+      try {
+        const value = await this.withWebviewClient(target.id, async (wv) => {
+          return await this.evaluateAcrossFrames(wv, expression);
+        });
+        if (value !== null && value !== undefined) return value;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
+    }
+    if (lastError) throw lastError;
+    return undefined;
+  }
+
+  /**
+   * Click an element inside a webview by CSS selector. If `webviewTitle` is
+   * provided, the search is restricted to webviews whose title matches.
+   * Throws if the element is not found in any matching webview.
+   */
+  async clickInWebviewBySelector(selector: string, webviewTitle?: string): Promise<void> {
+    const safe = escapeSelector(selector);
+    const expr = `(() => {
+      const el = document.querySelector('${safe}');
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      if (typeof el.focus === 'function') el.focus();
+      el.click();
+      return true;
+    })()`;
+    const found = await this.tryInWebviews(expr, webviewTitle);
+    if (!found) throw new Error(`Element not found in webview: ${selector}`);
+  }
+
+  /** Focus an element inside a webview by CSS selector. */
+  async focusInWebviewBySelector(selector: string, webviewTitle?: string): Promise<void> {
+    const safe = escapeSelector(selector);
+    const expr = `(() => {
+      const el = document.querySelector('${safe}');
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      if (typeof el.focus === 'function') el.focus();
+      return true;
+    })()`;
+    const found = await this.tryInWebviews(expr, webviewTitle);
+    if (!found) throw new Error(`Element not found in webview: ${selector}`);
+  }
+
+  /**
+   * Scroll a specific scroll container inside a webview.
+   *  - mode 'by': scroll relative to current position by (dx, dy)
+   *  - mode 'to': set scrollLeft/scrollTop to absolute coords (dx, dy)
+   *  - mode 'edge': dx/dy are 'top' | 'bottom' | 'left' | 'right'
+   *  - mode 'into-view': scroll the element itself into view of its scroll parent
+   */
+  async scrollInWebview(
+    selector: string,
+    mode: 'by' | 'to' | 'edge' | 'into-view',
+    arg1: number | string,
+    arg2: number | string = 0,
+    webviewTitle?: string,
+  ): Promise<void> {
+    const safe = escapeSelector(selector);
+    let body = '';
+    switch (mode) {
+      case 'by':
+        body = `el.scrollBy({ left: ${Number(arg1)}, top: ${Number(arg2)}, behavior: 'instant' });`;
+        break;
+      case 'to':
+        body = `el.scrollTo({ left: ${Number(arg1)}, top: ${Number(arg2)}, behavior: 'instant' });`;
+        break;
+      case 'edge': {
+        const edge = String(arg1).toLowerCase();
+        if (edge === 'top') body = 'el.scrollTop = 0;';
+        else if (edge === 'bottom') body = 'el.scrollTop = el.scrollHeight;';
+        else if (edge === 'left') body = 'el.scrollLeft = 0;';
+        else if (edge === 'right') body = 'el.scrollLeft = el.scrollWidth;';
+        else throw new Error(`Unknown scroll edge: ${edge}`);
+        break;
+      }
+      case 'into-view':
+        body = `el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });`;
+        break;
+    }
+    const expr = `(() => {
+      const el = document.querySelector('${safe}');
+      if (!el) return null;
+      ${body}
+      return true;
+    })()`;
+    const found = await this.tryInWebviews(expr, webviewTitle);
+    if (!found) throw new Error(`Element not found in webview for scroll: ${selector}`);
+  }
+
+  /** Wait until a CSS selector exists in any matching webview, or throw on timeout. */
+  async waitForSelectorInWebview(
+    selector: string,
+    timeoutMs: number,
+    webviewTitle?: string,
+  ): Promise<void> {
+    const safe = escapeSelector(selector);
+    const expr = `(() => document.querySelector('${safe}') ? true : null)()`;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const found = await this.tryInWebviews(expr, webviewTitle).catch(() => false);
+      if (found) return;
+      await delay(250);
+    }
+    throw new Error(`Selector "${selector}" did not appear in webview within ${timeoutMs}ms`);
+  }
+
+  /** Get the visible text of an element in a webview. */
+  async getTextInWebview(selector: string, webviewTitle?: string): Promise<string> {
+    const safe = escapeSelector(selector);
+    const expr = `(() => {
+      const el = document.querySelector('${safe}');
+      if (!el) return null;
+      return el.innerText || el.textContent || '';
+    })()`;
+    const value = await this.tryInWebviewsRaw(expr, webviewTitle);
+    if (value === null || value === undefined) {
+      throw new Error(`Element not found in webview: ${selector}`);
+    }
+    return String(value);
+  }
+
+  /** Check whether a selector exists in any matching webview. Never throws. */
+  async elementExistsInWebview(selector: string, webviewTitle?: string): Promise<boolean> {
+    const safe = escapeSelector(selector);
+    const expr = `(() => document.querySelector('${safe}') ? true : null)()`;
+    try {
+      const v = await this.tryInWebviews(expr, webviewTitle);
+      return v === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Return the full text content of all matching webviews, joined (including nested iframes). */
+  async getWebviewBodyText(webviewTitle?: string): Promise<string> {
+    const targets = await this.getWebviewTargets(webviewTitle);
+    if (targets.length === 0) return '';
+    const parts: string[] = [];
+    for (const target of targets) {
+      try {
+        const texts = await this.withWebviewClient(target.id, async (wv) => {
+          return await this.collectFromAllFrames(
+            wv,
+            '(document.body && document.body.innerText) || ""',
+          );
+        });
+        for (const t of texts) {
+          const s = String(t);
+          if (s) parts.push(s);
+        }
+      } catch { /* skip target */ }
+    }
+    return parts.join('\n');
+  }
+
+  /** List the open webviews - useful for debugging "which titles can I target?". */
+  async listWebviews(): Promise<Array<{ title: string; url: string }>> {
+    const targets = await this.getWebviewTargets();
+    return targets.map((t) => ({ title: t.title, url: t.url }));
+  }
+
+  // ─── Frame-aware evaluation helpers ──────────────────────────────────────
+  //
+  // VS Code custom editor webviews use deeply nested cross-origin iframes:
+  //   main renderer → vscode-webview:// outer → inner iframe(s) with content
+  // CDP lists the outer webview as a target, but the inner iframes are frames
+  // within that target - not separate targets. To interact with elements in the
+  // inner frames, we must enumerate all execution contexts and try each one.
+
+  /**
+   * Discover all execution context IDs within a connected CDP client.
+   * Each frame (including cross-origin iframes) gets its own execution context.
+   * Re-enabling Runtime triggers `executionContextCreated` for every existing context.
+   */
+  private async discoverFrameContextIds(client: CDP.Client): Promise<number[]> {
+    const contextIds: number[] = [];
+    const handler = (params: { context: { id: number } }) => {
+      contextIds.push(params.context.id);
+    };
+
+    (client as any).on('Runtime.executionContextCreated', handler);
+    try {
+      await client.Runtime.disable();
+      await client.Runtime.enable();
+      // Allow context-created events to be delivered (they fire asynchronously)
+      await delay(100);
+    } finally {
+      (client as any).removeListener('Runtime.executionContextCreated', handler);
+    }
+
+    return contextIds;
+  }
+
+  /**
+   * Evaluate an expression across ALL execution contexts (frames) in a CDP client.
+   * Returns the first non-null/non-undefined result, or null if none matched.
+   */
+  private async evaluateAcrossFrames(
+    client: CDP.Client,
+    expression: string,
+  ): Promise<unknown> {
+    const contextIds = await this.discoverFrameContextIds(client);
+
+    for (const contextId of contextIds) {
+      try {
+        const r = await client.Runtime.evaluate({
+          expression,
+          returnByValue: true,
+          awaitPromise: true,
+          contextId,
+        });
+        if (!r.exceptionDetails && r.result.value !== null && r.result.value !== undefined) {
+          return r.result.value;
+        }
+      } catch {
+        // Context may have been destroyed (navigation, GC), skip
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Evaluate an expression in ALL execution contexts and return every non-null result.
+   * Used for collecting content from all frames (e.g. body text).
+   */
+  private async collectFromAllFrames(
+    client: CDP.Client,
+    expression: string,
+  ): Promise<unknown[]> {
+    const contextIds = await this.discoverFrameContextIds(client);
+    const results: unknown[] = [];
+
+    for (const contextId of contextIds) {
+      try {
+        const r = await client.Runtime.evaluate({
+          expression,
+          returnByValue: true,
+          awaitPromise: true,
+          contextId,
+        });
+        if (!r.exceptionDetails && r.result.value !== null && r.result.value !== undefined) {
+          results.push(r.result.value);
+        }
+      } catch { /* skip destroyed context */ }
+    }
+    return results;
+  }
+
   // ─── Webview target helpers ─────────────────────────────────────────────
 
   /**
-   * List all CDP targets and return those that look like VS Code webviews.
+   * Run an expression inside webviews until one returns a truthy value.
+   * Traverses all frames (including nested iframes) within each webview target.
+   * Returns true if any target/frame succeeded, false if none matched.
    */
-  private async getWebviewTargets(): Promise<Array<{ id: string; url: string; title: string }>> {
+  private async tryInWebviews(expression: string, webviewTitle?: string): Promise<boolean> {
+    const targets = await this.getWebviewTargets(webviewTitle);
+    for (const target of targets) {
+      try {
+        const value = await this.withWebviewClient(target.id, async (wv) => {
+          return await this.evaluateAcrossFrames(wv, expression);
+        });
+        if (value === true) return true;
+      } catch { /* try next target */ }
+    }
+    return false;
+  }
+
+  /**
+   * Like tryInWebviews but returns the raw value of the first non-null result.
+   * Traverses all frames within each webview target.
+   */
+  private async tryInWebviewsRaw(expression: string, webviewTitle?: string): Promise<unknown> {
+    const targets = await this.getWebviewTargets(webviewTitle);
+    for (const target of targets) {
+      try {
+        const value = await this.withWebviewClient(target.id, async (wv) => {
+          return await this.evaluateAcrossFrames(wv, expression);
+        });
+        if (value !== null && value !== undefined) return value;
+      } catch { /* try next */ }
+    }
+    return null;
+  }
+
+  /**
+   * List all CDP targets and return those that look like VS Code webviews.
+   * If `titleFilter` is provided, only targets whose title contains the
+   * substring (case-insensitive) are returned.
+   */
+  private async getWebviewTargets(
+    titleFilter?: string,
+  ): Promise<Array<{ id: string; url: string; title: string }>> {
     const targets = await CDP.List({ port: this.port });
-    return targets.filter(
+    const webviews = targets.filter(
       (t: { type: string; url: string }) =>
-        t.type === 'page' &&
+        (t.type === 'page' || t.type === 'iframe') &&
         (t.url.startsWith('vscode-webview://') || t.url.includes('webviewPanel'))
     );
+    if (!titleFilter) return webviews as Array<{ id: string; url: string; title: string }>;
+    const needle = titleFilter.toLowerCase();
+    return (webviews as Array<{ id: string; url: string; title: string }>).filter(
+      (t) => (t.title ?? '').toLowerCase().includes(needle) || t.url.toLowerCase().includes(needle),
+    );
   }
+
 
   /**
    * Connect to a webview target, run a callback, then disconnect.
@@ -185,53 +505,29 @@ export class CdpClient {
    * Try to click an element in any webview target. Returns true if found.
    */
   private async clickInWebview(safeSelector: string): Promise<boolean> {
-    const targets = await this.getWebviewTargets();
-    for (const target of targets) {
-      try {
-        const found = await this.withWebviewClient(target.id, async (wv) => {
-          const result = await wv.Runtime.evaluate({
-            expression: `(() => {
-              const el = document.querySelector('${safeSelector}');
-              if (!el) return null;
-              el.scrollIntoView({ block: 'center' });
-              el.focus();
-              el.click();
-              return true;
-            })()`,
-            returnByValue: true,
-          });
-          return result.result.value === true;
-        });
-        if (found) return true;
-      } catch { /* target may have closed, skip */ }
-    }
-    return false;
+    const expr = `(() => {
+      const el = document.querySelector('${safeSelector}');
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center' });
+      if (typeof el.focus === 'function') el.focus();
+      el.click();
+      return true;
+    })()`;
+    return this.tryInWebviews(expr);
   }
 
   /**
    * Try to focus an element in any webview target. Returns true if found.
    */
   private async focusInWebview(safeSelector: string): Promise<boolean> {
-    const targets = await this.getWebviewTargets();
-    for (const target of targets) {
-      try {
-        const found = await this.withWebviewClient(target.id, async (wv) => {
-          const result = await wv.Runtime.evaluate({
-            expression: `(() => {
-              const el = document.querySelector('${safeSelector}');
-              if (!el) return null;
-              el.scrollIntoView({ block: 'center' });
-              el.focus();
-              return true;
-            })()`,
-            returnByValue: true,
-          });
-          return result.result.value === true;
-        });
-        if (found) return true;
-      } catch { /* skip */ }
-    }
-    return false;
+    const expr = `(() => {
+      const el = document.querySelector('${safeSelector}');
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center' });
+      if (typeof el.focus === 'function') el.focus();
+      return true;
+    })()`;
+    return this.tryInWebviews(expr);
   }
 }
 

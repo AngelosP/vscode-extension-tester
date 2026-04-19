@@ -1,7 +1,9 @@
 import type { ControllerClient } from './controller-client.js';
 import type { ParsedFeature, ParsedScenario, ParsedStep } from './gherkin-parser.js';
 import type { FeatureResult, ScenarioResult, StepResult } from '../types.js';
+import { CDP_PORT } from '../types.js';
 import { NativeUIClient } from './native-ui-client.js';
+import { CdpClient } from './cdp-client.js';
 import { loadEnv } from '../agent/env.js';
 import * as cp from 'node:child_process';
 import * as fs from 'node:fs';
@@ -13,7 +15,9 @@ import * as path from 'node:path';
 export class TestRunner {
   private readonly envData: Record<string, string>;
   private nativeUI?: NativeUIClient;
+  private cdp?: CdpClient;
   private screenshotCounter = 0;
+  private currentScenarioName: string | undefined;
 
   constructor(
     private readonly client: ControllerClient,
@@ -46,6 +50,7 @@ export class TestRunner {
 
   private async runScenario(scenario: ParsedScenario, backgroundSteps: ParsedStep[]): Promise<ScenarioResult> {
     const startTime = Date.now();
+    this.currentScenarioName = scenario.name;
     const allSteps = [...backgroundSteps, ...scenario.steps];
     const stepResults: StepResult[] = [];
     let failed = false;
@@ -59,6 +64,9 @@ export class TestRunner {
       stepResults.push(result);
       if (result.status === 'failed') failed = true;
     }
+
+    // Dump per-scenario captured output channels (best-effort)
+    await this.dumpCapturedChannels(scenario.name).catch(() => { /* non-fatal */ });
 
     return {
       name: scenario.name,
@@ -199,7 +207,7 @@ export class TestRunner {
     match = text.match(/^the output channel "([^"]+)" should not contain "([^"]+)"$/);
     if (match) { await this.assertOutputNotContains(match[1], match[2]); return; }
 
-    // ─── Type text (via controller — always available) ───
+    // ─── Type text (via controller - always available) ───
     match = text.match(/^I type "([^"]+)"$/);
     if (match) { await this.client.typeText(match[1]); return; }
 
@@ -243,6 +251,130 @@ export class TestRunner {
     // ─── Wait ───
     match = text.match(/^I wait (\d+) seconds?$/);
     if (match) { await delay(parseInt(match[1], 10) * 1000); return; }
+
+    // ─── Output capture: declare a channel to capture ───
+    match = text.match(/^I capture the output channel "([^"]+)"$/);
+    if (match) { await this.client.startCaptureChannel(match[1]); return; }
+
+    match = text.match(/^I stop capturing the output channel "([^"]+)"$/);
+    if (match) { await this.client.stopCaptureChannel(match[1]); return; }
+
+    match = text.match(/^the output channel "([^"]+)" should have been captured$/);
+    if (match) {
+      const ch = await this.client.getOutputChannel(match[1]);
+      if (!ch.content) {
+        throw new Error(
+          `Output channel "${match[1]}" was not captured (no content). ` +
+          'Make sure the controller activates before the extension creates the channel.'
+        );
+      }
+      return;
+    }
+
+    // ─── Webview: wait for selector ───
+    match = text.match(/^I wait for "([^"]+)" in the webview(?: "([^"]+)")?(?: for (\d+) seconds?)?$/);
+    if (match) {
+      const timeoutMs = match[3] ? parseInt(match[3], 10) * 1000 : 10_000;
+      await (await this.requireCdp()).waitForSelectorInWebview(match[1], timeoutMs, match[2]);
+      return;
+    }
+
+    // ─── Webview: click by selector ───
+    match = text.match(/^I click "([^"]+)" in the webview(?: "([^"]+)")?$/);
+    if (match) {
+      await (await this.requireCdp()).clickInWebviewBySelector(match[1], match[2]);
+      return;
+    }
+
+    // ─── Webview: focus by selector ───
+    match = text.match(/^I focus "([^"]+)" in the webview(?: "([^"]+)")?$/);
+    if (match) {
+      await (await this.requireCdp()).focusInWebviewBySelector(match[1], match[2]);
+      return;
+    }
+
+    // ─── Webview: scroll by pixels ───
+    match = text.match(/^I scroll "([^"]+)" by (-?\d+) (-?\d+)(?: in the webview(?: "([^"]+)")?)?$/);
+    if (match) {
+      const cdp = await this.requireCdp();
+      await cdp.scrollInWebview(
+        match[1],
+        'by',
+        parseInt(match[2], 10),
+        parseInt(match[3], 10),
+        match[4],
+      );
+      return;
+    }
+
+    // ─── Webview: scroll to absolute coords ───
+    match = text.match(/^I scroll "([^"]+)" to (\d+) (\d+)(?: in the webview(?: "([^"]+)")?)?$/);
+    if (match) {
+      const cdp = await this.requireCdp();
+      await cdp.scrollInWebview(
+        match[1],
+        'to',
+        parseInt(match[2], 10),
+        parseInt(match[3], 10),
+        match[4],
+      );
+      return;
+    }
+
+    // ─── Webview: scroll to edge ───
+    match = text.match(/^I scroll "([^"]+)" to the (top|bottom|left|right)(?: in the webview(?: "([^"]+)")?)?$/);
+    if (match) {
+      await (await this.requireCdp()).scrollInWebview(match[1], 'edge', match[2], 0, match[3]);
+      return;
+    }
+
+    // ─── Webview: scroll into view ───
+    match = text.match(/^I scroll "([^"]+)" into view(?: in the webview(?: "([^"]+)")?)?$/);
+    if (match) {
+      await (await this.requireCdp()).scrollInWebview(match[1], 'into-view', 0, 0, match[2]);
+      return;
+    }
+
+    // ─── Webview: evaluate JS ───
+    match = text.match(/^I evaluate "([^"]+)" in the webview(?: "([^"]+)")?$/);
+    if (match) {
+      await (await this.requireCdp()).evaluateInWebview(match[1], match[2]);
+      return;
+    }
+
+    // ─── Webview assertions ───
+    match = text.match(/^the webview(?: "([^"]+)")? should contain "([^"]+)"$/);
+    if (match) {
+      const body = await (await this.requireCdp()).getWebviewBodyText(match[1]);
+      if (!body.includes(match[2])) {
+        const where = match[1] ? `webview "${match[1]}"` : 'any webview';
+        throw new Error(`Text "${match[2]}" not found in ${where}.`);
+      }
+      return;
+    }
+
+    match = text.match(/^element "([^"]+)" should exist(?: in the webview(?: "([^"]+)")?)?$/);
+    if (match) {
+      const exists = await (await this.requireCdp()).elementExistsInWebview(match[1], match[2]);
+      if (!exists) throw new Error(`Element "${match[1]}" does not exist.`);
+      return;
+    }
+
+    match = text.match(/^element "([^"]+)" should not exist(?: in the webview(?: "([^"]+)")?)?$/);
+    if (match) {
+      const exists = await (await this.requireCdp()).elementExistsInWebview(match[1], match[2]);
+      if (exists) throw new Error(`Element "${match[1]}" unexpectedly exists.`);
+      return;
+    }
+
+    match = text.match(/^element "([^"]+)" should have text "([^"]+)"(?: in the webview(?: "([^"]+)")?)?$/);
+    if (match) {
+      const got = await (await this.requireCdp()).getTextInWebview(match[1], match[3]);
+      if (!got.includes(match[2])) {
+        throw new Error(`Element "${match[1]}" text "${got}" does not contain "${match[2]}".`);
+      }
+      return;
+    }
 
     // ─── Setup steps (no-ops handled by orchestrator) ───
     if (/^(VS Code is running|extension .+ is installed|recording is enabled|debug capture is enabled)/.test(text)) return;
@@ -293,21 +425,91 @@ export class TestRunner {
   private requireNativeUI(): NativeUIClient {
     if (!this.nativeUI) {
       this.nativeUI = new NativeUIClient();
-      // Start synchronously — first call will await
+      // Start synchronously - first call will await
       this.nativeUI.start().catch(() => { /* logged by individual calls */ });
     }
     return this.nativeUI;
   }
 
-  /** Call after all features are done to clean up the FlaUI process. */
+  /** Lazily connect a CDP client for webview interactions. */
+  private async requireCdp(): Promise<CdpClient> {
+    if (!this.cdp) {
+      this.cdp = new CdpClient(CDP_PORT);
+    }
+    if (!this.cdp.isConnected) {
+      try {
+        await this.cdp.connect();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `Could not connect to Chrome DevTools Protocol on port ${CDP_PORT}: ${msg}\n` +
+          'Make sure the Dev Host was launched via the "Debug extension with automation support" config ' +
+          'so --remote-debugging-port is set.',
+        );
+      }
+    }
+    return this.cdp;
+  }
+
+  /** Call after all features are done to clean up the FlaUI process and CDP client. */
   cleanup(): void {
     this.nativeUI?.stop();
+    this.cdp?.disconnect();
+  }
+
+  /**
+   * Dump the captured output channels to the artifacts directory:
+   *   <artifactsDir>/output-channels/<name>.log              (cumulative)
+   *   <artifactsDir>/output-channels/<scenario>/<name>.log   (per-scenario)
+   *
+   * If the controller is in allow-list mode (the user used `I capture the
+   * output channel "..."`), only the declared channels are written.
+   */
+  private async dumpCapturedChannels(scenarioName: string): Promise<void> {
+    if (!this.artifactsDir) return;
+
+    const cumulativeDir = path.join(this.artifactsDir, 'output-channels');
+    const scenarioDir = path.join(cumulativeDir, sanitizeFilename(scenarioName));
+    fs.mkdirSync(scenarioDir, { recursive: true });
+
+    const [captured, allChannels] = await Promise.all([
+      this.client.getCapturedChannels(),
+      this.client.getOutputChannels().catch(() => [] as string[]),
+    ]);
+
+    const manifest = {
+      scenario: scenarioName,
+      knownChannels: allChannels,
+      capturedChannels: captured.map((ch) => ({
+        name: ch.name,
+        length: ch.content.length,
+      })),
+      timestamp: new Date().toISOString(),
+    };
+    fs.writeFileSync(
+      path.join(scenarioDir, '_capture-manifest.json'),
+      JSON.stringify(manifest, null, 2),
+      'utf-8',
+    );
+
+    if (captured.length === 0) {
+      return;
+    }
+
+    for (const ch of captured) {
+      const file = sanitizeFilename(ch.name) + '.log';
+      // Cumulative - overwritten each scenario so it always reflects the
+      // full content captured up to and including this scenario.
+      fs.writeFileSync(path.join(cumulativeDir, file), ch.content, 'utf-8');
+      // Per-scenario snapshot
+      fs.writeFileSync(path.join(scenarioDir, file), ch.content, 'utf-8');
+    }
   }
 
   /** Take a screenshot and save it to the artifacts directory. */
   private async takeScreenshot(label?: string): Promise<void> {
     if (!this.artifactsDir) {
-      throw new Error('Screenshot requires --run-id mode (artifacts directory not set)');
+      throw new Error('Screenshot capture is unavailable because this run has no artifacts directory');
     }
     this.screenshotCounter++;
     const name = label
@@ -375,13 +577,13 @@ $bmp.Dispose()
 
   // ─── File utility helpers ───────────────────────────────────────
 
-  /** Resolve a file path — relative paths are resolved from cwd. */
+  /** Resolve a file path - relative paths are resolved from cwd. */
   private resolveFilePath(filePath: string): string {
     if (path.isAbsolute(filePath)) return filePath;
     return path.resolve(process.cwd(), filePath);
   }
 
-  /** Create a file (and parent dirs) via code — no UI. */
+  /** Create a file (and parent dirs) via code - no UI. */
   private createFile(filePath: string, content: string): void {
     const resolved = this.resolveFilePath(filePath);
     fs.mkdirSync(path.dirname(resolved), { recursive: true });
@@ -413,4 +615,8 @@ $bmp.Dispose()
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function sanitizeFilename(name: string): string {
+  return name.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'unnamed';
 }

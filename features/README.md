@@ -2,7 +2,56 @@
 
 ## Overview
 
-Tests are written as [Gherkin](https://cucumber.io/docs/gherkin/) `.feature` files — an industry-standard BDD format that reads like plain English.
+Tests are written as [Gherkin](https://cucumber.io/docs/gherkin/) `.feature` files - an industry-standard BDD format that reads like plain English.
+
+## Directory Convention
+
+Feature files live under `tests/vscode-extension-tester/e2e/<profile>/<test-id>/`:
+
+```
+tests/vscode-extension-tester/
+  e2e/
+    default/                    # Features that run without a named profile
+      smoke-test/
+        extension.feature
+      open-panel/
+        panel.feature
+    sql-authenticated-profile/  # Features that require a pre-authenticated profile
+      sql-auth/
+        connection.feature
+  runs/                         # Artifacts (gitignored)
+    default/
+      smoke-test/
+        report.md
+        results.json
+```
+
+The reserved folder name `default` is used when no `--reuse-named-profile`, `--reuse-or-create-named-profile`, or `--clone-named-profile` flag is passed.
+
+## Running Tests
+
+### Default launch mode (recommended)
+
+The CLI downloads and launches an isolated VS Code instance automatically:
+
+```bash
+# Run all features under e2e/default/ directly
+vscode-ext-test run --features tests/vscode-extension-tester/e2e
+
+# Run a specific test ID
+vscode-ext-test run --test-id smoke-test
+
+# Run with a named profile
+vscode-ext-test run --test-id sql-auth --reuse-named-profile sql-authenticated-profile
+```
+
+### Attach mode
+
+Connect to an already-running Dev Host (e.g. launched via F5):
+
+```bash
+vscode-ext-test run --attach-devhost --test-id smoke-test
+```
 
 ## Available Steps
 
@@ -10,11 +59,10 @@ Tests are written as [Gherkin](https://cucumber.io/docs/gherkin/) `.feature` fil
 
 | Step | Description |
 |------|-------------|
-| `Given VS Code is running with extension "<path-or-id>"` | Launch VS Code with the specified extension |
-| `Given VS Code is running version "<version>"` | Use a specific VS Code version |
-| `Given extension "<id>" is installed from "<source>"` | Install an additional extension |
-| `Given recording is enabled as "<format>"` | Enable recording (mp4 / gif) |
-| `Given debug capture is enabled` | Enable debug capture |
+| `Given the extension is in a clean state` | Reset UI: close all editors, dismiss notifications, clear output channels |
+| `Given a file "<path>" exists` | Create an empty file for test setup |
+| `Given a file "<path>" exists with content "<text>"` | Create a file with content |
+| `Given I capture the output channel "<name>"` | Declare an output channel to capture |
 
 ### Actions (When)
 
@@ -68,20 +116,4 @@ Scenario Outline: Create project with <language>
 
 ## Running Tests
 
-### Via Copilot CLI (natural language)
-
-```
-copilot "Test the Hello World extension by running its helloWorld command and verifying the notification appears"
-```
-
-### Via MCP tool call
-
-```json
-{
-  "tool": "run_feature",
-  "arguments": {
-    "content": "features/examples/basic-extension.feature",
-    "testData": { "AZURE_TEST_USER": "user@example.com" }
-  }
-}
-```
+See the [Directory Convention](#directory-convention) section above for examples.

@@ -252,9 +252,9 @@ RULES:
 - NEVER test destructive commands (delete, remove, clear, reset, drop, purge, uninstall, disconnect, sign out).
 - NEVER test commands that require authentication or network connections unless handling auth explicitly.
 - Only test commands that are self-contained and can complete without user interaction beyond QuickPick/InputBox.
-- Each scenario should be independent — do not depend on state from a previous scenario.
+- Each scenario should be independent - do not depend on state from a previous scenario.
 - Use "I wait N seconds" sparingly, only when the command needs time to complete.
-- Keep scenarios focused — test one behavior per scenario.
+- Keep scenarios focused - test one behavior per scenario.
 - Include at least one assertion per scenario (notification, editor content, or output channel).
 - If a command opens a QuickPick or InputBox, handle it with the appropriate step.
 `;

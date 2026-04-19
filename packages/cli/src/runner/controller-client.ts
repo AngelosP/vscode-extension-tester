@@ -72,6 +72,27 @@ export class ControllerClient {
     return this.send('getOutputChannels') as Promise<string[]>;
   }
 
+  /** Return every captured channel and its full content. */
+  async getCapturedChannels(): Promise<Array<{ name: string; content: string }>> {
+    return this.send('getCapturedChannels') as Promise<Array<{ name: string; content: string }>>;
+  }
+
+  /** Declare an output channel that should be captured. Switches to allow-list mode. */
+  async startCaptureChannel(name: string): Promise<void> {
+    await this.send('startCaptureChannel', { name });
+  }
+
+  /** Stop capturing a previously declared channel. */
+  async stopCaptureChannel(name: string): Promise<void> {
+    await this.send('stopCaptureChannel', { name });
+  }
+
+  /** Get the current byte offset of a captured channel - used for per-step diffs. */
+  async getOutputChannelOffset(name: string): Promise<number> {
+    const res = (await this.send('getOutputChannelOffset', { name })) as { offset: number };
+    return res.offset;
+  }
+
   /** Get all output channel contents as a combined string. */
   async getAllOutputContent(): Promise<string> {
     const channels = await this.getOutputChannels();
@@ -95,7 +116,7 @@ export class ControllerClient {
     try {
       await this.send('closeWindow');
     } catch {
-      // Dev Host may close before we get a response — that's fine
+      // Dev Host may close before we get a response - that's fine
     }
   }
 

@@ -5,19 +5,26 @@ import { UIInterceptor } from './ui-interceptor.js';
 import { StateReader } from './state-reader.js';
 import { OutputMonitor } from './output-monitor.js';
 import { AuthHandler } from './auth-handler.js';
+import { registerDebugConfigProvider } from './debug-config-provider.js';
 
 let server: WSServer | undefined;
+const envPort = process.env['VSCODE_EXT_TESTER_PORT'];
+
+// Patch output-channel creation as soon as this module is loaded in the Dev Host.
+// This narrows the activation race and also captures the controller's own channel.
+const outputMonitor = envPort ? new OutputMonitor() : undefined;
+const outputMonitorDisposables = outputMonitor ? outputMonitor.register() : [];
 const log = vscode.window.createOutputChannel('Extension Tester Controller');
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  // Only start the WS server if VSCODE_EXT_TESTER_PORT is set.
-  // This env var is set in the "Debug extension with automation support" launch config
-  // that init creates. It ensures the server only runs in the Dev Host, not the main window.
-  const envPort = process.env['VSCODE_EXT_TESTER_PORT'];
+  registerDebugConfigProvider(context);
+
   if (!envPort) {
-    log.appendLine('[activate] VSCODE_EXT_TESTER_PORT not set — standby mode');
+    log.appendLine('[activate] VSCODE_EXT_TESTER_PORT not set - standby mode');
     return;
   }
+
+  context.subscriptions.push(...outputMonitorDisposables);
 
   const port = parseInt(envPort, 10);
   log.appendLine(`[activate] Starting WebSocket server on port ${port}...`);
@@ -26,14 +33,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const commandExecutor = new CommandExecutor();
     const uiInterceptor = new UIInterceptor();
     const stateReader = new StateReader();
-    const outputMonitor = new OutputMonitor();
     const authHandler = new AuthHandler();
 
     server = new WSServer(port, {
       commandExecutor,
       uiInterceptor,
       stateReader,
-      outputMonitor,
+      outputMonitor: outputMonitor!,
       authHandler,
     });
 
@@ -43,7 +49,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(
       { dispose: () => server?.stop() },
       ...uiInterceptor.register(),
-      ...outputMonitor.register(),
       ...authHandler.register(),
     );
   } catch (err: unknown) {
