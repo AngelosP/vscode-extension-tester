@@ -122,6 +122,17 @@ export class WSServer {
         return { opened: true };
       }
 
+      // ─── Add folder to workspace (no reload) ───
+      case 'addWorkspaceFolder': {
+        const vscode = require('vscode');
+        const folderPath = p['folderPath'] as string;
+        const uri = vscode.Uri.file(folderPath);
+        const index = vscode.workspace.workspaceFolders?.length ?? 0;
+        const ok = vscode.workspace.updateWorkspaceFolders(index, null, { uri });
+        if (!ok) throw new Error(`Failed to add workspace folder: ${folderPath}`);
+        return { added: true, folderPath };
+      }
+
       // ─── UI interaction ───
       case 'respondToQuickPick':
         return this.services.uiInterceptor.respondToQuickPick(

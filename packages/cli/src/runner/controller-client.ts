@@ -153,6 +153,10 @@ export class ControllerClient {
     await this.send('openFile', { filePath });
   }
 
+  async addWorkspaceFolder(folderPath: string): Promise<unknown> {
+    return this.send('addWorkspaceFolder', { folderPath });
+  }
+
   async pressKey(key: string): Promise<void> {
     await this.send('pressKey', { key });
   }

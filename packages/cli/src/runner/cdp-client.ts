@@ -732,7 +732,15 @@ export class CdpClient {
     const deadline = waitMs ? Date.now() + waitMs : 0;
 
     while (true) {
-      const targets = await CDP.List({ port: this.port });
+      let targets: Array<{ type: string; url: string; id: string; title: string }>;
+      try {
+        targets = await CDP.List({ port: this.port }) as any;
+      } catch {
+        // CDP.List() can ECONNREFUSED if called during VS Code startup
+        if (!waitMs || Date.now() >= deadline) return [];
+        await delay(250);
+        continue;
+      }
       const webviews = targets.filter(
         (t: { type: string; url: string }) =>
           (t.type === 'page' || t.type === 'iframe') &&
@@ -757,18 +765,30 @@ export class CdpClient {
 
   /**
    * Connect to a webview target, run a callback, then disconnect.
+   * Retries up to 3 times on connection failures (ECONNREFUSED) because
+   * webview targets can appear in the CDP target list before their debug
+   * server is fully ready.
    */
   private async withWebviewClient<T>(
     targetId: string,
     fn: (client: CDP.Client) => Promise<T>,
   ): Promise<T> {
-    const wvClient = await CDP({ port: this.port, target: targetId });
-    try {
-      await wvClient.Runtime.enable();
-      return await fn(wvClient);
-    } finally {
-      wvClient.close();
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const wvClient = await CDP({ port: this.port, target: targetId });
+        try {
+          await wvClient.Runtime.enable();
+          return await fn(wvClient);
+        } finally {
+          wvClient.close();
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < 2) await delay(500);
+      }
     }
+    throw lastError!;
   }
 
   /**

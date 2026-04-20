@@ -127,6 +127,7 @@ function createMockClient(): ControllerClient {
     getExtensionStatus: vi.fn().mockResolvedValue([]),
     typeText: vi.fn().mockResolvedValue(undefined),
     openFile: vi.fn().mockResolvedValue(undefined),
+    addWorkspaceFolder: vi.fn().mockResolvedValue({ added: true }),
     pressKey: vi.fn().mockResolvedValue(undefined),
     resetState: vi.fn().mockResolvedValue(undefined),
   } as unknown as ControllerClient;
@@ -492,6 +493,18 @@ describe('TestRunner', () => {
       await runner.runFeature(feature);
 
       expect(client.openFile).toHaveBeenCalled();
+    });
+
+    it('should handle "I add folder to the workspace" step', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Add Folder', [
+          makeStep('When ', 'I add folder "/tmp/test-project" to the workspace'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(client.addWorkspaceFolder).toHaveBeenCalled();
     });
 
     it('should handle auth step', async () => {

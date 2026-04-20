@@ -71,6 +71,7 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 |------|-------------|
 | `When I execute command "<commandId>"` | Run a VS Code command (waits for completion) |
 | `When I start command "<commandId>"` | Start a VS Code command without waiting (use for commands that show InputBox/QuickPick) |
+| `When I add folder "<path>" to the workspace` | Add a folder to the workspace without reloading |
 | `When I select "<label>" from the QuickPick` | Choose an item from the QuickPick |
 | `When I type "<text>" into the InputBox` | Type into the InputBox |
 | `When I click "<button>" on the dialog` | Click a dialog button |

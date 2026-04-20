@@ -166,6 +166,14 @@ export class TestRunner {
       return;
     }
 
+    // ─── Utility: add folder to workspace (no reload) ───
+    match = text.match(/^I add folder "([^"]+)" to the workspace$/);
+    if (match) {
+      const folderPath = this.resolveFilePath(match[1]);
+      await this.client.addWorkspaceFolder(folderPath);
+      return;
+    }
+
     // ─── Utility: delete file ───
     match = text.match(/^I delete file "([^"]+)"$/);
     if (match) { this.deleteFile(match[1]); return; }
