@@ -44,6 +44,10 @@ export class ControllerClient {
     return this.send('executeCommand', { commandId, args });
   }
 
+  async startCommand(commandId: string, args?: unknown[]): Promise<unknown> {
+    return this.send('startCommand', { commandId, args });
+  }
+
   async respondToQuickPick(label: string): Promise<unknown> {
     return this.send('respondToQuickPick', { label });
   }

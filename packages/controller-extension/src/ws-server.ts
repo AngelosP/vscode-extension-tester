@@ -93,6 +93,14 @@ export class WSServer {
         );
       }
 
+      // ─── Start command (fire-and-forget, for commands that show UI) ───
+      case 'startCommand': {
+        return this.services.commandExecutor.start(
+          p['commandId'] as string,
+          p['args'] as unknown[]
+        );
+      }
+
       // ─── Open file in editor (via code, no dialog) ───
       case 'openFile': {
         const vscode = require('vscode');

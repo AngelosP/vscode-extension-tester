@@ -93,7 +93,7 @@ export class TestRunner {
     try { outputBefore = await this.client.getAllOutputContent(); } catch { /* best effort */ }
 
     try {
-      await this.dispatch(resolvedText);
+      const dispatchLog = await this.dispatch(resolvedText);
 
       // Capture output produced during this step
       let outputLog: string | undefined;
@@ -102,6 +102,11 @@ export class TestRunner {
         const newOutput = outputAfter.slice(outputBefore.length).trim();
         if (newOutput) outputLog = newOutput;
       } catch { /* best effort */ }
+
+      // Merge dispatch-returned log (e.g. evaluate results) into outputLog
+      if (dispatchLog) {
+        outputLog = outputLog ? `${outputLog}\n${dispatchLog}` : dispatchLog;
+      }
 
       return { keyword: step.keyword, text: step.text, status: 'passed', durationMs: Date.now() - startTime, outputLog };
     } catch (err: unknown) {
@@ -118,7 +123,7 @@ export class TestRunner {
     }
   }
 
-  private async dispatch(text: string): Promise<void> {
+  private async dispatch(text: string): Promise<string | void> {
     let match: RegExpMatchArray | null;
 
     // ─── Reset state ───
@@ -177,6 +182,10 @@ export class TestRunner {
     // ─── Commands ───
     match = text.match(/^I execute command "([^"]+)"$/);
     if (match) { await this.client.executeCommand(match[1]); return; }
+
+    // ─── Start command (fire-and-forget, for commands that show UI) ───
+    match = text.match(/^I start command "([^"]+)"$/);
+    if (match) { await this.client.startCommand(match[1]); return; }
 
     // ─── QuickPick ───
     match = text.match(/^I select "([^"]+)" from the QuickPick$/);
@@ -370,7 +379,12 @@ export class TestRunner {
     // ─── Webview: evaluate JS ───
     match = text.match(/^I evaluate "([^"]+)" in the webview(?: "([^"]+)")?$/);
     if (match) {
-      await (await this.requireCdp()).evaluateInWebview(match[1], match[2]);
+      const result = await (await this.requireCdp()).evaluateInWebview(match[1], match[2]);
+      if (result !== undefined && result !== null) {
+        const serialized = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+        console.log(`[evaluate] ${serialized}`);
+        return `[evaluate] ${serialized}`;
+      }
       return;
     }
 

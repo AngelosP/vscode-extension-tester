@@ -57,6 +57,9 @@ export class UIInterceptor {
    * Type a value into the currently active InputBox and accept it.
    */
   async respondToInputBox(value: string): Promise<{ entered: string }> {
+    // Ensure the QuickInput widget has focus (may have been stolen by a webview)
+    await vscode.commands.executeCommand('workbench.action.quickOpenSelectNext');
+
     // Type the value into the active input
     await vscode.commands.executeCommand('type', { text: value });
     await delay(100);

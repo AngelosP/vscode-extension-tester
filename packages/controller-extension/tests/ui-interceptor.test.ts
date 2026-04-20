@@ -38,10 +38,20 @@ describe('UIInterceptor', () => {
   });
 
   describe('respondToInputBox()', () => {
-    it('should type the value and accept', async () => {
+    it('should focus QuickInput, type the value, and accept', async () => {
       const result = await interceptor.respondToInputBox('hello world');
 
       expect(result).toEqual({ entered: 'hello world' });
+
+      // Verify call order: quickOpenSelectNext first, then type, then accept
+      const calls = vscode.commands.executeCommand.mock.calls;
+      const focusIdx = calls.findIndex((c: any[]) => c[0] === 'workbench.action.quickOpenSelectNext');
+      const typeIdx = calls.findIndex((c: any[]) => c[0] === 'type');
+      const acceptIdx = calls.findIndex((c: any[]) => c[0] === 'workbench.action.acceptSelectedQuickOpenItem');
+
+      expect(focusIdx).toBeGreaterThanOrEqual(0);
+      expect(typeIdx).toBeGreaterThan(focusIdx);
+      expect(acceptIdx).toBeGreaterThan(typeIdx);
       expect(vscode.commands.executeCommand).toHaveBeenCalledWith('type', { text: 'hello world' });
     });
   });

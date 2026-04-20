@@ -70,4 +70,51 @@ describe('CommandExecutor', () => {
       expect(commands.length).toBeGreaterThan(0);
     });
   });
+
+  describe('start()', () => {
+    it('should call executeCommand and return immediately', () => {
+      let resolveCommand!: () => void;
+      vscode.commands.executeCommand.mockReturnValue(
+        new Promise<void>((resolve) => { resolveCommand = resolve; })
+      );
+
+      const result = executor.start('test.slowCommand');
+
+      // Returns immediately, before the command resolves
+      expect(result).toEqual({ started: true, commandId: 'test.slowCommand' });
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith('test.slowCommand');
+
+      // Clean up the pending promise
+      resolveCommand();
+    });
+
+    it('should pass arguments to the command', () => {
+      vscode.commands.executeCommand.mockResolvedValue(undefined);
+
+      const result = executor.start('test.command', ['arg1', 'arg2']);
+
+      expect(result).toEqual({ started: true, commandId: 'test.command' });
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith('test.command', 'arg1', 'arg2');
+    });
+
+    it('should not throw when the command rejects', async () => {
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vscode.commands.executeCommand.mockRejectedValue(new Error('Command failed'));
+
+      // start() itself should not throw
+      const result = executor.start('bad.command');
+      expect(result).toEqual({ started: true, commandId: 'bad.command' });
+
+      // Let the rejection handler run
+      await vi.waitFor(() => {
+        expect(consoleSpy).toHaveBeenCalledWith(
+          '[vscode-ext-test] Fire-and-forget command failed:',
+          'bad.command',
+          expect.any(Error),
+        );
+      });
+
+      consoleSpy.mockRestore();
+    });
+  });
 });

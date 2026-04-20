@@ -100,6 +100,7 @@ function createMockClient(): ControllerClient {
     connect: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn(),
     executeCommand: vi.fn().mockResolvedValue({ executed: true }),
+    startCommand: vi.fn().mockResolvedValue({ started: true, commandId: 'test' }),
     respondToQuickPick: vi.fn().mockResolvedValue({ selected: '' }),
     respondToInputBox: vi.fn().mockResolvedValue({ entered: '' }),
     respondToDialog: vi.fn().mockResolvedValue({ clicked: '' }),
@@ -235,6 +236,18 @@ describe('TestRunner', () => {
       await runner.runFeature(feature);
 
       expect(client.executeCommand).toHaveBeenCalledWith('workbench.action.openSettings');
+    });
+
+    it('should handle "I start command" step (fire-and-forget)', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('StartCommand', [
+          makeStep('When ', 'I start command "kusto.openRemoteFile"'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(client.startCommand).toHaveBeenCalledWith('kusto.openRemoteFile');
     });
 
     it('should handle "I select from the QuickPick" step', async () => {

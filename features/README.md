@@ -69,7 +69,8 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 
 | Step | Description |
 |------|-------------|
-| `When I execute command "<commandId>"` | Run a VS Code command (Ctrl+Shift+P) |
+| `When I execute command "<commandId>"` | Run a VS Code command (waits for completion) |
+| `When I start command "<commandId>"` | Start a VS Code command without waiting (use for commands that show InputBox/QuickPick) |
 | `When I select "<label>" from the QuickPick` | Choose an item from the QuickPick |
 | `When I type "<text>" into the InputBox` | Type into the InputBox |
 | `When I click "<button>" on the dialog` | Click a dialog button |
@@ -79,6 +80,8 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 | `When I wait <N> seconds` | Wait for a specified duration |
 | `When I capture the output channel "<name>"` | Start capturing a specific output channel (allow-list mode) |
 | `When I stop capturing the output channel "<name>"` | Stop capturing a specific output channel |
+| `When I resize the (window\|Dev Host) to <width>x<height>` | Resize the Dev Host window (also accepts `<width> by <height>`) |
+| `When I move the (window\|Dev Host) to <x>, <y>` | Move the Dev Host window (negative coords OK) |
 
 ### Assertions (Then)
 

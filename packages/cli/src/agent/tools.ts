@@ -36,6 +36,21 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'start_command',
+      description: 'Start a VS Code command without waiting for it to complete. Use this for commands that show InputBox or QuickPick dialogs, then use respond_to_inputbox or respond_to_quickpick to interact with the dialog.',
+      parameters: {
+        type: 'object',
+        properties: {
+          commandId: { type: 'string', description: 'The VS Code command ID to start' },
+          args: { type: 'array', items: {}, description: 'Optional arguments to pass to the command' },
+        },
+        required: ['commandId'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_state',
       description: 'Get the current VS Code state: active editor, terminals, notifications, and panels.',
       parameters: { type: 'object', properties: {} },
@@ -307,6 +322,8 @@ export async function executeToolCall(
     switch (name) {
       case 'execute_command':
         return await toolExecuteCommand(ctx, args);
+      case 'start_command':
+        return await toolStartCommand(ctx, args);
       case 'get_state':
         return await toolGetState(ctx);
       case 'list_commands':
@@ -366,6 +383,12 @@ function requireClient(ctx: ToolContext): ControllerClient {
 async function toolExecuteCommand(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
   const client = requireClient(ctx);
   const result = await client.executeCommand(args['commandId'] as string, args['args'] as unknown[] | undefined);
+  return JSON.stringify(result ?? { status: 'ok' });
+}
+
+async function toolStartCommand(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const client = requireClient(ctx);
+  const result = await client.startCommand(args['commandId'] as string, args['args'] as unknown[] | undefined);
   return JSON.stringify(result ?? { status: 'ok' });
 }
 

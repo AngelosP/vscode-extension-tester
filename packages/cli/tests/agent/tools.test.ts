@@ -40,6 +40,7 @@ describe('tools', () => {
     it('should include core tools', () => {
       const names = TOOL_DEFINITIONS.map((t) => t.function.name);
       expect(names).toContain('execute_command');
+      expect(names).toContain('start_command');
       expect(names).toContain('get_state');
       expect(names).toContain('get_notifications');
       expect(names).toContain('read_source_file');

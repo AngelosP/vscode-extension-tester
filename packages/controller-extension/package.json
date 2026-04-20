@@ -21,9 +21,10 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run vsix",
     "bundle": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
     "clean": "rimraf dist",
+    "vsix": "npm run clean && npm run bundle && vsce package --no-dependencies --allow-missing-repository --allow-star-activation --skip-license -o ../cli/assets/controller-extension.vsix",
     "package": "npm run clean && npm run bundle && vsce package --no-dependencies --allow-missing-repository --allow-star-activation --skip-license"
   },
   "dependencies": {
