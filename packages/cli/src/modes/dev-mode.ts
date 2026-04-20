@@ -110,9 +110,10 @@ export async function runFeatures(
   options: RunOptions,
   startTime: number,
   artifactsDir?: string,
+  userDataDir?: string,
 ): Promise<TestRunResult> {
   const parser = new GherkinParser();
-  const runner = new TestRunner(client, {}, artifactsDir);
+  const runner = new TestRunner(client, {}, artifactsDir, userDataDir);
 
   // Find all .feature files
   const featuresDir = path.resolve(options.extensionPath, options.features);

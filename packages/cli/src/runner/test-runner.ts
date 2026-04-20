@@ -25,6 +25,7 @@ export class TestRunner {
     private readonly client: ControllerClient,
     private readonly testData: Record<string, string> = {},
     private readonly artifactsDir?: string,
+    private readonly userDataDir?: string,
   ) {
     // Load .env values for ${VARIABLE} resolution in step text
     this.envData = loadEnv(process.cwd());
@@ -460,12 +461,121 @@ export class TestRunner {
    * Returns undefined if CDP is unavailable or the channel wasn't found.
    */
   private async tryReadOutputViaCdp(name: string): Promise<string | undefined> {
+    // First try direct log file scan (most reliable — doesn't need CDP)
+    const fromLogs = this.readFromVsCodeLogs(name);
+    if (fromLogs !== undefined) return fromLogs;
+
+    // Then try CDP discovery
     try {
       const cdp = await this.requireCdp();
       return await cdp.readOutputChannelContent(name);
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * Scan VS Code's logs directory for output channel backing files.
+   * The logs live at <userDataDir>/logs/<session>/window1/exthost/output_logging_<timestamp>/<N>-<Name>.log
+   */
+  private readFromVsCodeLogs(channelName: string): string | undefined {
+    if (!this.userDataDir) return undefined;
+
+    const outputDir = this.findLatestOutputLoggingDir();
+    if (!outputDir) return undefined;
+
+    try {
+      const lower = channelName.toLowerCase();
+      const logFiles = fs.readdirSync(outputDir).filter(f => f.endsWith('.log'));
+      for (const file of logFiles) {
+        const match = file.match(/^\d+-(.+)\.log$/);
+        if (match && match[1].toLowerCase() === lower) {
+          return fs.readFileSync(path.join(outputDir, file), 'utf-8');
+        }
+      }
+    } catch { /* scan failed */ }
+
+    return undefined;
+  }
+
+  /**
+   * Enumerate all output channel log files from VS Code's logs directory.
+   */
+  private scanAllVsCodeOutputLogs(): Array<{ label: string; file: string }> {
+    const outputDir = this.findLatestOutputLoggingDir();
+    if (!outputDir) return [];
+
+    const results: Array<{ label: string; file: string }> = [];
+    try {
+      const logFiles = fs.readdirSync(outputDir).filter(f => f.endsWith('.log'));
+      for (const file of logFiles) {
+        const match = file.match(/^\d+-(.+)\.log$/);
+        if (match) {
+          results.push({
+            label: match[1],
+            file: path.join(outputDir, file),
+          });
+        }
+      }
+    } catch { /* scan failed */ }
+
+    return results;
+  }
+
+  /**
+   * Find the most recent output_logging_* directory inside VS Code's logs.
+   * Structure: <userDataDir>/logs/<session>/window1/exthost/output_logging_<timestamp>/
+   */
+  private findLatestOutputLoggingDir(): string | undefined {
+    if (!this.userDataDir) return undefined;
+
+    const logsRoot = path.join(this.userDataDir, 'logs');
+    if (!fs.existsSync(logsRoot)) return undefined;
+
+    try {
+      // Find the most recent session
+      const sessions = fs.readdirSync(logsRoot, { withFileTypes: true })
+        .filter(e => e.isDirectory())
+        .map(e => e.name)
+        .sort()
+        .reverse();
+
+      // Search each session for output_logging_* (could be at various nesting levels)
+      for (const session of sessions) {
+        const sessionDir = path.join(logsRoot, session);
+        const found = this.findOutputLoggingRecursive(sessionDir, 4);
+        if (found) return found;
+      }
+    } catch { /* scan failed */ }
+
+    return undefined;
+  }
+
+  /**
+   * Recursively search for an output_logging_* directory up to maxDepth levels.
+   * Returns the most recent one found.
+   */
+  private findOutputLoggingRecursive(dir: string, maxDepth: number): string | undefined {
+    if (maxDepth <= 0) return undefined;
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      const outputDirs = entries
+        .filter(e => e.isDirectory() && e.name.startsWith('output_logging_'))
+        .map(e => path.join(dir, e.name))
+        .sort()
+        .reverse();
+
+      if (outputDirs.length > 0) return outputDirs[0];
+
+      // Recurse into subdirectories
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const found = this.findOutputLoggingRecursive(path.join(dir, entry.name), maxDepth - 1);
+        if (found) return found;
+      }
+    } catch { /* permission error or similar */ }
+
+    return undefined;
   }
 
   /** Lazily start the FlaUI bridge for native dialog automation. */
@@ -508,19 +618,13 @@ export class TestRunner {
   private async recordChannelOffsets(): Promise<void> {
     this.scenarioStartOffsets.clear();
     try {
-      // Try CDP first — discovers ALL channels including other extensions
-      const cdp = await this.requireCdp().catch(() => null);
-      if (cdp) {
-        const descriptors = await cdp.getOutputChannelDescriptors().catch(() => []);
-        for (const d of descriptors) {
-          if (d.file) {
-            try {
-              // Use character length (not byte size) to match string.slice() in dumpCapturedChannels
-              const content = fs.readFileSync(d.file, 'utf-8');
-              this.scenarioStartOffsets.set(d.label, content.length);
-            } catch { /* file may not exist yet */ }
-          }
-        }
+      // Scan VS Code log files directly (most reliable)
+      const logChannels = this.scanAllVsCodeOutputLogs();
+      for (const lc of logChannels) {
+        try {
+          const content = fs.readFileSync(lc.file, 'utf-8');
+          this.scenarioStartOffsets.set(lc.label, content.length);
+        } catch { /* file may not exist yet */ }
       }
 
       // Also get controller-side offsets
@@ -532,7 +636,6 @@ export class TestRunner {
         }),
       );
       for (const [name, offset] of offsets) {
-        // Don't overwrite CDP offset if we already have one
         if (!this.scenarioStartOffsets.has(name)) {
           this.scenarioStartOffsets.set(name, offset);
         }
@@ -565,28 +668,19 @@ export class TestRunner {
       })),
     ]);
 
-    // Try CDP to discover ALL channels (including other extensions)
-    let cdpChannels: Array<{ label: string; content: string }> = [];
-    try {
-      const cdp = await this.requireCdp().catch(() => null);
-      if (cdp) {
-        const descriptors = await cdp.getOutputChannelDescriptors();
-        for (const d of descriptors) {
-          if (d.file && fs.existsSync(d.file)) {
-            try {
-              const content = fs.readFileSync(d.file, 'utf-8');
-              if (content) {
-                cdpChannels.push({ label: d.label, content });
-              }
-            } catch { /* skip unreadable files */ }
-          }
-        }
-      }
-    } catch { /* CDP unavailable — use controller-only data */ }
+    // Scan VS Code log files directly (finds ALL extensions' channels)
+    let logFileChannels: Array<{ label: string; content: string }> = [];
+    const logDescriptors = this.scanAllVsCodeOutputLogs();
+    for (const ld of logDescriptors) {
+      try {
+        const content = fs.readFileSync(ld.file, 'utf-8');
+        if (content) logFileChannels.push({ label: ld.label, content });
+      } catch { /* skip unreadable files */ }
+    }
 
-    // Merge: CDP channels + controller channels (controller wins for its own channel)
+    // Merge: log file channels + controller channels (controller wins for its own channel)
     const allChannels = new Map<string, string>();
-    for (const ch of cdpChannels) {
+    for (const ch of logFileChannels) {
       allChannels.set(ch.label, ch.content);
     }
     for (const ch of controllerCaptured) {
@@ -597,7 +691,7 @@ export class TestRunner {
 
     const knownChannelNames = Array.from(new Set([
       ...controllerChannels,
-      ...cdpChannels.map(c => c.label),
+      ...logFileChannels.map(c => c.label),
     ])).sort();
 
     const capturedList = Array.from(allChannels.entries()).map(([name, content]) => ({
@@ -610,7 +704,8 @@ export class TestRunner {
       knownChannels: knownChannelNames,
       capturedChannels: capturedList,
       diagnostics,
-      cdpChannelCount: cdpChannels.length,
+      logFileChannelCount: logFileChannels.length,
+      userDataDir: this.userDataDir ?? null,
       timestamp: new Date().toISOString(),
     };
     fs.writeFileSync(
@@ -632,6 +727,73 @@ export class TestRunner {
       const delta = content.slice(startOffset);
       fs.writeFileSync(path.join(scenarioDir, file), delta, 'utf-8');
     }
+
+    // Copy VS Code host logs (exthost.log = console.log from extensions,
+    // renderer.log = renderer process logs) into the scenario directory.
+    this.copyVsCodeHostLogs(scenarioDir);
+  }
+
+  /**
+   * Copy exthost.log and renderer.log from VS Code's logs directory into
+   * the target directory. These contain console.log output from extensions
+   * and the renderer process respectively.
+   */
+  private copyVsCodeHostLogs(targetDir: string): void {
+    if (!this.userDataDir) return;
+
+    const logsRoot = path.join(this.userDataDir, 'logs');
+    if (!fs.existsSync(logsRoot)) return;
+
+    try {
+      // Find the most recent session
+      const sessions = fs.readdirSync(logsRoot, { withFileTypes: true })
+        .filter(e => e.isDirectory())
+        .map(e => e.name)
+        .sort()
+        .reverse();
+
+      if (sessions.length === 0) return;
+      const sessionDir = path.join(logsRoot, sessions[0]);
+
+      // Copy key log files from the session
+      const logsToCopy = [
+        // exthost.log is nested under window1/exthost/
+        { pattern: 'exthost.log', search: true },
+        // renderer.log is under window1/
+        { pattern: 'renderer.log', search: true },
+      ];
+
+      for (const logDef of logsToCopy) {
+        const found = this.findFileRecursive(sessionDir, logDef.pattern, 3);
+        if (found) {
+          try {
+            fs.copyFileSync(found, path.join(targetDir, logDef.pattern));
+          } catch { /* non-fatal */ }
+        }
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  /**
+   * Find a file by name recursively up to maxDepth levels.
+   */
+  private findFileRecursive(dir: string, fileName: string, maxDepth: number): string | undefined {
+    if (maxDepth <= 0) return undefined;
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory() && entry.name === fileName) {
+          return path.join(dir, entry.name);
+        }
+      }
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const found = this.findFileRecursive(path.join(dir, entry.name), fileName, maxDepth - 1);
+          if (found) return found;
+        }
+      }
+    } catch { /* */ }
+    return undefined;
   }
 
   /** Take a screenshot and save it to the artifacts directory. */

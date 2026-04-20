@@ -108,7 +108,7 @@ export async function launchMode(options: RunOptions, artifactsDir?: string): Pr
     }
 
     // 6. Run tests
-    const result = await runFeatures(client, options, startTime, artifactsDir);
+    const result = await runFeatures(client, options, startTime, artifactsDir, userDataDir);
     client.disconnect();
     return result;
   } finally {
