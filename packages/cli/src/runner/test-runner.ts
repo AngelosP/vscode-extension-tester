@@ -18,6 +18,8 @@ export class TestRunner {
   private cdp?: CdpClient;
   private screenshotCounter = 0;
   private currentScenarioName: string | undefined;
+  /** Per-channel byte offsets recorded before each scenario starts. */
+  private scenarioStartOffsets = new Map<string, number>();
 
   constructor(
     private readonly client: ControllerClient,
@@ -51,6 +53,10 @@ export class TestRunner {
   private async runScenario(scenario: ParsedScenario, backgroundSteps: ParsedStep[]): Promise<ScenarioResult> {
     const startTime = Date.now();
     this.currentScenarioName = scenario.name;
+
+    // Snapshot per-channel offsets before the scenario so we can isolate its output later
+    await this.recordChannelOffsets();
+
     const allSteps = [...backgroundSteps, ...scenario.steps];
     const stepResults: StepResult[] = [];
     let failed = false;
@@ -355,8 +361,9 @@ export class TestRunner {
 
     match = text.match(/^element "([^"]+)" should exist(?: in the webview(?: "([^"]+)")?)?$/);
     if (match) {
-      const exists = await (await this.requireCdp()).elementExistsInWebview(match[1], match[2]);
-      if (!exists) throw new Error(`Element "${match[1]}" does not exist.`);
+      // Use polling (like waitForSelector) instead of a single point-in-time check.
+      // Elements often aren't in the DOM yet right after an action triggers rendering.
+      await (await this.requireCdp()).waitForSelectorInWebview(match[1], 5_000, match[2]);
       return;
     }
 
@@ -457,10 +464,27 @@ export class TestRunner {
     this.cdp?.disconnect();
   }
 
+  /** Record the current byte offset for every known channel. */
+  private async recordChannelOffsets(): Promise<void> {
+    this.scenarioStartOffsets.clear();
+    try {
+      const names = await this.client.getOutputChannels();
+      const offsets = await Promise.all(
+        names.map(async (name) => {
+          const offset = await this.client.getOutputChannelOffset(name);
+          return [name, offset] as const;
+        }),
+      );
+      for (const [name, offset] of offsets) {
+        this.scenarioStartOffsets.set(name, offset);
+      }
+    } catch { /* best effort */ }
+  }
+
   /**
    * Dump the captured output channels to the artifacts directory:
    *   <artifactsDir>/output-channels/<name>.log              (cumulative)
-   *   <artifactsDir>/output-channels/<scenario>/<name>.log   (per-scenario)
+   *   <artifactsDir>/output-channels/<scenario>/<name>.log   (per-scenario delta)
    *
    * If the controller is in allow-list mode (the user used `I capture the
    * output channel "..."`), only the declared channels are written.
@@ -472,9 +496,13 @@ export class TestRunner {
     const scenarioDir = path.join(cumulativeDir, sanitizeFilename(scenarioName));
     fs.mkdirSync(scenarioDir, { recursive: true });
 
-    const [captured, allChannels] = await Promise.all([
+    const [captured, allChannels, diagnostics] = await Promise.all([
       this.client.getCapturedChannels(),
       this.client.getOutputChannels().catch(() => [] as string[]),
+      this.client.getDiagnostics().catch((e: any) => ({
+        diag: [`getDiagnostics FAILED: ${e?.message ?? e}`] as string[],
+        channelSummary: {},
+      })),
     ]);
 
     const manifest = {
@@ -484,6 +512,7 @@ export class TestRunner {
         name: ch.name,
         length: ch.content.length,
       })),
+      diagnostics,
       timestamp: new Date().toISOString(),
     };
     fs.writeFileSync(
@@ -501,8 +530,10 @@ export class TestRunner {
       // Cumulative - overwritten each scenario so it always reflects the
       // full content captured up to and including this scenario.
       fs.writeFileSync(path.join(cumulativeDir, file), ch.content, 'utf-8');
-      // Per-scenario snapshot
-      fs.writeFileSync(path.join(scenarioDir, file), ch.content, 'utf-8');
+      // Per-scenario delta - only the output produced during this scenario.
+      const startOffset = this.scenarioStartOffsets.get(ch.name) ?? 0;
+      const delta = ch.content.slice(startOffset);
+      fs.writeFileSync(path.join(scenarioDir, file), delta, 'utf-8');
     }
   }
 

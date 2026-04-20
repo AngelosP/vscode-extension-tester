@@ -65,7 +65,13 @@ export class ControllerClient {
   }
 
   async getOutputChannel(name: string): Promise<{ name: string; content: string }> {
-    return this.send('getOutputChannel', { name }) as Promise<{ name: string; content: string }>;
+    // Try the active-read command first (shows the channel in the output panel),
+    // fall back to the passive buffer for backward compatibility.
+    try {
+      return await (this.send('readOutputChannel', { name }) as Promise<{ name: string; content: string }>);
+    } catch {
+      return this.send('getOutputChannel', { name }) as Promise<{ name: string; content: string }>;
+    }
   }
 
   async getOutputChannels(): Promise<string[]> {
@@ -91,6 +97,11 @@ export class ControllerClient {
   async getOutputChannelOffset(name: string): Promise<number> {
     const res = (await this.send('getOutputChannelOffset', { name })) as { offset: number };
     return res.offset;
+  }
+
+  /** Get output monitor diagnostics (patching results, Proxy status, etc). */
+  async getDiagnostics(): Promise<{ diag: string[]; channelSummary: Record<string, number> }> {
+    return this.send('getDiagnostics') as Promise<{ diag: string[]; channelSummary: Record<string, number> }>;
   }
 
   /** Get all output channel contents as a combined string. */

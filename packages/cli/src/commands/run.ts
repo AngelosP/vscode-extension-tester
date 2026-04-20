@@ -6,6 +6,7 @@ import { launchMode } from '../modes/ci-mode.js';
 import { attachMode } from '../modes/dev-mode.js';
 import { printResults, writeReportFile, writeRunArtifacts } from '../utils/reporter.js';
 import { profileExists, getProfileDir, getProfileUserDataDir } from '../profile.js';
+import { buildExtension } from '../build.js';
 
 export async function runCommand(opts: Record<string, string | boolean>): Promise<void> {
   const options: RunOptions = {
@@ -27,6 +28,8 @@ export async function runCommand(opts: Record<string, string | boolean>): Promis
     autoReset: opts['autoReset'] === true,
     parallel: opts['parallel'] === true,
     maxWorkers: opts['maxWorkers'] ? parseInt(String(opts['maxWorkers']), 10) : undefined,
+    build: opts['build'] !== false,
+    paused: opts['paused'] === true,
   };
 
   try {
@@ -61,6 +64,11 @@ export async function runCommand(opts: Record<string, string | boolean>): Promis
       ...options,
       features: path.relative(cwd, featuresDir),
     };
+
+    // ─── Build ───
+    if (options.build) {
+      buildExtension(cwd);
+    }
 
     // ─── Execute ───
     let result: TestRunResult;
@@ -208,3 +216,5 @@ function resolvePaths(
   const runDir = path.join(cwd, 'tests', 'vscode-extension-tester', 'runs', artifactRunId);
   return { featuresDir, runDir, artifactRunId };
 }
+
+

@@ -136,6 +136,14 @@ export interface RunOptions {
   reuseOrCreateNamedProfile?: string;
   cloneNamedProfile?: string;
 
+  // ─── Build ───
+  /** If true, build the extension before running tests (default: true). */
+  build: boolean;
+
+  // ─── Paused ───
+  /** If true, set up the environment but don't run tests. */
+  paused: boolean;
+
   // ─── Reset policy ───
   autoReset: boolean;
 

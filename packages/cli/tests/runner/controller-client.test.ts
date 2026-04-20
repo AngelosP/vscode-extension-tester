@@ -66,6 +66,7 @@ describe('ControllerClient', () => {
             }));
             break;
           case 'getOutputChannel':
+          case 'readOutputChannel':
             ws.send(JSON.stringify({
               jsonrpc: '2.0',
               id: request.id,

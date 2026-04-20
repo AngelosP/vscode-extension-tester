@@ -52,6 +52,49 @@ export async function attachMode(options: RunOptions, artifactsDir?: string): Pr
     // 3. Verify connection
     await client.ping();
 
+    // 3b. If we built the extension, reload the Dev Host window so it loads
+    //     the latest compiled code — same effect as pressing the restart
+    //     button in the debug toolbar.
+    if (options.build) {
+      console.log('Reloading Dev Host to pick up latest build...');
+      try {
+        await client.executeCommand('workbench.action.reloadWindow');
+      } catch {
+        // Window may close before the response arrives — that's expected.
+      }
+      client.disconnect();
+
+      // Give VS Code a moment to begin reloading before we start polling.
+      await delay(3000);
+
+      // Reconnect — the controller extension will re-activate after reload.
+      let reconnected = false;
+      for (let attempt = 0; attempt < 60; attempt++) {
+        try {
+          await client.connect();
+          await client.ping();
+          reconnected = true;
+          break;
+        } catch {
+          await delay(1000);
+        }
+      }
+      if (!reconnected) {
+        throw new Error(
+          'Dev Host did not come back after reload within 60s.\n' +
+          'Try reloading manually (Ctrl+Shift+P → "Reload Window") and re-running tests.'
+        );
+      }
+      console.log('Dev Host reloaded — running with latest code.\n');
+    }
+
+    // 3c. If paused, wait for the user to press Enter before running tests.
+    if (options.paused) {
+      console.log('Environment ready. VS Code is running with the latest build.');
+      console.log('Press Enter to run tests, or Ctrl+C to exit...\n');
+      await waitForEnter();
+    }
+
     // 4. Parse and run features
     return await runFeatures(client, options, startTime, artifactsDir);
   } finally {
@@ -111,4 +154,12 @@ export async function runFeatures(
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function waitForEnter(): Promise<void> {
+  return new Promise((resolve) => {
+    process.stdin.setEncoding('utf-8');
+    process.stdin.once('data', () => resolve());
+    process.stdin.resume();
+  });
 }

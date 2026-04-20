@@ -45,20 +45,37 @@ export async function launchMode(options: RunOptions, artifactsDir?: string): Pr
   // 3. Build launch args
   const controllerVsix = getVsixPath();
   const extensionPath = path.resolve(options.extensionPath);
+
+  // For ephemeral runs, use a temp extensions directory so VS Code doesn't
+  // reuse a cached (stale) version of the controller extension.
+  if (!extensionsDir) {
+    extensionsDir = path.join(userDataDir, 'extensions');
+    fs.mkdirSync(extensionsDir, { recursive: true });
+  }
+
+  // Extract the controller VSIX and symlink it into the extensions directory
+  // so VS Code discovers it as a normally installed extension.  This keeps the
+  // controller available regardless of how many extensionDevelopmentPath entries
+  // there are.
+  const controllerDevDir = path.join(userDataDir, '_controller-dev');
+  fs.mkdirSync(controllerDevDir, { recursive: true });
+  extractVsix(controllerVsix, controllerDevDir);
+  linkExtensionIntoDir(controllerDevDir, extensionsDir, '_controller');
+  console.log('Controller extension installed into extensions dir.');
+
   const args: string[] = [
     '--new-window',
     `--user-data-dir=${userDataDir}`,
+    `--extensions-dir=${extensionsDir}`,
     `--remote-debugging-port=${options.cdpPort}`,
     '--disable-telemetry',
     '--skip-welcome',
     '--skip-release-notes',
     '--disable-workspace-trust',
-    `--install-extension`, controllerVsix,
+    // The extension under test is loaded via extensionDevelopmentPath —
+    // same as F5 / profile open.
     `--extensionDevelopmentPath=${extensionPath}`,
   ];
-  if (extensionsDir) {
-    args.push(`--extensions-dir=${extensionsDir}`);
-  }
 
   // 4. Launch VS Code (with xvfb on Linux if needed)
   console.log('Launching VS Code...');
@@ -82,6 +99,13 @@ export async function launchMode(options: RunOptions, artifactsDir?: string): Pr
     const client = new ControllerClient(options.controllerPort);
     await waitForController(client, VSCODE_LAUNCH_TIMEOUT_MS);
     console.log('Connected to controller extension.\n');
+
+    // 5b. If paused, wait for the user to press Enter before running tests.
+    if (options.paused) {
+      console.log('Environment ready. VS Code is running with the latest build.');
+      console.log('Press Enter to run tests, or Ctrl+C to exit...\n');
+      await waitForEnter();
+    }
 
     // 6. Run tests
     const result = await runFeatures(client, options, startTime, artifactsDir);
@@ -126,4 +150,86 @@ function isHeadlessCI(): boolean {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function waitForEnter(): Promise<void> {
+  return new Promise((resolve) => {
+    process.stdin.setEncoding('utf-8');
+    process.stdin.once('data', () => resolve());
+    process.stdin.resume();
+  });
+}
+
+/**
+ * Extract a VSIX (which is a zip) so its `extension/` content ends up
+ * directly in `destDir`.  The VSIX layout is:
+ *   [Content_Types].xml
+ *   extension.vsixmanifest
+ *   extension/            ← the actual extension (package.json, dist/, …)
+ *
+ * We copy only the `extension/` subtree into `destDir` so it's a valid
+ * extensionDevelopmentPath.
+ */
+function extractVsix(vsixPath: string, destDir: string): void {
+  // VSIX is a zip — extract using PowerShell (Windows) or unzip (Linux/macOS)
+  const tmpZip = path.join(path.dirname(destDir), '_controller.zip');
+  fs.copyFileSync(vsixPath, tmpZip);
+
+  const extractDir = path.join(path.dirname(destDir), '_controller-raw');
+  fs.mkdirSync(extractDir, { recursive: true });
+
+  if (process.platform === 'win32') {
+    cp.execSync(
+      `powershell -NoProfile -Command "Expand-Archive -LiteralPath '${tmpZip}' -DestinationPath '${extractDir}' -Force"`,
+      { stdio: 'pipe', timeout: 30_000 },
+    );
+  } else {
+    cp.execSync(`unzip -o -q "${tmpZip}" -d "${extractDir}"`, {
+      stdio: 'pipe', timeout: 30_000,
+    });
+  }
+
+  // Move extension/ contents into destDir
+  const extSubDir = path.join(extractDir, 'extension');
+  if (fs.existsSync(extSubDir)) {
+    copyDirSync(extSubDir, destDir);
+  }
+
+  // Cleanup
+  try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch { /* */ }
+  try { fs.rmSync(tmpZip); } catch { /* */ }
+}
+
+function copyDirSync(src: string, dest: string): void {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      copyDirSync(srcPath, destPath);
+    } else {
+      fs.copyFileSync(srcPath, destPath);
+    }
+  }
+}
+
+/**
+ * Ensure an extension is reachable from `extensionsDir` by creating a
+ * directory junction (Windows) or symlink (posix) that points back to
+ * the source tree.  VS Code scans `extensionsDir` for subdirectories
+ * containing a `package.json` and loads them as installed extensions, so the
+ * symlink makes the latest compiled code available without packaging a VSIX.
+ */
+function linkExtensionIntoDir(extensionPath: string, extensionsDir: string, linkName = '_ext-under-test'): void {
+  const linkPath = path.join(extensionsDir, linkName);
+
+  // Remove stale link/dir from a previous run
+  try { fs.rmSync(linkPath, { recursive: true, force: true }); } catch { /* */ }
+
+  fs.symlinkSync(
+    extensionPath,
+    linkPath,
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+  console.log(`Extension linked: ${linkPath} → ${extensionPath}`);
 }

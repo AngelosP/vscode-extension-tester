@@ -141,6 +141,11 @@ export class WSServer {
         );
       case 'getOutputChannels':
         return this.services.outputMonitor.listChannels();
+      case 'readOutputChannel': {
+        const name = p['name'] as string;
+        const content = await this.services.outputMonitor.readChannel(name);
+        return { name, content, captured: content.length > 0 };
+      }
       case 'getCapturedChannels':
         return this.services.outputMonitor.getCapturedChannels();
       case 'startCaptureChannel':
@@ -151,6 +156,10 @@ export class WSServer {
         return { status: 'ok' };
       case 'getOutputChannelOffset':
         return { offset: this.services.outputMonitor.getOffset(p['name'] as string) };
+
+      // ─── Diagnostics ───
+      case 'getDiagnostics':
+        return this.services.outputMonitor.getDiagnostics();
 
       // ─── Auth ───
       case 'handleAuth':
@@ -184,8 +193,6 @@ export class WSServer {
         await vscode.commands.executeCommand('workbench.action.closeSidebar');
         // Close any quick picks / input boxes
         await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
-        // Clear output channels
-        this.services.outputMonitor.clearAll();
         // Clear tracked notifications
         this.services.stateReader.clearNotifications();
         return { status: 'reset' };

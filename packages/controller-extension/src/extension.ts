@@ -10,11 +10,17 @@ import { registerDebugConfigProvider } from './debug-config-provider.js';
 let server: WSServer | undefined;
 const envPort = process.env['VSCODE_EXT_TESTER_PORT'];
 
-// Patch output-channel creation as soon as this module is loaded in the Dev Host.
-// This narrows the activation race and also captures the controller's own channel.
+// Create the output monitor early but defer register() to activate() where
+// we have proper disposable lifecycle.  The document-change listener doesn't
+// need module-level patching — it uses VS Code's shared workspace API.
 const outputMonitor = envPort ? new OutputMonitor() : undefined;
-const outputMonitorDisposables = outputMonitor ? outputMonitor.register() : [];
 const log = vscode.window.createOutputChannel('Extension Tester Controller');
+
+/** Helper: write to both the VS Code channel AND the monitor buffer directly. */
+function logLine(msg: string): void {
+  log.appendLine(msg);
+  outputMonitor?.appendContent('Extension Tester Controller', msg + '\n');
+}
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   registerDebugConfigProvider(context);
@@ -24,10 +30,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return;
   }
 
-  context.subscriptions.push(...outputMonitorDisposables);
+  // Register output monitor listeners (uses workspace.onDidChangeTextDocument
+  // which works across all extensions).
+  context.subscriptions.push(...outputMonitor!.register());
 
   const port = parseInt(envPort, 10);
-  log.appendLine(`[activate] Starting WebSocket server on port ${port}...`);
+  logLine(`[activate] Starting WebSocket server on port ${port}...`);
 
   try {
     const commandExecutor = new CommandExecutor();
@@ -44,7 +52,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
 
     await server.start();
-    log.appendLine(`[activate] WebSocket server started on port ${port}`);
+    logLine(`[activate] WebSocket server started on port ${port}`);
 
     context.subscriptions.push(
       { dispose: () => server?.stop() },
@@ -53,7 +61,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    log.appendLine(`[activate] ERROR: ${msg}`);
+    logLine(`[activate] ERROR: ${msg}`);
   }
 }
 

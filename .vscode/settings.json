@@ -4,6 +4,7 @@
         "/^npx vitest run 2>&1$/": {
             "approve": true,
             "matchCommandLine": true
-        }
+        },
+        "npx vitest": true
     }
 }

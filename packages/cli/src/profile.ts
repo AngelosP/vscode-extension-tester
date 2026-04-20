@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as cp from 'node:child_process';
 import { getVsixPath } from './commands/install.js';
+import { buildExtension } from './build.js';
 
 /** Root directory for CLI-owned named profiles, relative to cwd. */
 const PROFILES_DIR = 'tests/vscode-extension-tester/profiles';
@@ -85,6 +86,11 @@ export function openProfile(name: string, extensionPath?: string): void {
     console.warn('Warning: could not install controller extension into profile.');
   }
 
+  // If an extension path is provided, build it first so the profile gets the latest code
+  if (extensionPath) {
+    buildExtension(path.resolve(extensionPath));
+  }
+
   // Build launch args
   const args: string[] = [
     '--new-window',
@@ -97,7 +103,6 @@ export function openProfile(name: string, extensionPath?: string): void {
   if (extensionPath) {
     const resolved = path.resolve(extensionPath);
     args.push(`--extensionDevelopmentPath=${resolved}`);
-    args.push(resolved);
   }
 
   if (isNew) {

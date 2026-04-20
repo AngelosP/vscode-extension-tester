@@ -95,7 +95,26 @@ npm run package
 | `--controller-port <n>` | `9788` | Controller WebSocket port |
 | `--cdp-port <n>` | `9222` | Chrome DevTools Protocol port |
 | `--timeout <ms>` | `30000` | Per-step timeout |
+| `--no-build` | - | Skip building the extension before running |
+| `--paused` | `false` | Set up the environment but pause before running tests |
 | `--parallel` | `false` | Run reset-boundary groups in parallel |
+
+### Pausing before test execution
+
+Use `--paused` to have the framework set up the full environment (build, launch VS Code, connect to the controller) but stop before running any tests:
+
+```bash
+vscode-ext-test run --paused --test-id sql-inline-completions --reuse-named-profile sql-auth
+```
+
+The CLI will print `Press Enter to run tests, or Ctrl+C to exit...` once everything is ready. This gives you a chance to:
+
+- Visually inspect the VS Code instance to confirm the extension loaded correctly
+- Check that authentication sessions or connections are in place
+- Open Developer Tools or the Output panel to watch logs live
+- Interact with the UI manually before the automated steps begin
+
+Press **Enter** to proceed with test execution, or **Ctrl+C** to tear down without running anything.
 
 ## Capturing Output Channels
 

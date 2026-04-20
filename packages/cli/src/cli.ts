@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { runCommand } from './commands/run.js';
 import { installCommand } from './commands/install.js';
+import { updateCommand } from './commands/update.js';
 import { uninstallCommand } from './commands/uninstall.js';
 import { initCommand } from './commands/init.js';
 import { testsAddCommand } from './commands/tests-add.js';
@@ -32,6 +33,8 @@ program
   .option('--reuse-or-create-named-profile <name>', 'Use a named profile, creating it if missing')
   .option('--clone-named-profile <name>', 'Clone a named profile into an ephemeral worker, delete after run')
   .option('--auto-reset', 'Force a clean-start reset before every scenario', false)
+  .option('--no-build', 'Skip building the extension before running tests')
+  .option('--paused', 'Set up the environment but pause before running tests', false)
   .option('--parallel', 'Opt into parallel execution of reset-boundary groups', false)
   .option('--max-workers <n>', 'Max parallel workers (requires --parallel)')
   .action(runCommand);
@@ -40,6 +43,11 @@ program
   .command('install')
   .description('Install the controller extension into VS Code')
   .action(installCommand);
+
+program
+  .command('update')
+  .description('Update the controller extension in VS Code and all named profiles')
+  .action(updateCommand);
 
 program
   .command('uninstall')
@@ -77,7 +85,7 @@ const profileCmd = program
 profileCmd
   .command('open <name>')
   .description('Open a named profile in VS Code so you can authenticate or prepare prerequisites')
-  .option('--extension-path <dir>', 'Path to extension project to load in the profile')
+  .option('--extension-path <dir>', 'Path to extension project to load in the profile', '.')
   .action((name: string, opts: { extensionPath?: string }) => {
     try {
       openProfile(name, opts.extensionPath);

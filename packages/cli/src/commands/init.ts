@@ -300,6 +300,43 @@ The framework has two execution modes:
    under test or when you have manually prepared the environment (e.g.
    authenticated, installed additional extensions).
 
+## Build Lifecycle
+
+**The extension is always built automatically before every test run.** You do
+NOT need to manually compile — the framework handles it.
+
+Before launching or attaching, the CLI:
+
+1. Reads \`package.json\` in the extension root (your cwd, or \`--extension-path\`)
+2. Looks for a \`compile\` script first, then \`build\` (matching VS Code conventions)
+3. Runs \`npm run compile\` (or \`npm run build\`) so the latest source is compiled
+
+In **launch mode**, VS Code is then started with \`--extensionDevelopmentPath\`
+pointing at the extension root, so it loads the freshly compiled code directly
+from disk — identical to pressing F5.
+
+In **attach mode**, after building, the framework sends
+\`workbench.action.reloadWindow\` to the running Dev Host and waits for it to
+come back. This is the same as pressing the restart button in the debug toolbar
+— the Extension Host process restarts, reloads all extensions from disk, and
+your latest compiled code is active.
+
+**This means every test run is always against the latest source code.** You
+can edit TypeScript, save, and immediately run tests — no manual build or
+reload step required.
+
+To skip the build (e.g. if you already compiled or want to test the current
+compiled state without recompiling):
+
+\`\`\`bash
+vscode-ext-test run --no-build --test-id <test-id>
+\`\`\`
+
+**Running from the extension root.** If your cwd is the extension's root
+directory (where \`package.json\` with \`main\`, \`activationEvents\`, etc. lives),
+everything resolves automatically — no \`--extension-path\` needed. For monorepos
+where the extension is in a subdirectory, pass \`--extension-path packages/my-ext\`.
+
 ## Your Role
 
 You are a pessimistic, aggressive E2E tester. Your job is to find bugs.
