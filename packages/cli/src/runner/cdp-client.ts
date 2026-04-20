@@ -83,6 +83,17 @@ export class CdpClient {
   }
 
   /**
+   * Insert text at the current cursor position in whatever element is focused.
+   * Uses CDP Input.insertText — more reliable than typeText for native <input>
+   * elements (e.g. VS Code's QuickInput InputBox) because it bypasses key
+   * event handling and directly inserts the text.
+   */
+  async insertText(text: string): Promise<void> {
+    if (!this.client) throw new Error('CDP not connected');
+    await (this.client as any).Input.insertText({ text });
+  }
+
+  /**
    * Press a key or key combination (e.g. "Enter", "Escape", "Ctrl+S", "Shift+Tab").
    */
   async pressKey(keySpec: string): Promise<void> {
@@ -397,7 +408,7 @@ export class CdpClient {
    * propagates.
    */
   async evaluateInWebview(expression: string, webviewTitle?: string): Promise<unknown> {
-    const targets = await this.getWebviewTargets(webviewTitle);
+    const targets = await this.getWebviewTargets(webviewTitle, 5_000);
     if (targets.length === 0) {
       throw new Error(
         webviewTitle
@@ -546,7 +557,7 @@ export class CdpClient {
 
   /** Return the full text content of all matching webviews, joined (including nested iframes). */
   async getWebviewBodyText(webviewTitle?: string): Promise<string> {
-    const targets = await this.getWebviewTargets(webviewTitle);
+    const targets = await this.getWebviewTargets(webviewTitle, 5_000);
     if (targets.length === 0) {
       if (webviewTitle) {
         const all = await this.getWebviewTargets();
@@ -578,7 +589,7 @@ export class CdpClient {
 
   /** List the open webviews - useful for debugging "which titles can I target?". */
   async listWebviews(): Promise<Array<{ title: string; url: string }>> {
-    const targets = await this.getWebviewTargets();
+    const targets = await this.getWebviewTargets(undefined, 3_000);
     return targets.map((t) => ({ title: t.title, url: t.url }));
   }
 
@@ -710,21 +721,37 @@ export class CdpClient {
    * List all CDP targets and return those that look like VS Code webviews.
    * If `titleFilter` is provided, only targets whose title contains the
    * substring (case-insensitive) are returned.
+   *
+   * If `waitMs` is provided and no targets are found on the first attempt,
+   * polls every 250ms until targets appear or the timeout expires.
    */
   private async getWebviewTargets(
     titleFilter?: string,
+    waitMs?: number,
   ): Promise<Array<{ id: string; url: string; title: string }>> {
-    const targets = await CDP.List({ port: this.port });
-    const webviews = targets.filter(
-      (t: { type: string; url: string }) =>
-        (t.type === 'page' || t.type === 'iframe') &&
-        (t.url.startsWith('vscode-webview://') || t.url.includes('webviewPanel'))
-    );
-    if (!titleFilter) return webviews as Array<{ id: string; url: string; title: string }>;
-    const needle = titleFilter.toLowerCase();
-    return (webviews as Array<{ id: string; url: string; title: string }>).filter(
-      (t) => (t.title ?? '').toLowerCase().includes(needle) || t.url.toLowerCase().includes(needle),
-    );
+    const deadline = waitMs ? Date.now() + waitMs : 0;
+
+    while (true) {
+      const targets = await CDP.List({ port: this.port });
+      const webviews = targets.filter(
+        (t: { type: string; url: string }) =>
+          (t.type === 'page' || t.type === 'iframe') &&
+          (t.url.startsWith('vscode-webview://') || t.url.includes('webviewPanel'))
+      );
+
+      let matched: Array<{ id: string; url: string; title: string }>;
+      if (!titleFilter) {
+        matched = webviews as Array<{ id: string; url: string; title: string }>;
+      } else {
+        const needle = titleFilter.toLowerCase();
+        matched = (webviews as Array<{ id: string; url: string; title: string }>).filter(
+          (t) => (t.title ?? '').toLowerCase().includes(needle) || t.url.toLowerCase().includes(needle),
+        );
+      }
+
+      if (matched.length > 0 || !waitMs || Date.now() >= deadline) return matched;
+      await delay(250);
+    }
   }
 
 

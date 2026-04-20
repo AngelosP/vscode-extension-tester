@@ -87,13 +87,14 @@ export class TestRunner {
   private async runStep(step: ParsedStep): Promise<StepResult> {
     const startTime = Date.now();
     const resolvedText = this.resolveEnvVars(step.text);
+    const docString = step.docString ? this.resolveEnvVars(step.docString) : undefined;
 
     // Snapshot output channels before the step
     let outputBefore = '';
     try { outputBefore = await this.client.getAllOutputContent(); } catch { /* best effort */ }
 
     try {
-      const dispatchLog = await this.dispatch(resolvedText);
+      const dispatchLog = await this.dispatch(resolvedText, docString);
 
       // Capture output produced during this step
       let outputLog: string | undefined;
@@ -123,7 +124,7 @@ export class TestRunner {
     }
   }
 
-  private async dispatch(text: string): Promise<string | void> {
+  private async dispatch(text: string, docString?: string): Promise<string | void> {
     let match: RegExpMatchArray | null;
 
     // ─── Reset state ───
@@ -133,17 +134,25 @@ export class TestRunner {
       return;
     }
 
-    // ─── Utility: create file with content ───
+    // ─── Utility: create file with content (inline) ───
     match = text.match(/^a file "([^"]+)" exists with content "([^"]+)"$/);
     if (match) { this.createFile(match[1], match[2]); return; }
+
+    // ─── Utility: create file with content (doc string) ───
+    match = text.match(/^a file "([^"]+)" exists with content:?$/);
+    if (match && docString !== undefined) { this.createFile(match[1], docString); return; }
 
     // ─── Utility: create empty file ───
     match = text.match(/^a file "([^"]+)" exists$/);
     if (match) { this.createFile(match[1], ''); return; }
 
-    // ─── Utility: create temp file with content ───
+    // ─── Utility: create temp file with content (inline) ───
     match = text.match(/^a temp file "([^"]+)" exists with content "([^"]+)"$/);
     if (match) { this.createTempFile(match[1], match[2]); return; }
+
+    // ─── Utility: create temp file with content (doc string) ───
+    match = text.match(/^a temp file "([^"]+)" exists with content:?$/);
+    if (match && docString !== undefined) { this.createTempFile(match[1], docString); return; }
 
     // ─── Utility: create empty temp file ───
     match = text.match(/^a temp file "([^"]+)" exists$/);
@@ -193,7 +202,19 @@ export class TestRunner {
 
     // ─── InputBox ───
     match = text.match(/^I type "([^"]+)" into the InputBox$/);
-    if (match) { await this.client.respondToInputBox(match[1]); return; }
+    if (match) {
+      const result = await this.client.respondToInputBox(match[1]) as { entered: string; intercepted?: boolean };
+      if (result.intercepted === false) {
+        // Monkey-patch didn't fire — use CDP to type into the focused InputBox
+        // DOM element directly. This handles extensions that cached the original
+        // showInputBox reference before the controller's patch was installed.
+        const cdp = await this.requireCdp();
+        await cdp.insertText(match[1]);
+        await delay(100);
+        await cdp.pressKey('Enter');
+      }
+      return;
+    }
 
     // ─── Dialog ───
     match = text.match(/^I click "([^"]+)" on the dialog$/);

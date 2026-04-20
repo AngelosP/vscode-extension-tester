@@ -5,6 +5,9 @@ vi.mock('vscode', () => ({
   commands: {
     executeCommand: vi.fn().mockResolvedValue(undefined),
   },
+  window: {
+    showInputBox: vi.fn().mockImplementation(() => new Promise(() => {})),
+  },
 }));
 
 import { UIInterceptor } from '../src/ui-interceptor.js';
@@ -38,21 +41,53 @@ describe('UIInterceptor', () => {
   });
 
   describe('respondToInputBox()', () => {
-    it('should focus QuickInput, type the value, and accept', async () => {
+    it('should intercept showInputBox and resolve with provided value', async () => {
+      // Underlying showInputBox hangs (simulates open InputBox waiting for input)
+      vscode.window.showInputBox.mockImplementation(() => new Promise(() => {}));
+
+      const disposables = interceptor.register();
+
+      // Simulate the extension under test calling showInputBox
+      const extensionPromise = vscode.window.showInputBox({ prompt: 'Enter URL' });
+
+      // Respond programmatically
+      const result = await interceptor.respondToInputBox('https://example.com');
+
+      expect(result).toEqual({ entered: 'https://example.com', intercepted: true });
+
+      // The extension's await showInputBox() should have resolved with our value
+      const extensionResult = await extensionPromise;
+      expect(extensionResult).toBe('https://example.com');
+
+      // closeQuickOpen should have been called to dismiss the visual InputBox
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+        'workbench.action.closeQuickOpen'
+      );
+
+      disposables.forEach((d: any) => d.dispose());
+    });
+
+    it('should return intercepted:false when no InputBox was intercepted', async () => {
+      // No register() call — no monkey-patch installed
       const result = await interceptor.respondToInputBox('hello world');
 
-      expect(result).toEqual({ entered: 'hello world' });
+      expect(result).toEqual({ entered: 'hello world', intercepted: false });
 
-      // Verify call order: quickOpenSelectNext first, then type, then accept
-      const calls = vscode.commands.executeCommand.mock.calls;
-      const focusIdx = calls.findIndex((c: any[]) => c[0] === 'workbench.action.quickOpenSelectNext');
-      const typeIdx = calls.findIndex((c: any[]) => c[0] === 'type');
-      const acceptIdx = calls.findIndex((c: any[]) => c[0] === 'workbench.action.acceptSelectedQuickOpenItem');
+      // Should NOT have called any commands (caller will use CDP instead)
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalled();
+    });
 
-      expect(focusIdx).toBeGreaterThanOrEqual(0);
-      expect(typeIdx).toBeGreaterThan(focusIdx);
-      expect(acceptIdx).toBeGreaterThan(typeIdx);
-      expect(vscode.commands.executeCommand).toHaveBeenCalledWith('type', { text: 'hello world' });
+    it('should track lastInputBoxPrompt from intercepted call', async () => {
+      vscode.window.showInputBox.mockImplementation(() => new Promise(() => {}));
+
+      const disposables = interceptor.register();
+      vscode.window.showInputBox({ prompt: 'Enter URL', placeHolder: 'https://...' });
+
+      expect(interceptor.getLastInputBoxPrompt()).toBe('Enter URL');
+
+      // Clean up (resolve pending to avoid hanging)
+      await interceptor.respondToInputBox('test');
+      disposables.forEach((d: any) => d.dispose());
     });
   });
 
@@ -93,6 +128,21 @@ describe('UIInterceptor', () => {
     it('should return an array of disposables', () => {
       const disposables = interceptor.register();
       expect(Array.isArray(disposables)).toBe(true);
+      expect(disposables.length).toBeGreaterThan(0);
+      // Clean up
+      disposables.forEach((d: any) => d.dispose());
+    });
+
+    it('should monkey-patch vscode.window.showInputBox', () => {
+      const originalFn = vscode.window.showInputBox;
+      const disposables = interceptor.register();
+
+      // showInputBox should now be a different function (the wrapper)
+      expect(vscode.window.showInputBox).not.toBe(originalFn);
+
+      // Disposing should restore the original
+      disposables.forEach((d: any) => d.dispose());
+      expect(vscode.window.showInputBox).toBe(originalFn);
     });
   });
 

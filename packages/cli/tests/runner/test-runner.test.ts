@@ -102,7 +102,7 @@ function createMockClient(): ControllerClient {
     executeCommand: vi.fn().mockResolvedValue({ executed: true }),
     startCommand: vi.fn().mockResolvedValue({ started: true, commandId: 'test' }),
     respondToQuickPick: vi.fn().mockResolvedValue({ selected: '' }),
-    respondToInputBox: vi.fn().mockResolvedValue({ entered: '' }),
+    respondToInputBox: vi.fn().mockResolvedValue({ entered: '', intercepted: true }),
     respondToDialog: vi.fn().mockResolvedValue({ clicked: '' }),
     getState: vi.fn().mockResolvedValue({
       activeEditor: { fileName: 'test.ts', languageId: 'typescript', content: 'test content', isDirty: false },
@@ -577,6 +577,22 @@ describe('TestRunner', () => {
 
       expect(fs.existsSync(filePath)).toBe(true);
       expect(fs.readFileSync(filePath, 'utf-8')).toBe('hello world');
+    });
+
+    it('should create a file with doc string content (for JSON / quotes)', async () => {
+      const filePath = path.join(tmpDir, 'test-json.sqlx');
+      const jsonContent = '{"kind":"sqlx","version":1,"state":{"sections":[{"type":"sql","query":"SELECT 1"}]}}';
+
+      const feature = makeFeature('Test', [
+        makeScenario('Create JSON File', [
+          { keyword: 'Given ', text: `a file "${filePath}" exists with content:`, docString: jsonContent },
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(fs.existsSync(filePath)).toBe(true);
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe(jsonContent);
     });
 
     it('should create an empty file', async () => {
