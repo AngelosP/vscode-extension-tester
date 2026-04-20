@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { TestRunResult, FeatureResult, ScenarioResult, StepResult } from '../types.js';
+import type { TestRunResult, FeatureResult, ScenarioResult, StepResult, RunMetadata } from '../types.js';
 
 /**
  * Print test results to console with colors, or as JSON/HTML.
@@ -72,18 +72,34 @@ ${f.scenarios.map((s) => `
 
 /**
  * Write a Markdown report file and return its path.
+ * Uses a timestamped filename so that previous reports are not overwritten.
  */
-export function writeReportFile(result: TestRunResult, extensionPath: string): string {
+export function writeReportFile(result: TestRunResult, extensionPath: string, metadata?: RunMetadata): string {
   const dir = path.resolve(extensionPath, 'tests', 'vscode-extension-tester', 'results');
   fs.mkdirSync(dir, { recursive: true });
 
-  const reportPath = path.join(dir, 'report.md');
-  const md = generateMarkdown(result);
+  const suffix = metadata ? `-${toFileTimestamp(metadata.timestamp)}` : '';
+  const reportPath = path.join(dir, `report${suffix}.md`);
+  const md = generateMarkdown(result, metadata);
   fs.writeFileSync(reportPath, md, 'utf-8');
   return reportPath;
 }
 
-function generateMarkdown(result: TestRunResult, screenshots?: string[], runDirRel?: string): string {
+/** Convert an ISO timestamp to a filesystem-safe string: YYYYMMDD-HHmmss. */
+export function toFileTimestamp(iso: string): string {
+  return iso.replace(/[-:]/g, '').replace('T', '-').replace(/\..*$/, '').slice(0, 15);
+}
+
+function generateMarkdown(result: TestRunResult, metadataOrScreenshots?: RunMetadata | string[], screenshots?: string[], runDirRel?: string): string {
+  // Overload: legacy callers pass (result, screenshots?, runDirRel?)
+  let metadata: RunMetadata | undefined;
+  if (Array.isArray(metadataOrScreenshots)) {
+    screenshots = metadataOrScreenshots;
+    metadata = undefined;
+  } else {
+    metadata = metadataOrScreenshots;
+  }
+
   const total = result.totalPassed + result.totalFailed + result.totalSkipped;
   const status = result.totalFailed === 0 ? 'All Passed' : `${result.totalFailed} Failed`;
   const lines: string[] = [
@@ -92,6 +108,24 @@ function generateMarkdown(result: TestRunResult, screenshots?: string[], runDirR
     `${result.totalPassed} passed, ${result.totalFailed} failed, ${result.totalSkipped} skipped (${result.durationMs}ms)`,
     '',
   ];
+
+  if (metadata) {
+    lines.push(
+      '## Run Information', '',
+      `| Field | Value |`,
+      `|-------|-------|`,
+      `| **Generated** | ${metadata.timestamp} |`,
+      `| **Command** | \`${metadata.cliCommand}\` |`,
+      `| **Entry point** | ${metadata.entryPoint} |`,
+      `| **Working directory** | \`${metadata.cwd}\` |`,
+    );
+    const opts = metadata.options;
+    const optsKeys = Object.keys(opts).filter(k => opts[k] !== undefined && opts[k] !== false && opts[k] !== '');
+    if (optsKeys.length > 0) {
+      lines.push(`| **Effective options** | ${optsKeys.map(k => `\`${k}=${String(opts[k])}\``).join(', ')} |`);
+    }
+    lines.push('');
+  }
 
   for (const feature of result.features) {
     lines.push(`## ${feature.name}`, '');
@@ -138,6 +172,7 @@ export function writeRunArtifacts(
   runId: string,
   featureFiles: string[],
   consoleOutput: string,
+  metadata?: RunMetadata,
 ): void {
   const runDir = path.join(cwd, 'tests', 'vscode-extension-tester', 'runs', runId);
   fs.mkdirSync(runDir, { recursive: true });
@@ -145,12 +180,13 @@ export function writeRunArtifacts(
   // Find screenshot files already in the run dir
   const screenshots = fs.readdirSync(runDir).filter(f => f.endsWith('.png')).sort();
 
-  // results.json - include screenshot paths
+  // results.json - include screenshot paths and run metadata
   const resultsWithScreenshots = {
     ...result,
     runId,
     runDir: path.relative(cwd, runDir),
     screenshots: screenshots.map(f => path.join(path.relative(cwd, runDir), f)),
+    ...(metadata ? { metadata } : {}),
   };
   fs.writeFileSync(
     path.join(runDir, 'results.json'),
@@ -158,8 +194,8 @@ export function writeRunArtifacts(
     'utf-8',
   );
 
-  // report.md - include screenshot listing
-  const md = generateMarkdown(result, screenshots, path.relative(cwd, runDir));
+  // report.md - include screenshot listing and metadata
+  const md = generateMarkdown(result, metadata, screenshots, path.relative(cwd, runDir));
   fs.writeFileSync(path.join(runDir, 'report.md'), md, 'utf-8');
 
   // console.log - structured output log split by scenario/step

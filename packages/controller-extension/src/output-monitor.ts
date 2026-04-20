@@ -1,18 +1,19 @@
 import * as vscode from 'vscode';
 
 /**
- * Captures output channel content.
+ * Captures the controller extension's own output channel content.
  *
- * The controller's own channel is captured directly via `appendContent()`.
+ * For OTHER extensions' output channels, the CLI reads them directly via CDP
+ * (Chrome DevTools Protocol) — accessing VS Code's renderer internals to
+ * discover channel backing files and reading them from the filesystem.
+ * The extension host cannot read other extensions' output channels due to
+ * API sandboxing.
  *
- * For OTHER extensions' channels, VS Code provides no API to read their
- * content from the extension host. The `readChannel(name)` method works
- * around this by:
- *   1. Showing the output panel focused on the named channel
- *   2. Scanning `workspace.textDocuments` for the newly visible `output:` doc
- *   3. Reading its full text
- *
- * This is on-demand — called when a test assertion needs a channel's content.
+ * This class provides:
+ * - `appendContent()` — direct write to the buffer (used by extension.ts)
+ * - Passive capture via `onDidChangeTextDocument` for `output:` scheme docs
+ *   (fires only for channels that have been shown in the output panel)
+ * - `startCapture(name)` — allow-list mode for targeted channel capture
  */
 export class OutputMonitor {
   private readonly channels = new Map<string, string>();
@@ -21,26 +22,20 @@ export class OutputMonitor {
 
   register(): vscode.Disposable[] {
     this._diag.push(`register() called at ${new Date().toISOString()}`);
-
     const disposables: vscode.Disposable[] = [];
 
-    // Listen for output document changes (fires once a channel is shown)
+    // Passive capture: fires for output docs that are shown in the panel
     disposables.push(
       vscode.workspace.onDidChangeTextDocument((e) => {
         if (e.document.uri.scheme !== 'output') return;
         const name = this.channelNameFromUri(e.document.uri);
-        if (name) {
-          this.channels.set(name, e.document.getText());
-        }
+        if (name) this.channels.set(name, e.document.getText());
       }),
-    );
-
-    disposables.push(
       vscode.workspace.onDidOpenTextDocument((doc) => {
         if (doc.uri.scheme !== 'output') return;
         const name = this.channelNameFromUri(doc.uri);
         if (name) {
-          this._diag.push(`output doc opened: "${name}" uri=${doc.uri.toString()}`);
+          this._diag.push(`output doc opened: "${name}"`);
           this.channels.set(name, doc.getText());
         }
       }),
@@ -50,95 +45,11 @@ export class OutputMonitor {
     return disposables;
   }
 
-  /**
-   * Actively read a channel's content by showing it in the output panel.
-   * This is the only reliable way to read channels from other extensions.
-   */
-  async readChannel(name: string): Promise<string> {
-    // 1. Try to show the output channel by executing VS Code commands.
-    //    The command `workbench.action.output.show` opens the output panel.
-    //    Then we need to switch to the right channel.
-    try {
-      // First, enumerate available output channels by looking for known commands
-      // and text documents. Show the output panel first.
-      await vscode.commands.executeCommand('workbench.action.output.show');
-      await delay(200);
-
-      // Try to find and activate the channel by its name using the QuickPick
-      // approach: execute 'workbench.action.output.show.' + channelId
-      // We don't know the exact ID, so iterate all text documents looking for it.
-      const found = this.findOutputDoc(name);
-      if (found) {
-        this.channels.set(name, found);
-        return found;
-      }
-
-      // If not found yet, try typing the channel name into the output switcher
-      // by executing the switch command
-      await vscode.commands.executeCommand(
-        'workbench.action.output.show',
-      );
-      await delay(300);
-
-      // Scan again
-      const found2 = this.findOutputDoc(name);
-      if (found2) {
-        this.channels.set(name, found2);
-        return found2;
-      }
-    } catch (e: any) {
-      this._diag.push(`readChannel("${name}") error: ${e?.message}`);
-    }
-
-    // 2. Fallback: check our buffer (controller's own channel)
-    return this.channels.get(name) ?? '';
-  }
-
-  /**
-   * Scan workspace.textDocuments for an output-scheme doc matching the name.
-   */
-  private findOutputDoc(name: string): string | undefined {
-    const lower = name.toLowerCase();
-    for (const doc of vscode.workspace.textDocuments) {
-      if (doc.uri.scheme !== 'output') continue;
-      const uri = doc.uri.toString().toLowerCase();
-      const docName = this.channelNameFromUri(doc.uri);
-      if (
-        docName?.toLowerCase() === lower ||
-        uri.includes(lower.replace(/\s+/g, '-')) ||
-        uri.includes(lower.replace(/\s+/g, ''))
-      ) {
-        this._diag.push(`findOutputDoc("${name}"): found uri=${doc.uri.toString()} len=${doc.getText().length}`);
-        return doc.getText();
-      }
-    }
-
-    // Log what we DID find for debugging
-    const allOutputDocs = vscode.workspace.textDocuments.filter(d => d.uri.scheme === 'output');
-    if (allOutputDocs.length > 0) {
-      this._diag.push(`findOutputDoc("${name}"): not found. Available output docs:`);
-      for (const d of allOutputDocs) {
-        this._diag.push(`  ${d.uri.toString()} (${d.getText().length} chars)`);
-      }
-    } else {
-      this._diag.push(`findOutputDoc("${name}"): no output docs in workspace.textDocuments`);
-    }
-    return undefined;
-  }
-
-  /**
-   * Extract the channel name from an output document URI.
-   */
   private channelNameFromUri(uri: vscode.Uri): string | undefined {
     const raw = uri.path || uri.fragment || uri.fsPath || '';
-
-    // Pattern: "extension-output-<ext-id>-#<N>-<Channel Name>"
     const extMatch = raw.match(/-#\d+-(.+)$/);
     if (extMatch) return extMatch[1];
-
-    // Pattern: just the channel name directly
     if (raw && !raw.includes('/')) return raw;
-
     return uri.authority || raw || undefined;
   }
 
@@ -176,9 +87,7 @@ export class OutputMonitor {
   }
 
   clearAll(): void {
-    for (const name of this.channels.keys()) {
-      this.channels.set(name, '');
-    }
+    for (const name of this.channels.keys()) this.channels.set(name, '');
   }
 
   getOffset(name: string): number {
@@ -187,13 +96,7 @@ export class OutputMonitor {
 
   getDiagnostics(): { diag: string[]; channelSummary: Record<string, number> } {
     const channelSummary: Record<string, number> = {};
-    for (const [name, content] of this.channels) {
-      channelSummary[name] = content.length;
-    }
+    for (const [name, content] of this.channels) channelSummary[name] = content.length;
     return { diag: this._diag, channelSummary };
   }
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

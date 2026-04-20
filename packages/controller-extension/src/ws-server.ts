@@ -143,8 +143,8 @@ export class WSServer {
         return this.services.outputMonitor.listChannels();
       case 'readOutputChannel': {
         const name = p['name'] as string;
-        const content = await this.services.outputMonitor.readChannel(name);
-        return { name, content, captured: content.length > 0 };
+        const result = this.services.outputMonitor.getContent(name);
+        return { name, content: result.content, captured: result.captured };
       }
       case 'getCapturedChannels':
         return this.services.outputMonitor.getCapturedChannels();

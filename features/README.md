@@ -19,11 +19,12 @@ tests/vscode-extension-tester/
     sql-authenticated-profile/  # Features that require a pre-authenticated profile
       sql-auth/
         connection.feature
-  runs/                         # Artifacts (gitignored)
+  runs/                         # Artifacts (gitignored, timestamped)
     default/
       smoke-test/
-        report.md
-        results.json
+        20260419-213200/
+          report.md
+          results.json
 ```
 
 The reserved folder name `default` is used when no `--reuse-named-profile`, `--reuse-or-create-named-profile`, or `--clone-named-profile` flag is passed.

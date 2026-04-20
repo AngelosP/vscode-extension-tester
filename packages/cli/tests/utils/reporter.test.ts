@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { TestRunResult } from '../../src/types.js';
+import type { TestRunResult, RunMetadata } from '../../src/types.js';
 import { printResults, writeReportFile, writeRunArtifacts } from '../../src/utils/reporter.js';
 
 function makeRunResult(overrides: Partial<TestRunResult> = {}): TestRunResult {
@@ -48,6 +48,14 @@ function makeRunResult(overrides: Partial<TestRunResult> = {}): TestRunResult {
     ...overrides,
   };
 }
+
+const testMetadata: RunMetadata = {
+  timestamp: '2026-04-19T12:30:00.000Z',
+  cliCommand: 'node vscode-ext-test.js run --extension-path .',
+  entryPoint: 'vscode-ext-test run',
+  cwd: '/test/workspace',
+  options: { extensionPath: '.', reporter: 'console', timeout: 30000 },
+};
 
 describe('reporter', () => {
   describe('printResults() console format', () => {
@@ -185,11 +193,11 @@ describe('reporter', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it('should create a report.md file', () => {
-      const reportPath = writeReportFile(makeRunResult(), tmpDir);
+    it('should create a timestamped report.md file', () => {
+      const reportPath = writeReportFile(makeRunResult(), tmpDir, testMetadata);
 
       expect(fs.existsSync(reportPath)).toBe(true);
-      expect(reportPath).toContain('report.md');
+      expect(reportPath).toContain('report-20260419-123000.md');
 
       const content = fs.readFileSync(reportPath, 'utf-8');
       expect(content).toContain('# Test Results');
@@ -198,8 +206,15 @@ describe('reporter', () => {
       expect(content).toContain('Failing scenario');
     });
 
-    it('should include pass/fail icons in markdown', () => {
+    it('should fall back to report.md when no metadata is provided', () => {
       const reportPath = writeReportFile(makeRunResult(), tmpDir);
+
+      expect(fs.existsSync(reportPath)).toBe(true);
+      expect(path.basename(reportPath)).toBe('report.md');
+    });
+
+    it('should include pass/fail icons in markdown', () => {
+      const reportPath = writeReportFile(makeRunResult(), tmpDir, testMetadata);
       const content = fs.readFileSync(reportPath, 'utf-8');
 
       // Check for emoji pass/fail indicators
@@ -208,10 +223,21 @@ describe('reporter', () => {
     });
 
     it('should include error details in markdown', () => {
-      const reportPath = writeReportFile(makeRunResult(), tmpDir);
+      const reportPath = writeReportFile(makeRunResult(), tmpDir, testMetadata);
       const content = fs.readFileSync(reportPath, 'utf-8');
 
       expect(content).toContain('Notification not found');
+    });
+
+    it('should include run metadata in markdown', () => {
+      const reportPath = writeReportFile(makeRunResult(), tmpDir, testMetadata);
+      const content = fs.readFileSync(reportPath, 'utf-8');
+
+      expect(content).toContain('## Run Information');
+      expect(content).toContain('vscode-ext-test run');
+      expect(content).toContain('2026-04-19T12:30:00.000Z');
+      expect(content).toContain('/test/workspace');
+      expect(content).toContain('node vscode-ext-test.js run --extension-path .');
     });
   });
 
@@ -231,13 +257,15 @@ describe('reporter', () => {
     });
 
     it('should write valid JSON in results.json', () => {
-      writeRunArtifacts(makeRunResult(), tmpDir, 'test-run', [], '');
+      writeRunArtifacts(makeRunResult(), tmpDir, 'test-run', [], '', testMetadata);
 
       const runDir = path.join(tmpDir, 'tests', 'vscode-extension-tester', 'runs', 'test-run');
       const json = JSON.parse(fs.readFileSync(path.join(runDir, 'results.json'), 'utf-8'));
       expect(json.totalPassed).toBe(1);
       expect(json.totalFailed).toBe(1);
       expect(json.runId).toBe('test-run');
+      expect(json.metadata).toBeDefined();
+      expect(json.metadata.cliCommand).toBe('node vscode-ext-test.js run --extension-path .');
     });
 
     it('should write console.log with output', () => {
@@ -259,6 +287,14 @@ describe('reporter', () => {
       const json = JSON.parse(fs.readFileSync(path.join(runDir, 'results.json'), 'utf-8'));
       expect(json.screenshots).toHaveLength(1);
       expect(json.screenshots[0]).toContain('1-screenshot.png');
+    });
+    it('should include metadata in run report.md', () => {
+      writeRunArtifacts(makeRunResult(), tmpDir, 'meta-run', ['test.feature'], '', testMetadata);
+
+      const runDir = path.join(tmpDir, 'tests', 'vscode-extension-tester', 'runs', 'meta-run');
+      const content = fs.readFileSync(path.join(runDir, 'report.md'), 'utf-8');
+      expect(content).toContain('## Run Information');
+      expect(content).toContain('vscode-ext-test run');
     });
   });
 });

@@ -1,10 +1,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { RunOptions, TestRunResult } from '../types.js';
+import type { RunOptions, TestRunResult, RunMetadata } from '../types.js';
 import { CONTROLLER_WS_PORT, CDP_PORT, STEP_TIMEOUT_MS, DEFAULT_FEATURES_DIR } from '../types.js';
 import { launchMode } from '../modes/ci-mode.js';
 import { attachMode } from '../modes/dev-mode.js';
-import { printResults, writeReportFile, writeRunArtifacts } from '../utils/reporter.js';
+import { printResults, writeReportFile, writeRunArtifacts, toFileTimestamp } from '../utils/reporter.js';
 import { profileExists, getProfileDir, getProfileUserDataDir } from '../profile.js';
 import { buildExtension } from '../build.js';
 
@@ -39,7 +39,8 @@ export async function runCommand(opts: Record<string, string | boolean>): Promis
     // ─── Resolve paths ───
     const cwd = path.resolve(options.extensionPath);
     const effectiveProfile = getEffectiveProfile(options);
-    const { featuresDir, runDir, artifactRunId } = resolvePaths(cwd, options, effectiveProfile);
+    const timestamp = new Date().toISOString();
+    const { featuresDir, runDir, artifactRunId } = resolvePaths(cwd, options, effectiveProfile, timestamp);
 
     // Verify features exist
     if (!fs.existsSync(featuresDir)) {
@@ -79,9 +80,29 @@ export async function runCommand(opts: Record<string, string | boolean>): Promis
     }
 
     // ─── Report ───
+    const metadata: RunMetadata = {
+      timestamp,
+      cliCommand: process.argv.join(' '),
+      entryPoint: 'vscode-ext-test run',
+      cwd,
+      options: {
+        attachDevhost: options.attachDevhost,
+        extensionPath: options.extensionPath,
+        features: options.features,
+        testId: options.testId,
+        vscodeVersion: options.vscodeVersion,
+        reporter: options.reporter,
+        timeout: options.timeout,
+        record: options.record,
+        recordOnFailure: options.recordOnFailure,
+        build: options.build,
+        paused: options.paused,
+      },
+    };
+
     printResults(result, options.reporter);
-    writeReportFile(result, options.extensionPath);
-    writeRunArtifacts(result, cwd, artifactRunId, featureFiles, '');
+    writeReportFile(result, options.extensionPath, metadata);
+    writeRunArtifacts(result, cwd, artifactRunId, featureFiles, '', metadata);
 
     console.log(`\nArtifacts written to: ${path.relative(cwd, runDir)}/\n`);
 
@@ -201,18 +222,21 @@ function resolvePaths(
   cwd: string,
   options: RunOptions,
   effectiveProfile: string,
+  timestamp: string,
 ): { featuresDir: string; runDir: string; artifactRunId: string } {
+  const ts = toFileTimestamp(timestamp);
+
   if (options.testId) {
     // New convention: e2e/<profile>/<test-id>/
     const featuresDir = path.join(cwd, options.features, effectiveProfile, options.testId);
-    const artifactRunId = `${effectiveProfile}/${options.testId}`;
-    const runDir = path.join(cwd, 'tests', 'vscode-extension-tester', 'runs', effectiveProfile, options.testId);
+    const artifactRunId = `${effectiveProfile}/${options.testId}/${ts}`;
+    const runDir = path.join(cwd, 'tests', 'vscode-extension-tester', 'runs', effectiveProfile, options.testId, ts);
     return { featuresDir, runDir, artifactRunId };
   }
 
   // Backward-compatible: use --features directly
   const featuresDir = path.resolve(cwd, options.features);
-  const artifactRunId = 'latest';
+  const artifactRunId = ts;
   const runDir = path.join(cwd, 'tests', 'vscode-extension-tester', 'runs', artifactRunId);
   return { featuresDir, runDir, artifactRunId };
 }

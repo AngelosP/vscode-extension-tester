@@ -104,6 +104,15 @@ export interface NotificationInfo {
   readonly source?: string;
 }
 
+/** Metadata about how a test run was invoked (embedded in reports & artifacts). */
+export interface RunMetadata {
+  readonly timestamp: string;
+  readonly cliCommand: string;
+  readonly entryPoint: string;
+  readonly cwd: string;
+  readonly options: Record<string, unknown>;
+}
+
 /** CLI run options. */
 export interface RunOptions {
   // ─── Execution mode ───

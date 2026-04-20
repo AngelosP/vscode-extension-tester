@@ -4,6 +4,17 @@ import type { ParsedFeature, ParsedScenario, ParsedStep } from '../../src/runner
 import { TestRunner } from '../../src/runner/test-runner.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import {
+  WEBVIEW_BODY_TEXT,
+  DATA_TABLE_TOOLBAR_TEXT,
+  DATA_TABLE_BODY_TEXT,
+  DATA_TABLE_EMPTY_TEXT,
+  DATA_TABLE_NO_DATA_TEXT,
+  SQL_FORM_BODY_TEXT,
+  SECTION_SHELL_HEADER_TEXT,
+  OUTPUT_CHANNEL_ACTIVATION,
+  SELECTORS,
+} from './fixtures/kusto-workbench-html.js';
 
 // Mock the env module
 vi.mock('../../src/agent/env.js', () => ({
@@ -51,6 +62,9 @@ function resetMockCdp(): void {
     clickInWebviewBySelector: vi.fn().mockResolvedValue(undefined),
     focusInWebviewBySelector: vi.fn().mockResolvedValue(undefined),
     scrollInWebview: vi.fn().mockResolvedValue(undefined),
+    evaluate: vi.fn().mockResolvedValue(null),
+    getOutputChannelDescriptors: vi.fn().mockResolvedValue([]),
+    readOutputChannelContent: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -1251,6 +1265,446 @@ describe('TestRunner', () => {
       const result = await runner.runFeature(feature);
       expect(result.scenarios[0].status).toBe('failed');
       expect(result.scenarios[0].steps[0].error?.message).toContain('does not contain');
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Real-world scenarios using Kusto Workbench HTML fixtures
+  //
+  // These tests use realistic content derived from the Kusto Workbench
+  // extension's webview components (queryEditor.html, kw-data-table,
+  // kw-sql-connection-form, kw-section-shell).
+  //
+  // Step coverage:
+  //   - I should see notification           → extension lifecycle tests
+  //   - I should not see notification        → extension lifecycle tests
+  //   - the output channel should contain    → extension lifecycle tests
+  //   - the output channel should not contain → extension lifecycle tests
+  //   - the output channel should have been captured → extension lifecycle tests
+  //   - the webview should contain           → webview body text tests
+  //   - the webview "title" should contain   → webview body text tests
+  //   - element "sel" should exist           → data table + SQL form tests
+  //   - element "sel" should not exist       → data table tests
+  //   - element "sel" should have text       → data table + SQL form tests
+  //   - I evaluate "js" in the webview       → multi-step workflow test
+  //   - I wait for "sel" in the webview      → multi-step workflow test
+  //   - I click "sel" in the webview         → multi-step workflow test
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe('real-world scenarios (Kusto Workbench fixtures)', () => {
+    // ─── Extension lifecycle ───────────────────────────────────────────────
+
+    describe('extension lifecycle', () => {
+      it('should detect activation notification', async () => {
+        (client.getNotifications as any).mockResolvedValue([
+          { message: 'Kusto Workbench activated', severity: 'info' },
+        ]);
+
+        const feature = makeFeature('Kusto Activation', [
+          makeScenario('Activation', [
+            makeStep('Then ', 'I should see notification "Kusto Workbench activated"'),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+      });
+
+      it('should verify no error notifications after activation', async () => {
+        (client.getNotifications as any).mockResolvedValue([
+          { message: 'Kusto Workbench activated', severity: 'info' },
+        ]);
+
+        const feature = makeFeature('No Errors', [
+          makeScenario('Clean Activation', [
+            makeStep('Then ', 'I should not see notification "error"'),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+      });
+
+      it('should verify output channel contains activation log', async () => {
+        (client.getOutputChannel as any).mockResolvedValue({
+          name: 'Kusto Workbench',
+          content: OUTPUT_CHANNEL_ACTIVATION,
+        });
+
+        const feature = makeFeature('Output Check', [
+          makeScenario('Activation Log', [
+            makeStep('Then ', 'the output channel "Kusto Workbench" should contain "Extension activated successfully"'),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+      });
+
+      it('should verify output channel does NOT contain errors', async () => {
+        (client.getOutputChannel as any).mockResolvedValue({
+          name: 'Kusto Workbench',
+          content: OUTPUT_CHANNEL_ACTIVATION,
+        });
+
+        const feature = makeFeature('No Errors in Output', [
+          makeScenario('Clean Output', [
+            makeStep('Then ', 'the output channel "Kusto Workbench" should not contain "ERROR"'),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+      });
+
+      it('should verify output channel was captured', async () => {
+        (client.getOutputChannel as any).mockResolvedValue({
+          name: 'Kusto Workbench',
+          content: OUTPUT_CHANNEL_ACTIVATION,
+        });
+
+        const feature = makeFeature('Captured', [
+          makeScenario('Channel Captured', [
+            makeStep('Then ', 'the output channel "Kusto Workbench" should have been captured'),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+      });
+    });
+
+    // ─── Webview body text ─────────────────────────────────────────────────
+
+    describe('webview body text', () => {
+      it('should find section type buttons in webview body', async () => {
+        getMockCdp().getWebviewBodyText.mockResolvedValue(WEBVIEW_BODY_TEXT);
+
+        const feature = makeFeature('Body Text', [
+          makeScenario('Section Buttons', [
+            makeStep('Then ', 'the webview should contain "Kusto"'),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+        expect(getMockCdp().getWebviewBodyText).toHaveBeenCalledWith(undefined);
+      });
+
+      it('should find "Transformation" in webview body', async () => {
+        getMockCdp().getWebviewBodyText.mockResolvedValue(WEBVIEW_BODY_TEXT);
+
+        const feature = makeFeature('Body Text', [
+          makeScenario('Transformation Button', [
+            makeStep('Then ', 'the webview should contain "Transformation"'),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+      });
+
+      it('should find text in titled webview', async () => {
+        getMockCdp().getWebviewBodyText.mockResolvedValue(WEBVIEW_BODY_TEXT);
+
+        const feature = makeFeature('Titled Webview', [
+          makeScenario('Titled', [
+            makeStep('Then ', 'the webview "Kusto Query Editor" should contain "Ask for a fix or feature"'),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+        expect(getMockCdp().getWebviewBodyText).toHaveBeenCalledWith('Kusto Query Editor');
+      });
+
+      it('should fail when webview does not contain expected text', async () => {
+        getMockCdp().getWebviewBodyText.mockResolvedValue(WEBVIEW_BODY_TEXT);
+
+        const feature = makeFeature('Negative', [
+          makeScenario('Not Found', [
+            makeStep('Then ', 'the webview should contain "MongoDB"'),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('failed');
+        expect(result.scenarios[0].steps[0].error?.message).toContain('not found in any webview');
+      });
+
+      it('should find empty state text in data table webview', async () => {
+        getMockCdp().getWebviewBodyText.mockResolvedValue(DATA_TABLE_EMPTY_TEXT);
+
+        const feature = makeFeature('Empty Table', [
+          makeScenario('No Rows', [
+            makeStep('Then ', 'the webview should contain "No matching rows"'),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+      });
+
+      it('should find "No data" text when query returns nothing', async () => {
+        getMockCdp().getWebviewBodyText.mockResolvedValue(DATA_TABLE_NO_DATA_TEXT);
+
+        const feature = makeFeature('No Data', [
+          makeScenario('No Data', [
+            makeStep('Then ', 'the webview should contain "No data"'),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+      });
+    });
+
+    // ─── Data table DOM ────────────────────────────────────────────────────
+
+    describe('data table DOM', () => {
+      it('should find table head element', async () => {
+        // element "..." should exist → dispatches to waitForSelectorInWebview
+        getMockCdp().waitForSelectorInWebview.mockResolvedValue(undefined);
+
+        const feature = makeFeature('Data Table', [
+          makeScenario('Table Head', [
+            makeStep('Then ', `element "${SELECTORS.tableHead}" should exist`),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+        expect(getMockCdp().waitForSelectorInWebview).toHaveBeenCalledWith(
+          '#dt-head', 5_000, undefined,
+        );
+      });
+
+      it('should find first data row by data-idx attribute', async () => {
+        getMockCdp().waitForSelectorInWebview.mockResolvedValue(undefined);
+
+        const feature = makeFeature('Data Table', [
+          makeScenario('First Row', [
+            makeStep('Then ', `element "${SELECTORS.firstRow}" should exist`),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+        expect(getMockCdp().waitForSelectorInWebview).toHaveBeenCalledWith(
+          "tr[data-idx='0']", 5_000, undefined,
+        );
+      });
+
+      it('should verify empty state does not exist when data is present', async () => {
+        // element "..." should not exist → dispatches to elementExistsInWebview
+        getMockCdp().elementExistsInWebview.mockResolvedValue(false);
+
+        const feature = makeFeature('Data Table', [
+          makeScenario('Not Empty', [
+            makeStep('Then ', `element "${SELECTORS.emptyBody}" should not exist`),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+        expect(getMockCdp().elementExistsInWebview).toHaveBeenCalledWith('.empty-body', undefined);
+      });
+
+      it('should verify toolbar contains row count text', async () => {
+        getMockCdp().getTextInWebview.mockResolvedValue(DATA_TABLE_TOOLBAR_TEXT);
+
+        const feature = makeFeature('Data Table', [
+          makeScenario('Toolbar Text', [
+            makeStep('Then ', `element "${SELECTORS.toolbar}" should have text "3 rows"`),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+        expect(getMockCdp().getTextInWebview).toHaveBeenCalledWith('.hbar', undefined);
+      });
+
+      it('should detect null cell exists in results', async () => {
+        getMockCdp().waitForSelectorInWebview.mockResolvedValue(undefined);
+
+        const feature = makeFeature('Data Table', [
+          makeScenario('Null Cell', [
+            makeStep('Then ', `element "${SELECTORS.nullCell}" should exist`),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+        expect(getMockCdp().waitForSelectorInWebview).toHaveBeenCalledWith(
+          '.null-cell', 5_000, undefined,
+        );
+      });
+    });
+
+    // ─── SQL connection form ───────────────────────────────────────────────
+
+    describe('SQL connection form', () => {
+      it('should find server input by data-testid', async () => {
+        getMockCdp().waitForSelectorInWebview.mockResolvedValue(undefined);
+
+        const feature = makeFeature('SQL Form', [
+          makeScenario('Server Input', [
+            makeStep('Then ', `element "${SELECTORS.sqlConnServer}" should exist`),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+        expect(getMockCdp().waitForSelectorInWebview).toHaveBeenCalledWith(
+          "[data-testid='sql-conn-server']", 5_000, undefined,
+        );
+      });
+
+      it('should verify auth dropdown contains AAD text', async () => {
+        getMockCdp().getTextInWebview.mockResolvedValue('AAD (Default)');
+
+        const feature = makeFeature('SQL Form', [
+          makeScenario('Auth Dropdown', [
+            makeStep('Then ', `element "${SELECTORS.sqlConnAuth}" should have text "AAD"`),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+        expect(getMockCdp().getTextInWebview).toHaveBeenCalledWith("[data-testid='sql-conn-auth']", undefined);
+      });
+
+      it('should find form field labels in SQL form body text', async () => {
+        getMockCdp().getWebviewBodyText.mockResolvedValue(SQL_FORM_BODY_TEXT);
+
+        const feature = makeFeature('SQL Form', [
+          makeScenario('Form Body', [
+            makeStep('Then ', 'the webview should contain "Server URL"'),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+      });
+    });
+
+    // ─── Multi-step workflows ──────────────────────────────────────────────
+
+    describe('multi-step workflows', () => {
+      it('should run a full query-execute-verify scenario', async () => {
+        // Mock controller responses
+        (client.getNotifications as any).mockResolvedValue([]);
+        (client.getOutputChannel as any).mockResolvedValue({
+          name: 'Kusto Workbench',
+          content: OUTPUT_CHANNEL_ACTIVATION,
+        });
+
+        // Mock CDP: wait for selector resolves, evaluate resolves, body has data
+        getMockCdp().waitForSelectorInWebview.mockResolvedValue(undefined);
+        getMockCdp().evaluateInWebview.mockResolvedValue('ok');
+        getMockCdp().getWebviewBodyText.mockResolvedValue(DATA_TABLE_BODY_TEXT);
+        getMockCdp().clickInWebviewBySelector.mockResolvedValue(undefined);
+        // getTextInWebview: return different text based on selector
+        getMockCdp().getTextInWebview.mockImplementation((sel: string) => {
+          if (sel === SELECTORS.toolbar) return Promise.resolve(DATA_TABLE_TOOLBAR_TEXT);
+          return Promise.resolve(SECTION_SHELL_HEADER_TEXT);
+        });
+
+        const feature = makeFeature('Full Query Workflow', [
+          makeScenario('Run query and verify results', [
+            // 1. Reset state
+            makeStep('Given ', 'the extension is in a clean state'),
+            // 2. Execute a command
+            makeStep('When ', 'I execute command "kusto.openQueryEditor"'),
+            // 3. Wait for webview element
+            makeStep('And ', `I wait for "${SELECTORS.queriesContainer}" in the webview`),
+            // 4. Click a button in the webview
+            makeStep('And ', `I click "${SELECTORS.addKustoBtn}" in the webview`),
+            // 5. Evaluate JS in the webview
+            makeStep('And ', 'I evaluate "document.title" in the webview'),
+            // 6. Assert element exists (polls via waitForSelectorInWebview)
+            makeStep('Then ', `element "${SELECTORS.tableHead}" should exist`),
+            // 7. Assert element text
+            makeStep('And ', `element "${SELECTORS.toolbar}" should have text "3 rows"`),
+            // 8. Assert webview body text
+            makeStep('And ', 'the webview should contain "Flood"'),
+            // 9. Assert output channel
+            makeStep('And ', 'the output channel "Kusto Workbench" should contain "Extension activated"'),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+        expect(result.scenarios[0].steps).toHaveLength(9);
+        expect(result.scenarios[0].steps.every(s => s.status === 'passed')).toBe(true);
+
+        // Verify the right controller methods were called
+        expect(client.resetState).toHaveBeenCalled();
+        expect(client.executeCommand).toHaveBeenCalledWith('kusto.openQueryEditor');
+      });
+
+      it('should run an output capture and assertion workflow', async () => {
+        (client.getNotifications as any).mockResolvedValue([
+          { message: 'Query completed: 3 rows', severity: 'info' },
+        ]);
+        (client.getOutputChannel as any).mockResolvedValue({
+          name: 'Kusto Workbench',
+          content: OUTPUT_CHANNEL_ACTIVATION,
+        });
+
+        const feature = makeFeature('Output Capture Workflow', [
+          makeScenario('Capture and verify output', [
+            makeStep('Given ', 'the extension is in a clean state'),
+            makeStep('And ', 'I capture the output channel "Kusto Workbench"'),
+            makeStep('When ', 'I execute command "kusto.openQueryEditor"'),
+            makeStep('Then ', 'the output channel "Kusto Workbench" should contain "Extension activated"'),
+            makeStep('And ', 'the output channel "Kusto Workbench" should not contain "ERROR"'),
+            makeStep('And ', 'the output channel "Kusto Workbench" should have been captured'),
+            makeStep('And ', 'I should see notification "Query completed"'),
+            makeStep('And ', 'I should not see notification "failed"'),
+          ]),
+        ]);
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+        expect(result.scenarios[0].steps).toHaveLength(8);
+        expect(result.scenarios[0].steps.every(s => s.status === 'passed')).toBe(true);
+        expect(client.startCaptureChannel).toHaveBeenCalledWith('Kusto Workbench');
+      });
+
+      it('should run a scenario with background steps', async () => {
+        (client.getOutputChannel as any).mockResolvedValue({
+          name: 'Kusto Workbench',
+          content: OUTPUT_CHANNEL_ACTIVATION,
+        });
+        getMockCdp().waitForSelectorInWebview.mockResolvedValue(undefined);
+        getMockCdp().elementExistsInWebview.mockResolvedValue(false);
+        getMockCdp().getTextInWebview.mockResolvedValue(DATA_TABLE_TOOLBAR_TEXT);
+
+        const feature = makeFeature(
+          'Query Verification',
+          [
+            makeScenario('Verify table structure', [
+              makeStep('Then ', `element "${SELECTORS.tableHead}" should exist`),
+              makeStep('And ', `element "${SELECTORS.firstRow}" should exist`),
+              makeStep('And ', `element "${SELECTORS.emptyBody}" should not exist`),
+              makeStep('And ', `element "${SELECTORS.toolbar}" should have text "3 rows"`),
+            ]),
+          ],
+          // Background steps run before each scenario
+          [
+            makeStep('Given ', 'the extension is in a clean state'),
+            makeStep('And ', 'I capture the output channel "Kusto Workbench"'),
+          ],
+        );
+
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+        // 2 background + 4 scenario = 6 total steps
+        expect(result.scenarios[0].steps).toHaveLength(6);
+        expect(client.resetState).toHaveBeenCalled();
+        expect(client.startCaptureChannel).toHaveBeenCalledWith('Kusto Workbench');
+      });
     });
   });
 });

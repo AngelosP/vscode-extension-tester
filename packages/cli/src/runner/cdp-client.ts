@@ -1,4 +1,6 @@
 import CDP from 'chrome-remote-interface';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 /**
  * Chrome DevTools Protocol client for sending real input events to VS Code.
@@ -149,6 +151,206 @@ export class CdpClient {
       throw new Error(`JS eval failed: ${result.exceptionDetails.text}`);
     }
     return result.result.value;
+  }
+
+  // ─── Output channel reading (via VS Code renderer internals) ────────────
+
+  /**
+   * Discover all output channels registered in VS Code by evaluating JS in
+   * the renderer process.  Tries multiple strategies because VS Code internals
+   * vary across versions.
+   *
+   * Strategy 1: Access the OutputChannelRegistry via VS Code's AMD loader
+   * Strategy 2: Scan the logs directory for output_logging_* files
+   * Strategy 3: Scan Monaco models for `output:` scheme URIs
+   */
+  async getOutputChannelDescriptors(): Promise<Array<{
+    id: string;
+    label: string;
+    extensionId?: string;
+    file?: string;
+  }>> {
+    if (!this.client) throw new Error('CDP not connected');
+
+    // Strategy 1: Try VS Code's internal output service via AMD require
+    try {
+      const result = await this.evaluate(`
+        (async () => {
+          // Try AMD require for internal modules
+          const r = typeof require === 'function' ? require : undefined;
+          if (!r) return null;
+
+          try {
+            // VS Code >= 1.80: IOutputChannelModelService
+            const output = r('vs/workbench/services/output/common/output');
+            if (output && output.Extensions && output.Extensions.OutputChannels) {
+              const registry = r('vs/platform/registry/common/platform').Registry;
+              const channelRegistry = registry.as(output.Extensions.OutputChannels);
+              if (channelRegistry && typeof channelRegistry.getChannels === 'function') {
+                const channels = channelRegistry.getChannels();
+                return channels.map(c => ({
+                  id: c.id || '',
+                  label: c.label || '',
+                  extensionId: (c.extensionId && c.extensionId.value) || c.extensionId || null,
+                  file: (c.file && c.file.fsPath) || (c.log && c.log.fsPath) || null,
+                }));
+              }
+            }
+          } catch (e) { /* Strategy 1 sub-attempt failed */ }
+
+          return null;
+        })()
+      `);
+      if (Array.isArray(result) && result.length > 0) {
+        return result;
+      }
+    } catch { /* Strategy 1 failed entirely */ }
+
+    // Strategy 2: Find the VS Code logs directory and scan for output log files
+    try {
+      const logsDir = await this.evaluate(`
+        (() => {
+          // Try multiple ways to discover the logs path
+          try {
+            const r = typeof require === 'function' ? require : undefined;
+            if (r) {
+              try {
+                const env = r('vs/workbench/services/environment/browser/environmentService');
+                return env?.logsPath || null;
+              } catch {}
+              try {
+                const env = r('vs/platform/environment/common/environment');
+                return env?.logsPath || null;
+              } catch {}
+            }
+          } catch {}
+
+          // Check process environment (VS Code sets VSCODE_LOGS in some versions)
+          if (typeof process !== 'undefined' && process.env && process.env.VSCODE_LOGS) {
+            return process.env.VSCODE_LOGS;
+          }
+
+          return null;
+        })()
+      `) as string | null;
+
+      if (logsDir && typeof logsDir === 'string') {
+        const descriptors = this.scanLogsDirectory(logsDir);
+        if (descriptors.length > 0) return descriptors;
+      }
+    } catch { /* Strategy 2 failed */ }
+
+    // Strategy 3: Use the user-data-dir to find logs (most reliable fallback)
+    try {
+      const userDataDir = await this.evaluate(`
+        (() => {
+          // VS Code exposes the user data dir via process.env in renderer
+          if (typeof process !== 'undefined' && process.env) {
+            return process.env.VSCODE_PORTABLE ||
+                   process.env.VSCODE_APPDATA ||
+                   null;
+          }
+          return null;
+        })()
+      `) as string | null;
+
+      // Also try to get it from the window title or workbench state
+      if (!userDataDir) {
+        // As a last resort, look for --user-data-dir in process.argv
+        const argv = await this.evaluate(`
+          (() => {
+            if (typeof process !== 'undefined' && process.argv) {
+              const arg = process.argv.find(a => a.startsWith('--user-data-dir='));
+              return arg ? arg.split('=')[1] : null;
+            }
+            return null;
+          })()
+        `) as string | null;
+
+        if (argv) {
+          const logsPath = path.join(argv, 'logs');
+          const descriptors = this.scanLogsDirectory(logsPath);
+          if (descriptors.length > 0) return descriptors;
+        }
+      }
+    } catch { /* Strategy 3 failed */ }
+
+    return [];
+  }
+
+  /**
+   * Read a specific output channel's content by name.
+   * Tries CDP-discovered backing files first, then falls back.
+   */
+  async readOutputChannelContent(name: string): Promise<string | undefined> {
+    const descriptors = await this.getOutputChannelDescriptors();
+    const lower = name.toLowerCase();
+
+    // Find by label match
+    const match = descriptors.find(d => d.label.toLowerCase() === lower);
+    if (match?.file && fs.existsSync(match.file)) {
+      try {
+        return fs.readFileSync(match.file, 'utf-8');
+      } catch { /* file read failed */ }
+    }
+
+    // Try fuzzy match on all descriptors with files
+    for (const d of descriptors) {
+      if (!d.file || !fs.existsSync(d.file)) continue;
+      if (d.label.toLowerCase().includes(lower) || d.id.toLowerCase().includes(lower)) {
+        try {
+          return fs.readFileSync(d.file, 'utf-8');
+        } catch { /* continue */ }
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Scan a VS Code logs directory for output channel log files.
+   * Output log files live in subdirectories like `output_logging_<timestamp>/`.
+   * Each file is named `<N>-<ChannelName>.log`.
+   */
+  private scanLogsDirectory(logsDir: string): Array<{
+    id: string;
+    label: string;
+    file: string;
+  }> {
+    const results: Array<{ id: string; label: string; file: string }> = [];
+    if (!fs.existsSync(logsDir)) return results;
+
+    try {
+      // Look for output_logging_* subdirectories (most recent first)
+      const entries = fs.readdirSync(logsDir, { withFileTypes: true });
+      const outputDirs = entries
+        .filter(e => e.isDirectory() && e.name.startsWith('output_logging_'))
+        .map(e => e.name)
+        .sort()
+        .reverse();
+
+      // Use the most recent output_logging directory
+      const targetDir = outputDirs[0];
+      if (!targetDir) return results;
+
+      const outputLogsPath = path.join(logsDir, targetDir);
+      const logFiles = fs.readdirSync(outputLogsPath)
+        .filter(f => f.endsWith('.log'));
+
+      for (const file of logFiles) {
+        // Parse filename: "<N>-<ChannelName>.log"
+        const match = file.match(/^\d+-(.+)\.log$/);
+        if (match) {
+          results.push({
+            id: file.replace('.log', ''),
+            label: match[1],
+            file: path.join(outputLogsPath, file),
+          });
+        }
+      }
+    } catch { /* directory scan failed */ }
+
+    return results;
   }
 
   // ─── Webview-aware operations ──────────────────────────────────────────

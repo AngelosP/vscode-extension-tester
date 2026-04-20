@@ -267,10 +267,21 @@ export class TestRunner {
 
     match = text.match(/^the output channel "([^"]+)" should have been captured$/);
     if (match) {
-      const ch = await this.client.getOutputChannel(match[1]);
+      const name = match[1];
+      // Try CDP first
+      const cdpContent = await this.tryReadOutputViaCdp(name);
+      if (cdpContent !== undefined) {
+        if (!cdpContent) {
+          throw new Error(
+            `Output channel "${name}" was not captured (no content via CDP).`
+          );
+        }
+        return;
+      }
+      const ch = await this.client.getOutputChannel(name);
       if (!ch.content) {
         throw new Error(
-          `Output channel "${match[1]}" was not captured (no content). ` +
+          `Output channel "${name}" was not captured (no content). ` +
           'Make sure the controller activates before the extension creates the channel.'
         );
       }
@@ -415,6 +426,14 @@ export class TestRunner {
   }
 
   private async assertOutputContains(channelName: string, expectedText: string): Promise<void> {
+    // Try CDP first (can read ALL extensions' channels), fall back to controller
+    const content = await this.tryReadOutputViaCdp(channelName);
+    if (content !== undefined) {
+      if (!content.includes(expectedText)) {
+        throw new Error(`Output channel "${channelName}" does not contain "${expectedText}"`);
+      }
+      return;
+    }
     const output = await this.client.getOutputChannel(channelName);
     if (!output.content.includes(expectedText)) {
       throw new Error(`Output channel "${channelName}" does not contain "${expectedText}"`);
@@ -422,9 +441,30 @@ export class TestRunner {
   }
 
   private async assertOutputNotContains(channelName: string, text: string): Promise<void> {
+    const content = await this.tryReadOutputViaCdp(channelName);
+    if (content !== undefined) {
+      if (content.includes(text)) {
+        throw new Error(`Output channel "${channelName}" unexpectedly contains "${text}"`);
+      }
+      return;
+    }
     const output = await this.client.getOutputChannel(channelName);
     if (output.content.includes(text)) {
       throw new Error(`Output channel "${channelName}" unexpectedly contains "${text}"`);
+    }
+  }
+
+  /**
+   * Try to read an output channel's content via CDP (accesses VS Code renderer
+   * internals to enumerate channels and read their backing log files).
+   * Returns undefined if CDP is unavailable or the channel wasn't found.
+   */
+  private async tryReadOutputViaCdp(name: string): Promise<string | undefined> {
+    try {
+      const cdp = await this.requireCdp();
+      return await cdp.readOutputChannelContent(name);
+    } catch {
+      return undefined;
     }
   }
 
@@ -468,6 +508,22 @@ export class TestRunner {
   private async recordChannelOffsets(): Promise<void> {
     this.scenarioStartOffsets.clear();
     try {
+      // Try CDP first — discovers ALL channels including other extensions
+      const cdp = await this.requireCdp().catch(() => null);
+      if (cdp) {
+        const descriptors = await cdp.getOutputChannelDescriptors().catch(() => []);
+        for (const d of descriptors) {
+          if (d.file) {
+            try {
+              // Use character length (not byte size) to match string.slice() in dumpCapturedChannels
+              const content = fs.readFileSync(d.file, 'utf-8');
+              this.scenarioStartOffsets.set(d.label, content.length);
+            } catch { /* file may not exist yet */ }
+          }
+        }
+      }
+
+      // Also get controller-side offsets
       const names = await this.client.getOutputChannels();
       const offsets = await Promise.all(
         names.map(async (name) => {
@@ -476,7 +532,10 @@ export class TestRunner {
         }),
       );
       for (const [name, offset] of offsets) {
-        this.scenarioStartOffsets.set(name, offset);
+        // Don't overwrite CDP offset if we already have one
+        if (!this.scenarioStartOffsets.has(name)) {
+          this.scenarioStartOffsets.set(name, offset);
+        }
       }
     } catch { /* best effort */ }
   }
@@ -496,7 +555,8 @@ export class TestRunner {
     const scenarioDir = path.join(cumulativeDir, sanitizeFilename(scenarioName));
     fs.mkdirSync(scenarioDir, { recursive: true });
 
-    const [captured, allChannels, diagnostics] = await Promise.all([
+    // Gather channels from both CDP (all extensions) and controller (own channel)
+    const [controllerCaptured, controllerChannels, diagnostics] = await Promise.all([
       this.client.getCapturedChannels(),
       this.client.getOutputChannels().catch(() => [] as string[]),
       this.client.getDiagnostics().catch((e: any) => ({
@@ -505,14 +565,52 @@ export class TestRunner {
       })),
     ]);
 
+    // Try CDP to discover ALL channels (including other extensions)
+    let cdpChannels: Array<{ label: string; content: string }> = [];
+    try {
+      const cdp = await this.requireCdp().catch(() => null);
+      if (cdp) {
+        const descriptors = await cdp.getOutputChannelDescriptors();
+        for (const d of descriptors) {
+          if (d.file && fs.existsSync(d.file)) {
+            try {
+              const content = fs.readFileSync(d.file, 'utf-8');
+              if (content) {
+                cdpChannels.push({ label: d.label, content });
+              }
+            } catch { /* skip unreadable files */ }
+          }
+        }
+      }
+    } catch { /* CDP unavailable — use controller-only data */ }
+
+    // Merge: CDP channels + controller channels (controller wins for its own channel)
+    const allChannels = new Map<string, string>();
+    for (const ch of cdpChannels) {
+      allChannels.set(ch.label, ch.content);
+    }
+    for (const ch of controllerCaptured) {
+      if (ch.content) {
+        allChannels.set(ch.name, ch.content);
+      }
+    }
+
+    const knownChannelNames = Array.from(new Set([
+      ...controllerChannels,
+      ...cdpChannels.map(c => c.label),
+    ])).sort();
+
+    const capturedList = Array.from(allChannels.entries()).map(([name, content]) => ({
+      name,
+      length: content.length,
+    }));
+
     const manifest = {
       scenario: scenarioName,
-      knownChannels: allChannels,
-      capturedChannels: captured.map((ch) => ({
-        name: ch.name,
-        length: ch.content.length,
-      })),
+      knownChannels: knownChannelNames,
+      capturedChannels: capturedList,
       diagnostics,
+      cdpChannelCount: cdpChannels.length,
       timestamp: new Date().toISOString(),
     };
     fs.writeFileSync(
@@ -521,18 +619,17 @@ export class TestRunner {
       'utf-8',
     );
 
-    if (captured.length === 0) {
+    if (allChannels.size === 0) {
       return;
     }
 
-    for (const ch of captured) {
-      const file = sanitizeFilename(ch.name) + '.log';
-      // Cumulative - overwritten each scenario so it always reflects the
-      // full content captured up to and including this scenario.
-      fs.writeFileSync(path.join(cumulativeDir, file), ch.content, 'utf-8');
-      // Per-scenario delta - only the output produced during this scenario.
-      const startOffset = this.scenarioStartOffsets.get(ch.name) ?? 0;
-      const delta = ch.content.slice(startOffset);
+    for (const [name, content] of allChannels) {
+      const file = sanitizeFilename(name) + '.log';
+      // Cumulative - overwritten each scenario
+      fs.writeFileSync(path.join(cumulativeDir, file), content, 'utf-8');
+      // Per-scenario delta
+      const startOffset = this.scenarioStartOffsets.get(name) ?? 0;
+      const delta = content.slice(startOffset);
       fs.writeFileSync(path.join(scenarioDir, file), delta, 'utf-8');
     }
   }

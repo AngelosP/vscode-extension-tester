@@ -368,7 +368,7 @@ what the Dev Host looked like at that point in the test.
 
 Example:
 \\\`\\\`\\\`
-view_image("C:/Users/.../tests/vscode-extension-tester/runs/default/<test-id>/1-screenshot.png")
+view_image("C:/Users/.../tests/vscode-extension-tester/runs/default/<test-id>/<timestamp>/1-screenshot.png")
 \\\`\\\`\\\`
 
 After viewing each screenshot:
@@ -458,9 +458,10 @@ will use it to build the fix, and you can resume testing once it ships.
    vscode-ext-test run --test-id <test-id>
    \`\`\`
    This launches a fresh VS Code, executes all .feature files from
-   \`e2e/default/<test-id>/\`, and writes artifacts to \`runs/default/<test-id>/\`.
+   \`e2e/default/<test-id>/\`, and writes artifacts to \`runs/default/<test-id>/<timestamp>/\`.
+   Each run uses a unique timestamp so previous results are preserved.
 
-3. **Review artifacts** - artifacts are in \`tests/vscode-extension-tester/runs/default/<test-id>/\` (gitignored):
+3. **Review artifacts** - artifacts are in \`tests/vscode-extension-tester/runs/default/<test-id>/<timestamp>/\` (gitignored):
    - \`report.md\` - read this FIRST. It lists all results AND screenshot file paths.
    - \`results.json\` - structured results with screenshot paths.
    - \`console.log\` - structured output log per scenario/step.

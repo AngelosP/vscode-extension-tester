@@ -65,13 +65,7 @@ export class ControllerClient {
   }
 
   async getOutputChannel(name: string): Promise<{ name: string; content: string }> {
-    // Try the active-read command first (shows the channel in the output panel),
-    // fall back to the passive buffer for backward compatibility.
-    try {
-      return await (this.send('readOutputChannel', { name }) as Promise<{ name: string; content: string }>);
-    } catch {
-      return this.send('getOutputChannel', { name }) as Promise<{ name: string; content: string }>;
-    }
+    return this.send('getOutputChannel', { name }) as Promise<{ name: string; content: string }>;
   }
 
   async getOutputChannels(): Promise<string[]> {
