@@ -150,6 +150,51 @@ namespace FlaUIBridge
             return new { success = true };
         }
 
+        /// <summary>
+        /// Resize a window to the given dimensions.
+        /// Input: { windowId: string, width: double, height: double }
+        /// </summary>
+        public async Task<object> ResizeWindow(dynamic input)
+        {
+            string windowId = (string)input.windowId;
+            double width = (double)input.width;
+            double height = (double)input.height;
+
+            if (width <= 0 || height <= 0)
+                throw new Exception($"Invalid dimensions: width={width}, height={height} (must be positive)");
+
+            if (!_elementCache.TryGetValue(windowId, out var element))
+                throw new Exception($"Window {windowId} not found in cache");
+
+            var window = element.AsWindow();
+            if (!window.Patterns.Transform.IsSupported)
+                throw new Exception($"Window does not support resize (Transform pattern unavailable). It may be maximized or a system window.");
+
+            window.Patterns.Transform.Pattern.Resize(width, height);
+            return new { success = true };
+        }
+
+        /// <summary>
+        /// Move a window to the given screen coordinates.
+        /// Input: { windowId: string, x: double, y: double }
+        /// </summary>
+        public async Task<object> MoveWindow(dynamic input)
+        {
+            string windowId = (string)input.windowId;
+            double x = (double)input.x;
+            double y = (double)input.y;
+
+            if (!_elementCache.TryGetValue(windowId, out var element))
+                throw new Exception($"Window {windowId} not found in cache");
+
+            var window = element.AsWindow();
+            if (!window.Patterns.Transform.IsSupported)
+                throw new Exception($"Window does not support move (Transform pattern unavailable). It may be maximized or a system window.");
+
+            window.Patterns.Transform.Pattern.Move(x, y);
+            return new { success = true };
+        }
+
         // ─── Helpers ─────────────────────────────────────────────────
 
         private static object CacheAndSerializeWindow(AutomationElement window)

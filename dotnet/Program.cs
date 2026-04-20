@@ -45,6 +45,22 @@ while ((line = Console.ReadLine()) != null)
             "focusWindow" => await automation.FocusWindow(
                 new { windowId = p.GetProperty("windowId").GetString()! }),
 
+            "resizeWindow" => await automation.ResizeWindow(
+                new
+                {
+                    windowId = p.GetProperty("windowId").GetString()!,
+                    width = p.GetProperty("width").GetDouble(),
+                    height = p.GetProperty("height").GetDouble()
+                }),
+
+            "moveWindow" => await automation.MoveWindow(
+                new
+                {
+                    windowId = p.GetProperty("windowId").GetString()!,
+                    x = p.GetProperty("x").GetDouble(),
+                    y = p.GetProperty("y").GetDouble()
+                }),
+
             "listWindows" => await automation.ListWindows(null!),
 
             "getElementTree" => await automation.GetElementTree(

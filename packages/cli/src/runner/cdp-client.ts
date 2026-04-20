@@ -3,6 +3,37 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 /**
+ * A JS function string that finds an element by CSS selector, piercing open
+ * shadow DOM boundaries.  Tries `document.querySelector` first (fast path for
+ * light-DOM elements).  On miss, recursively walks every open `shadowRoot` and
+ * queries inside each one.
+ *
+ * Used as `(${DEEP_QS})('selector')` inside `Runtime.evaluate` expressions so
+ * it is fully self-contained (no globals, no side-effects).
+ *
+ * Limitation: closed shadow roots (`mode: 'closed'`) are invisible — there is
+ * no programmatic access to them.
+ */
+export const DEEP_QS = `function(sel) {
+  var r = document.querySelector(sel);
+  if (r) return r;
+  function walk(root) {
+    var els = root.querySelectorAll('*');
+    for (var i = 0; i < els.length; i++) {
+      var sr = els[i].shadowRoot;
+      if (sr) {
+        var found = sr.querySelector(sel);
+        if (found) return found;
+        found = walk(sr);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+  return walk(document);
+}`;
+
+/**
  * Chrome DevTools Protocol client for sending real input events to VS Code.
  * Works with any focused element - regular editors, webview Monaco, dialogs, etc.
  *
@@ -398,7 +429,7 @@ export class CdpClient {
   async clickInWebviewBySelector(selector: string, webviewTitle?: string): Promise<void> {
     const safe = escapeSelector(selector);
     const expr = `(() => {
-      const el = document.querySelector('${safe}');
+      const el = (${DEEP_QS})('${safe}');
       if (!el) return null;
       el.scrollIntoView({ block: 'center', inline: 'center' });
       if (typeof el.focus === 'function') el.focus();
@@ -413,7 +444,7 @@ export class CdpClient {
   async focusInWebviewBySelector(selector: string, webviewTitle?: string): Promise<void> {
     const safe = escapeSelector(selector);
     const expr = `(() => {
-      const el = document.querySelector('${safe}');
+      const el = (${DEEP_QS})('${safe}');
       if (!el) return null;
       el.scrollIntoView({ block: 'center', inline: 'center' });
       if (typeof el.focus === 'function') el.focus();
@@ -460,7 +491,7 @@ export class CdpClient {
         break;
     }
     const expr = `(() => {
-      const el = document.querySelector('${safe}');
+      const el = (${DEEP_QS})('${safe}');
       if (!el) return null;
       ${body}
       return true;
@@ -476,7 +507,7 @@ export class CdpClient {
     webviewTitle?: string,
   ): Promise<void> {
     const safe = escapeSelector(selector);
-    const expr = `(() => document.querySelector('${safe}') ? true : null)()`;
+    const expr = `(() => (${DEEP_QS})('${safe}') ? true : null)()`;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const found = await this.tryInWebviews(expr, webviewTitle).catch(() => false);
@@ -490,7 +521,7 @@ export class CdpClient {
   async getTextInWebview(selector: string, webviewTitle?: string): Promise<string> {
     const safe = escapeSelector(selector);
     const expr = `(() => {
-      const el = document.querySelector('${safe}');
+      const el = (${DEEP_QS})('${safe}');
       if (!el) return null;
       return el.innerText || el.textContent || '';
     })()`;
@@ -504,7 +535,7 @@ export class CdpClient {
   /** Check whether a selector exists in any matching webview. Never throws. */
   async elementExistsInWebview(selector: string, webviewTitle?: string): Promise<boolean> {
     const safe = escapeSelector(selector);
-    const expr = `(() => document.querySelector('${safe}') ? true : null)()`;
+    const expr = `(() => (${DEEP_QS})('${safe}') ? true : null)()`;
     try {
       const v = await this.tryInWebviews(expr, webviewTitle);
       return v === true;
@@ -516,7 +547,17 @@ export class CdpClient {
   /** Return the full text content of all matching webviews, joined (including nested iframes). */
   async getWebviewBodyText(webviewTitle?: string): Promise<string> {
     const targets = await this.getWebviewTargets(webviewTitle);
-    if (targets.length === 0) return '';
+    if (targets.length === 0) {
+      if (webviewTitle) {
+        const all = await this.getWebviewTargets();
+        const available = all.map((t) => `"${t.title || '(untitled)'}" (${t.url})`).join(', ') || 'none';
+        throw new Error(
+          `No webview found matching title "${webviewTitle}". Available webviews: ${available}. ` +
+          'Note: the title is matched against the HTML <title> tag, not the VS Code panel title.',
+        );
+      }
+      return '';
+    }
     const parts: string[] = [];
     for (const target of targets) {
       try {
@@ -708,7 +749,7 @@ export class CdpClient {
    */
   private async clickInWebview(safeSelector: string): Promise<boolean> {
     const expr = `(() => {
-      const el = document.querySelector('${safeSelector}');
+      const el = (${DEEP_QS})('${safeSelector}');
       if (!el) return null;
       el.scrollIntoView({ block: 'center' });
       if (typeof el.focus === 'function') el.focus();
@@ -723,7 +764,7 @@ export class CdpClient {
    */
   private async focusInWebview(safeSelector: string): Promise<boolean> {
     const expr = `(() => {
-      const el = document.querySelector('${safeSelector}');
+      const el = (${DEEP_QS})('${safeSelector}');
       if (!el) return null;
       el.scrollIntoView({ block: 'center' });
       if (typeof el.focus === 'function') el.focus();

@@ -74,6 +74,16 @@ export class NativeUIClient {
     await this.call('focusWindow', { windowId });
   }
 
+  /** Resize a window to the given dimensions. */
+  async resizeWindow(windowId: string, width: number, height: number): Promise<void> {
+    await this.call('resizeWindow', { windowId, width, height });
+  }
+
+  /** Move a window to the given screen coordinates. */
+  async moveWindow(windowId: string, x: number, y: number): Promise<void> {
+    await this.call('moveWindow', { windowId, x, y });
+  }
+
   /** List all visible windows. */
   async listWindows(): Promise<NativeWindow[]> {
     return this.call('listWindows', {}) as Promise<NativeWindow[]>;
@@ -192,6 +202,22 @@ export class NativeUIClient {
     }
     // Click to focus
     await this.clickElement(el.id);
+  }
+
+  /**
+   * Resize the Dev Host window to the given dimensions.
+   */
+  async resizeDevHost(width: number, height: number): Promise<void> {
+    const win = await this.findDevHostWindow();
+    await this.resizeWindow(win.id, width, height);
+  }
+
+  /**
+   * Move the Dev Host window to the given screen coordinates.
+   */
+  async moveDevHost(x: number, y: number): Promise<void> {
+    const win = await this.findDevHostWindow();
+    await this.moveWindow(win.id, x, y);
   }
 
   /**

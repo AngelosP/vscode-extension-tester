@@ -251,6 +251,20 @@ export class TestRunner {
       return;
     }
 
+    // ─── Native: resize window ───
+    match = text.match(/^I resize the (?:window|Dev Host) to (\d+)(?:x|\s+by\s+)(\d+)$/);
+    if (match) {
+      await this.requireNativeUI().resizeDevHost(parseInt(match[1], 10), parseInt(match[2], 10));
+      return;
+    }
+
+    // ─── Native: move window ───
+    match = text.match(/^I move the (?:window|Dev Host) to (-?\d+),?\s*(-?\d+)$/);
+    if (match) {
+      await this.requireNativeUI().moveDevHost(parseInt(match[1], 10), parseInt(match[2], 10));
+      return;
+    }
+
     // ─── Screenshot ───
     match = text.match(/^I take a screenshot(?: "([^"]+)")?$/);
     if (match) { await this.takeScreenshot(match[1]); return; }
@@ -357,6 +371,20 @@ export class TestRunner {
     match = text.match(/^I evaluate "([^"]+)" in the webview(?: "([^"]+)")?$/);
     if (match) {
       await (await this.requireCdp()).evaluateInWebview(match[1], match[2]);
+      return;
+    }
+
+    // ─── Webview: list open webviews (debugging aid) ───
+    if (/^I list the webviews$/.test(text)) {
+      const webviews = await (await this.requireCdp()).listWebviews();
+      if (webviews.length === 0) {
+        console.log('[webviews] No webviews are currently open.');
+      } else {
+        console.log(`[webviews] Found ${webviews.length} webview(s):`);
+        for (const wv of webviews) {
+          console.log(`  title="${wv.title}" url=${wv.url}`);
+        }
+      }
       return;
     }
 

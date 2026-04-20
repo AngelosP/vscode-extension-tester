@@ -65,6 +65,7 @@ function resetMockCdp(): void {
     evaluate: vi.fn().mockResolvedValue(null),
     getOutputChannelDescriptors: vi.fn().mockResolvedValue([]),
     readOutputChannelContent: vi.fn().mockResolvedValue(undefined),
+    listWebviews: vi.fn().mockResolvedValue([]),
   };
 }
 
@@ -992,6 +993,53 @@ describe('TestRunner', () => {
       expect(result.scenarios[0].status).toBe('failed');
       expect(result.scenarios[0].steps[0].error?.message).toContain('not found in any webview');
       expect(getMockCdp().getWebviewBodyText).toHaveBeenCalledWith(undefined);
+    });
+
+    it('should throw with title mismatch when titled webview not found', async () => {
+      getMockCdp().getWebviewBodyText.mockRejectedValue(
+        new Error('No webview found matching title "My Panel". Available webviews: none.'),
+      );
+
+      const feature = makeFeature('Test', [
+        makeScenario('Title Mismatch', [
+          makeStep('Then ', 'the webview "My Panel" should contain "anything"'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+      expect(result.scenarios[0].status).toBe('failed');
+      expect(result.scenarios[0].steps[0].error?.message).toContain('No webview found matching title "My Panel"');
+    });
+  });
+
+  describe('list webviews step', () => {
+    it('should pass when listing webviews', async () => {
+      getMockCdp().listWebviews.mockResolvedValue([
+        { title: 'My Webview', url: 'vscode-webview://abcd1234' },
+      ]);
+
+      const feature = makeFeature('Test', [
+        makeScenario('List', [
+          makeStep('When ', 'I list the webviews'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(getMockCdp().listWebviews).toHaveBeenCalled();
+    });
+
+    it('should pass when no webviews are open', async () => {
+      getMockCdp().listWebviews.mockResolvedValue([]);
+
+      const feature = makeFeature('Test', [
+        makeScenario('Empty', [
+          makeStep('When ', 'I list the webviews'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+      expect(result.scenarios[0].status).toBe('passed');
     });
   });
 

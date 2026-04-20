@@ -31,3 +31,4 @@ C:\Users\angelpe\source\my-tools\vscode-extension-tester\dotnet\obj\Release\net8
 C:\Users\angelpe\source\my-tools\vscode-extension-tester\dotnet\obj\Release\net8.0-windows\FlaUIBridge.pdb
 C:\Users\angelpe\source\my-tools\vscode-extension-tester\dotnet\obj\Release\net8.0-windows\FlaUIBridge.genruntimeconfig.cache
 C:\Users\angelpe\source\my-tools\vscode-extension-tester\dotnet\obj\Release\net8.0-windows\ref\FlaUIBridge.dll
+C:\Users\angelpe\source\my-tools\vscode-extension-tester\dotnet\obj\Release\net8.0-windows\FlaUIBridge.sourcelink.json

@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("FlaUIBridge")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+cb0e4cdfde3ded20566d5903b478c91645b4b50e")]
 [assembly: System.Reflection.AssemblyProductAttribute("FlaUIBridge")]
 [assembly: System.Reflection.AssemblyTitleAttribute("FlaUIBridge")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
