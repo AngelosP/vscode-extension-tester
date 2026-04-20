@@ -508,7 +508,8 @@ vscode-ext-test profile open <profile-name>
 ## Available Gherkin Steps
 
 - \`Given the extension is in a clean state\` - reset: close all editors, dismiss notifications, clear output channels
-- \`When I execute command "<command-id>"\` - run any VS Code command
+- \`When I execute command "<command-id>"\` - run any VS Code command (waits for completion)
+- \`When I start command "<command-id>"\` - start a VS Code command without waiting (use for commands that show InputBox/QuickPick dialogs, then interact with the dialog in the next step)
 - \`When I select "<label>" from the QuickPick\` - pick an item from an open QuickPick
 - \`When I type "<text>" into the InputBox\` - type into a VS Code InputBox prompt
 - \`When I click "<button>" on the dialog\` - click a button on a modal dialog

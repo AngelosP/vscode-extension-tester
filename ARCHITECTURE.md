@@ -27,7 +27,7 @@ The system has two halves that communicate over a WebSocket JSON-RPC channel:
 │  │  ┌───────▼───────────┐   │      │  │  Auth Handler          │  │ │
 │  │  │ AI Agent Loop     │   │      │  └────────────────────────┘  │ │
 │  │  │  • LLM calls      │   │      │                              │ │
-│  │  │  • 20 tools       │   │      └──────────────────────────────┘ │
+│  │  │  • 21 tools       │   │      └──────────────────────────────┘ │
 │  │  │  • Memory         │   │                                       │
 │  │  └───────────────────┘   │      ┌──────────────────────────────┐ │
 │  │                          │      │  FlaUI Bridge  (.NET, opt.)  │ │
