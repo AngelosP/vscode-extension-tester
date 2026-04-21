@@ -95,6 +95,60 @@ export class StateReader {
     this.notifications = [];
   }
 
+  /**
+   * Return info about all open webview / custom-editor tabs.
+   * Useful for mapping VS Code tab labels to CDP webview targets.
+   */
+  getWebviewTabs(): Array<{ label: string; isActive: boolean; viewType?: string }> {
+    const results: Array<{ label: string; isActive: boolean; viewType?: string }> = [];
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        const input = tab.input;
+        if (input instanceof vscode.TabInputWebview) {
+          results.push({ label: tab.label, isActive: tab.isActive, viewType: input.viewType });
+        } else if (input instanceof vscode.TabInputCustom) {
+          results.push({ label: tab.label, isActive: tab.isActive, viewType: input.viewType });
+        }
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Activate (bring to front) the first tab whose label contains `titleSubstring`
+   * (case-insensitive). Returns the matched label, or throws if no match.
+   */
+  async activateTab(titleSubstring: string): Promise<string> {
+    const needle = titleSubstring.toLowerCase();
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        if (tab.label.toLowerCase().includes(needle)) {
+          // Opening the tab input brings it to front
+          const input = tab.input;
+          if (input instanceof vscode.TabInputCustom) {
+            await vscode.window.showTextDocument(input.uri, { preview: false, preserveFocus: false });
+          } else {
+            // For webview panels and others, use the generic openEditors command
+            // by focusing the group and cycling to the tab
+            await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+            // Find index within group
+            const idx = group.tabs.indexOf(tab);
+            if (idx >= 0) {
+              // openEditorAtIndex is 1-based
+              await vscode.commands.executeCommand('workbench.action.openEditorAtIndex', idx + 1);
+            }
+          }
+          return tab.label;
+        }
+      }
+    }
+    const available = vscode.window.tabGroups.all
+      .flatMap((g) => g.tabs)
+      .map((t) => t.label)
+      .join(', ');
+    throw new Error(`No tab found matching "${titleSubstring}". Open tabs: ${available}`);
+  }
+
   private readEditor(editor: vscode.TextEditor): EditorState {
     return {
       fileName: editor.document.fileName,

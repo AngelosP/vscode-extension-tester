@@ -152,6 +152,10 @@ export class WSServer {
         return this.services.stateReader.getState();
       case 'getNotifications':
         return this.services.stateReader.getNotifications();
+      case 'getWebviewTabs':
+        return this.services.stateReader.getWebviewTabs();
+      case 'activateTab':
+        return { label: await this.services.stateReader.activateTab(p['title'] as string) };
 
       // ─── Output monitoring ───
       case 'getOutputChannel':

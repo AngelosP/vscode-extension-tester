@@ -478,7 +478,8 @@ export class TestRunner {
       } else {
         console.log(`[webviews] Found ${webviews.length} webview(s):`);
         for (const wv of webviews) {
-          console.log(`  title="${wv.title}" url=${wv.url}`);
+          const probed = wv.probedTitle ? ` probedTitle="${wv.probedTitle}"` : '';
+          console.log(`  title="${wv.title}"${probed} url=${wv.url}`);
         }
       }
       return;
@@ -716,6 +717,11 @@ export class TestRunner {
   private async requireCdp(): Promise<CdpClient> {
     if (!this.cdp) {
       this.cdp = new CdpClient(CDP_PORT);
+      // Wire controller's tab activation so CDP can bring a webview to front
+      // before probing its DOM title.
+      this.cdp.onActivateTab = async (title: string) => {
+        await this.client.activateTab(title);
+      };
     }
     if (!this.cdp.isConnected) {
       try {

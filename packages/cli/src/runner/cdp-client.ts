@@ -43,6 +43,12 @@ export const DEEP_QS = `function(sel) {
  */
 export class CdpClient {
   private client?: CDP.Client;
+  /**
+   * Optional callback to activate a VS Code tab by title before probing.
+   * Injected by the test runner so the CDP client can ask the controller
+   * extension to bring a tab to the foreground.
+   */
+  onActivateTab?: (title: string) => Promise<void>;
 
   constructor(private readonly port: number) {}
 
@@ -685,9 +691,17 @@ export class CdpClient {
   }
 
   /** List the open webviews - useful for debugging "which titles can I target?". */
-  async listWebviews(): Promise<Array<{ title: string; url: string }>> {
+  async listWebviews(): Promise<Array<{ title: string; url: string; probedTitle?: string }>> {
     const targets = await this.getWebviewTargets(undefined, 3_000);
-    return targets.map((t) => ({ title: t.title, url: t.url }));
+    const results: Array<{ title: string; url: string; probedTitle?: string }> = [];
+    for (const t of targets) {
+      let probedTitle: string | undefined;
+      try {
+        probedTitle = await this.probeDocumentTitle(t.id) ?? undefined;
+      } catch { /* skip */ }
+      results.push({ title: t.title, url: t.url, probedTitle });
+    }
+    return results;
   }
 
   // ─── Frame-aware evaluation helpers ──────────────────────────────────────
@@ -819,6 +833,12 @@ export class CdpClient {
    * If `titleFilter` is provided, only targets whose title contains the
    * substring (case-insensitive) are returned.
    *
+   * Matching strategy (tried in order):
+   * 1. **CDP title/URL** – fast, no extra connections required.
+   * 2. **DOM probe** – connects to each webview target and checks
+   *    `document.title` across all frames (handles VS Code panels whose
+   *    CDP target title doesn't match the tab label).
+   *
    * If `waitMs` is provided and no targets are found on the first attempt,
    * polls every 250ms until targets appear or the timeout expires.
    */
@@ -849,14 +869,67 @@ export class CdpClient {
         matched = webviews as Array<{ id: string; url: string; title: string }>;
       } else {
         const needle = titleFilter.toLowerCase();
+        // Fast path: match by CDP target title or URL
         matched = (webviews as Array<{ id: string; url: string; title: string }>).filter(
           (t) => (t.title ?? '').toLowerCase().includes(needle) || t.url.toLowerCase().includes(needle),
         );
+
+        // Slow path: probe document.title inside each webview's frames
+        if (matched.length === 0) {
+          // Ask the controller extension to activate the tab first (if callback set).
+          // This ensures the target webview is in the foreground so its DOM is live.
+          if (this.onActivateTab) {
+            try { await this.onActivateTab(titleFilter); } catch { /* best effort */ }
+            await delay(200); // give VS Code a moment to bring the tab to front
+          }
+          matched = await this.probeWebviewsByTitle(
+            webviews as Array<{ id: string; url: string; title: string }>,
+            needle,
+          );
+        }
       }
 
       if (matched.length > 0 || !waitMs || Date.now() >= deadline) return matched;
       await delay(250);
     }
+  }
+
+  /**
+   * Probe each webview target by evaluating `document.title` across all frames.
+   * Returns targets where any frame's document.title contains `needle`.
+   */
+  private async probeWebviewsByTitle(
+    webviews: Array<{ id: string; url: string; title: string }>,
+    needle: string,
+  ): Promise<Array<{ id: string; url: string; title: string }>> {
+    const matched: Array<{ id: string; url: string; title: string }> = [];
+    for (const wv of webviews) {
+      try {
+        const docTitle = await this.probeDocumentTitle(wv.id);
+        if (docTitle && docTitle.toLowerCase().includes(needle)) {
+          // Replace the CDP title with the probed title so downstream code sees the real name
+          matched.push({ ...wv, title: docTitle });
+        }
+      } catch {
+        // Target may not be connectable yet — skip
+      }
+    }
+    return matched;
+  }
+
+  /**
+   * Connect to a single webview target and return the first non-empty
+   * `document.title` found across all frames, or `null`.
+   */
+  private async probeDocumentTitle(targetId: string): Promise<string | null> {
+    return this.withWebviewClient(targetId, async (client) => {
+      const titles = await this.collectFromAllFrames(client, 'document.title || null');
+      for (const t of titles) {
+        const s = typeof t === 'string' ? t.trim() : '';
+        if (s) return s;
+      }
+      return null;
+    });
   }
 
 

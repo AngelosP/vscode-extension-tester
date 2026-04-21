@@ -668,7 +668,7 @@ in the extension source is part of the testing process.
 | \`When I scroll "<sel>" to the (top\\|bottom\\|left\\|right)\` | Jump to an edge |
 | \`When I scroll "<sel>" into view\` | Scroll the element itself into view |
 | \`When I evaluate "<js>" in the webview\` | Run arbitrary JS (escape hatch) |
-| \`When I list the webviews\` | Log all open webview titles and URLs (debugging aid) |
+| \`When I list the webviews\` | Log all open webview titles, probed DOM titles, and URLs (debugging aid) |
 | \`Then the webview should contain "<text>"\` | Substring match in body text |
 | \`Then the webview "<title>" should contain "<text>"\` | Restrict to a webview |
 | \`Then element "<sel>" should exist\` | Existence assertion |
@@ -676,14 +676,25 @@ in the extension source is part of the testing process.
 | \`Then element "<sel>" should have text "<text>"\` | Text content assertion |
 
 **Webview targeting.** When multiple webviews are open at once (walkthroughs,
-panels, sidebar views), pass a \`<title>\` substring to disambiguate. The match
-is case-insensitive and tested against the **HTML \`<title>\` tag** of the
-webview document and the \`vscode-webview://\` URL — **not** the VS Code panel
-title (\`WebviewPanel.title\`). These can be different! If your title isn't
-matching, use the debugging step \`When I list the webviews\` to see what
-titles and URLs the framework actually sees. Check the extension source for
-the HTML \`<title>\` set in the webview HTML template. Omit the title and the
-framework tries every webview until one matches.
+panels, sidebar views), pass a \`<title>\` substring to disambiguate. The
+framework uses a 3-tier matching strategy (all case-insensitive):
+
+1. **CDP target title / URL** — the fastest check; matches the title and URL
+   that Chrome DevTools Protocol reports for each webview target.
+2. **Tab activation** — if tier 1 misses, the framework asks VS Code to
+   activate (bring to front) the tab whose label matches, ensuring the
+   webview's DOM is live for the next step.
+3. **DOM title probe** — connects to each webview via CDP and evaluates
+   \`document.title\` across all frames (including nested cross-origin
+   iframes). This catches webviews whose CDP target title is generic but
+   whose inner HTML sets a meaningful \`<title>\`.
+
+This means **the VS Code tab label usually works as the title** — the
+framework will find it via tab activation + DOM probing even when the CDP
+target title doesn't match. If your title still isn't matching, use the
+debugging step \`When I list the webviews\` to see what titles, probed titles,
+and URLs the framework actually sees. Omit the title and the framework tries
+every webview until one matches.
 
 **Scrolling a specific section or table.** Find a stable selector for the
 container (not the page) - e.g. \`section[data-testid="results-table"] .scroll-body\`

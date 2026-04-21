@@ -117,6 +117,17 @@ export class ControllerClient {
     return this.send('handleAuth', { provider, credentials });
   }
 
+  /** Return info about all open webview / custom-editor tabs. */
+  async getWebviewTabs(): Promise<Array<{ label: string; isActive: boolean; viewType?: string }>> {
+    return this.send('getWebviewTabs') as Promise<Array<{ label: string; isActive: boolean; viewType?: string }>>;
+  }
+
+  /** Activate (bring to front) a tab whose label contains the given substring. */
+  async activateTab(title: string): Promise<string> {
+    const res = (await this.send('activateTab', { title })) as { label: string };
+    return res.label;
+  }
+
   async ping(): Promise<unknown> {
     return this.send('ping');
   }
