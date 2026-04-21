@@ -485,6 +485,28 @@ export class TestRunner {
       return;
     }
 
+    // ─── Webview: list frame contexts (debugging aid) ───
+    match = text.match(/^I list the frame contexts(?: in the webview(?: "([^"]+)")?)?$/);
+    if (match) {
+      const infos = await (await this.requireCdp()).listWebviewFrameContexts(match[1]);
+      if (infos.length === 0) {
+        console.log('[frames] No matching webview targets found.');
+      } else {
+        for (const info of infos) {
+          console.log(`[frames] target="${info.targetTitle}" url=${info.targetUrl}`);
+          for (const ctx of info.contexts) {
+            const def = ctx.isDefault ? ' (default)' : '';
+            const frame = ctx.frameId ? ` frame=${ctx.frameId}` : '';
+            console.log(`  ctx=${ctx.id} origin=${ctx.origin}${frame}${def} name=${ctx.name || '(none)'}`);
+          }
+          if (info.frameTree) {
+            console.log(`  frameTree: ${JSON.stringify(info.frameTree, null, 2)}`);
+          }
+        }
+      }
+      return;
+    }
+
     // ─── Webview assertions ───
     match = text.match(/^the webview(?: "([^"]+)")? should contain "([^"]+)"$/);
     if (match) {

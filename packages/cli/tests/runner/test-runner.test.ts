@@ -111,6 +111,7 @@ function resetMockCdp(): void {
     getOutputChannelDescriptors: vi.fn().mockResolvedValue([]),
     readOutputChannelContent: vi.fn().mockResolvedValue(undefined),
     listWebviews: vi.fn().mockResolvedValue([]),
+    listWebviewFrameContexts: vi.fn().mockResolvedValue([]),
   };
 }
 

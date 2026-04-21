@@ -33,6 +33,6 @@
     "dist/",
     "bin/",
     "assets/",
-    "templates/"
+    "src/skill/"
   ]
 }

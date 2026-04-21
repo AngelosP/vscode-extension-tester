@@ -711,11 +711,23 @@ export class CdpClient {
   // CDP lists the outer webview as a target, but the inner iframes are frames
   // within that target - not separate targets. To interact with elements in the
   // inner frames, we must enumerate all execution contexts and try each one.
+  //
+  // In VS Code ≥ 1.88, webview content may instead be served from a separate
+  // HTTPS origin and show up as its own CDP target (not a child frame). The
+  // URL filter in getWebviewTargets handles that case, but when the content IS
+  // a child frame, we still need robust frame-context discovery here.
 
   /**
    * Discover all execution context IDs within a connected CDP client.
    * Each frame (including cross-origin iframes) gets its own execution context.
-   * Re-enabling Runtime triggers `executionContextCreated` for every existing context.
+   *
+   * Strategy:
+   * 1. Re-enable Runtime to trigger `executionContextCreated` for every existing
+   *    context. Wait up to 150 ms for events.
+   * 2. If only one context was found, use `Page.getFrameTree()` to check whether
+   *    additional child frames exist. If so, wait an additional 300 ms for their
+   *    context events (inner iframes in some VS Code versions take longer to
+   *    report their execution contexts).
    */
   private async discoverFrameContextIds(client: CDP.Client): Promise<number[]> {
     const contextIds: number[] = [];
@@ -725,10 +737,20 @@ export class CdpClient {
 
     (client as any).on('Runtime.executionContextCreated', handler);
     try {
-      await client.Runtime.disable();
+      try { await client.Runtime.disable(); } catch { /* may not be enabled yet */ }
       await client.Runtime.enable();
       // Allow context-created events to be delivered (they fire asynchronously)
-      await delay(100);
+      await delay(150);
+
+      // If we found ≤ 1 context, the inner content frame may not have reported
+      // yet.  Use Page.getFrameTree() to check for additional child frames.
+      if (contextIds.length <= 1) {
+        const expectedFrames = await countTargetFrames(client);
+        if (expectedFrames > contextIds.length) {
+          // More frames exist than contexts — wait longer for late-arriving events
+          await delay(300);
+        }
+      }
     } finally {
       (client as any).removeListener('Runtime.executionContextCreated', handler);
     }
@@ -861,7 +883,7 @@ export class CdpClient {
       const webviews = targets.filter(
         (t: { type: string; url: string }) =>
           (t.type === 'page' || t.type === 'iframe') &&
-          (t.url.startsWith('vscode-webview://') || t.url.includes('webviewPanel'))
+          isWebviewUrl(t.url)
       );
 
       let matched: Array<{ id: string; url: string; title: string }>;
@@ -989,12 +1011,136 @@ export class CdpClient {
     })()`;
     return this.tryInWebviews(expr);
   }
+
+  // ─── Diagnostics ──────────────────────────────────────────────────────────
+
+  /**
+   * List frame contexts for a webview target.  Useful for debugging which
+   * execution contexts (frames) are discovered inside a webview.
+   */
+  async listWebviewFrameContexts(webviewTitle?: string): Promise<Array<{
+    targetId: string;
+    targetUrl: string;
+    targetTitle: string;
+    contexts: Array<{ id: number; origin: string; name: string; frameId?: string; isDefault?: boolean }>;
+    frameTree?: unknown;
+  }>> {
+    const targets = await this.getWebviewTargets(webviewTitle, 5_000);
+    const results: Array<{
+      targetId: string;
+      targetUrl: string;
+      targetTitle: string;
+      contexts: Array<{ id: number; origin: string; name: string; frameId?: string; isDefault?: boolean }>;
+      frameTree?: unknown;
+    }> = [];
+
+    for (const target of targets) {
+      try {
+        const info = await this.withWebviewClient(target.id, async (wv) => {
+          // Collect full context metadata
+          const contexts: Array<{
+            id: number; origin: string; name: string;
+            frameId?: string; isDefault?: boolean;
+          }> = [];
+          const handler = (params: {
+            context: {
+              id: number; origin: string; name: string;
+              auxData?: { frameId?: string; isDefault?: boolean };
+            };
+          }) => {
+            contexts.push({
+              id: params.context.id,
+              origin: params.context.origin,
+              name: params.context.name,
+              frameId: params.context.auxData?.frameId,
+              isDefault: params.context.auxData?.isDefault,
+            });
+          };
+          (wv as any).on('Runtime.executionContextCreated', handler);
+          try {
+            try { await wv.Runtime.disable(); } catch { /* */ }
+            await wv.Runtime.enable();
+            await delay(300);
+          } finally {
+            (wv as any).removeListener('Runtime.executionContextCreated', handler);
+          }
+
+          // Also try Page.getFrameTree
+          let frameTree: unknown;
+          try {
+            await (wv as any).Page.enable();
+            const result = await (wv as any).Page.getFrameTree();
+            frameTree = result.frameTree;
+            try { await (wv as any).Page.disable(); } catch { /* */ }
+          } catch { /* Page domain not available */ }
+
+          return { contexts, frameTree };
+        });
+        results.push({
+          targetId: target.id,
+          targetUrl: target.url,
+          targetTitle: target.title,
+          ...info,
+        });
+      } catch { /* skip unreachable target */ }
+    }
+    return results;
+  }
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function escapeSelector(selector: string): string {
   return selector.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+/**
+ * Use the CDP Page domain to count the total number of frames (including
+ * child iframes) inside a target.  Returns -1 if the Page domain is not
+ * available (e.g. when connected to a worker or service-worker target).
+ *
+ * Called from `discoverFrameContextIds` to detect when inner iframes exist
+ * but their execution contexts have not yet been reported via Runtime events.
+ */
+async function countTargetFrames(client: CDP.Client): Promise<number> {
+  let pageEnabled = false;
+  try {
+    await (client as any).Page.enable();
+    pageEnabled = true;
+    const { frameTree } = await (client as any).Page.getFrameTree();
+    return countFrameTreeNodes(frameTree);
+  } catch {
+    return -1;
+  } finally {
+    if (pageEnabled) {
+      try { await (client as any).Page.disable(); } catch { /* best effort */ }
+    }
+  }
+}
+
+function countFrameTreeNodes(node: any): number {
+  let count = 1; // the node's own frame
+  if (Array.isArray(node.childFrames)) {
+    for (const child of node.childFrames) {
+      count += countFrameTreeNodes(child);
+    }
+  }
+  return count;
+}
+
+/**
+ * Test whether a CDP target URL looks like a VS Code webview.
+ * Matches traditional `vscode-webview://` URLs as well as the HTTPS-based
+ * resource URLs introduced in VS Code ≥ 1.88 where webview content is served
+ * from `https://<id>.vscode-webview-resource.vscode-cdn.net/…` or similar
+ * `vscode-resource` / `vscode-webview-resource` origins.
+ */
+function isWebviewUrl(url: string): boolean {
+  return (
+    url.startsWith('vscode-webview://') ||
+    url.includes('webviewPanel') ||
+    /vscode[-.](?:webview[-.])?resource/i.test(url)
+  );
 }
 
 // ─── Key parsing ────────────────────────────────────────────────────────────
