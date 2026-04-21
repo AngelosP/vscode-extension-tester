@@ -487,6 +487,28 @@ export class TestRunner {
       return;
     }
 
+    // ─── Settings ───
+    match = text.match(/^I set setting "([^"]+)" to "([^"]+)"$/);
+    if (match) {
+      let value: unknown = match[2];
+      try { value = JSON.parse(match[2]); } catch { /* use raw string */ }
+      await this.client.setSetting(match[1], value);
+      return;
+    }
+
+    match = text.match(/^setting "([^"]+)" should be "([^"]+)"$/);
+    if (match) {
+      const result = await this.client.getSetting(match[1]);
+      let expected: unknown = match[2];
+      try { expected = JSON.parse(match[2]); } catch { /* use raw string */ }
+      if (JSON.stringify(result.value) !== JSON.stringify(expected)) {
+        throw new Error(
+          `Setting "${match[1]}" is ${JSON.stringify(result.value)}, expected ${JSON.stringify(expected)}`
+        );
+      }
+      return;
+    }
+
     // ─── Setup steps (no-ops handled by orchestrator) ───
     if (/^(VS Code is running|extension .+ is installed|recording is enabled|debug capture is enabled)/.test(text)) return;
 

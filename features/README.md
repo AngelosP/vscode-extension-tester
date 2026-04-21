@@ -81,6 +81,7 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 | `When I wait <N> seconds` | Wait for a specified duration |
 | `When I capture the output channel "<name>"` | Start capturing a specific output channel (allow-list mode) |
 | `When I stop capturing the output channel "<name>"` | Stop capturing a specific output channel |
+| `When I set setting "<key>" to "<value>"` | Set any VS Code or extension setting. Values are JSON-parsed: `"true"` → boolean, `"42"` → number, `"null"` → reset to default. Defaults to user/global scope. |
 | `When I resize the (window\|Dev Host) to <width>x<height>` | Resize the Dev Host window (also accepts `<width> by <height>`) |
 | `When I move the (window\|Dev Host) to <x>, <y>` | Move the Dev Host window (negative coords OK) |
 
@@ -93,6 +94,7 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 | `Then the output channel "<name>" should contain "<text>"` | Assert output channel content |
 | `Then the output channel "<name>" should not contain "<text>"` | Assert output channel does NOT contain text |
 | `Then the output channel "<name>" should have been captured` | Assert that any content was captured for the channel |
+| `Then setting "<key>" should be "<value>"` | Assert a VS Code setting has the expected value (JSON-parsed comparison) |
 | `Then the status bar should show "<text>"` | Assert status bar text |
 
 ## Variables

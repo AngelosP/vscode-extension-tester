@@ -161,6 +161,14 @@ export class ControllerClient {
     await this.send('pressKey', { key });
   }
 
+  async setSetting(key: string, value: unknown, target?: number): Promise<unknown> {
+    return this.send('setSetting', { key, value, target });
+  }
+
+  async getSetting(key: string): Promise<{ key: string; value: unknown }> {
+    return this.send('getSetting', { key }) as Promise<{ key: string; value: unknown }>;
+  }
+
   async resetState(): Promise<void> {
     await this.send('resetState');
   }

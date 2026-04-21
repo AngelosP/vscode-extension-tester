@@ -532,6 +532,47 @@ vscode-ext-test profile open <profile-name>
 - \`Then the output channel "<name>" should not contain "<text>"\` - assert output channel does NOT contain text
 - \`Then I wait <n> second(s)\` - pause for n seconds
 
+### Settings
+
+Change or verify any VS Code or extension-contributed setting at runtime:
+
+- \`When I set setting "<key>" to "<value>"\` - set a setting (applies to user/global scope by default)
+- \`Then setting "<key>" should be "<value>"\` - assert a setting has the expected value
+
+**Value parsing.** The value is JSON-parsed when possible:
+- \`"true"\` / \`"false"\` → boolean
+- \`"42"\` → number
+- \`"null"\` → resets the setting to its default (VS Code treats \`null\` as "remove override")
+- Anything that is not valid JSON stays as a plain string (e.g. \`"on"\`, \`"hello"\`)
+
+**Works for any setting** — built-in VS Code settings (\`editor.fontSize\`,
+\`editor.minimap.enabled\`) and extension-contributed settings
+(\`myExtension.enableFeature\`, \`extensionTester.controllerPort\`).
+
+**Settings persist across scenarios** within the same test run. They are NOT
+reverted by the \`the extension is in a clean state\` reset step. If you need
+a clean baseline, explicitly set the value back at the start of each scenario.
+
+Example:
+
+\\\`\\\`\\\`gherkin
+Feature: Extension respects font size setting
+  Scenario: Large font
+    When I set setting "editor.fontSize" to "24"
+    Then setting "editor.fontSize" should be "24"
+
+  Scenario: Boolean toggle
+    When I set setting "editor.minimap.enabled" to "false"
+    Then setting "editor.minimap.enabled" should be "false"
+
+  Scenario: Extension setting
+    When I set setting "myExtension.maxResults" to "100"
+    Then setting "myExtension.maxResults" should be "100"
+
+  Scenario: Reset to default
+    When I set setting "editor.fontSize" to "null"
+\\\`\\\`\\\`
+
 ### Click/Focus Elements in Webviews (Windows UI Automation)
 These use Windows accessibility to find and click elements by their name or text.
 They work for ANY element - including inside webviews, custom editors, and dialogs:

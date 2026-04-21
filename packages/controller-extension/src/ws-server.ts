@@ -273,6 +273,23 @@ export class WSServer {
           .map((e: { id: string; isActive: boolean }) => ({ id: e.id, isActive: e.isActive }));
       }
 
+      // ─── Settings ───
+      case 'setSetting': {
+        const vscode = require('vscode');
+        const key = p['key'] as string;
+        const value = p['value'];
+        const target = (p['target'] as number) ?? vscode.ConfigurationTarget.Global;
+        await vscode.workspace.getConfiguration().update(key, value, target);
+        return { updated: true, key, value };
+      }
+
+      case 'getSetting': {
+        const vscode = require('vscode');
+        const key = p['key'] as string;
+        const value = vscode.workspace.getConfiguration().get(key);
+        return { key, value };
+      }
+
       default:
         throw new Error(`Unknown method: ${method}`);
     }

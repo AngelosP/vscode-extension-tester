@@ -174,6 +174,8 @@ function createMockClient(): ControllerClient {
     openFile: vi.fn().mockResolvedValue(undefined),
     addWorkspaceFolder: vi.fn().mockResolvedValue({ added: true }),
     pressKey: vi.fn().mockResolvedValue(undefined),
+    setSetting: vi.fn().mockResolvedValue({ updated: true }),
+    getSetting: vi.fn().mockResolvedValue({ key: '', value: null }),
     resetState: vi.fn().mockResolvedValue(undefined),
   } as unknown as ControllerClient;
 }
