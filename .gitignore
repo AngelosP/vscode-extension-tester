@@ -14,6 +14,11 @@ dist/
 # .NET build outputs
 dotnet/bin/
 dotnet/obj/
+dotnet/*.user
+dotnet/*.suo
+dotnet/.vs/
+dotnet/publish/
+dotnet/nupkg/
 
 # Test artifacts
 tests/vscode-extension-tester/runs/

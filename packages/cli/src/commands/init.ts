@@ -517,11 +517,15 @@ vscode-ext-test profile open <profile-name>
 
 - \`Given the extension is in a clean state\` - reset: close all editors, dismiss notifications, clear output channels
 - \`When I execute command "<command-id>"\` - run any VS Code command (waits for completion)
+- \`When I execute command "<command-id>" with args '<json>'\` - run a VS Code command with arguments (JSON array in single quotes, e.g. \`'["arg1","arg2"]'\`)
 - \`When I start command "<command-id>"\` - start a VS Code command without waiting (use for commands that show InputBox/QuickPick dialogs, then interact with the dialog in the next step)
+- \`When I start command "<command-id>" with args '<json>'\` - start a VS Code command with arguments without waiting
 - \`When I add folder "<path>" to the workspace\` - add a folder to the workspace without reloading the window
 - \`When I select "<label>" from the QuickPick\` - pick an item from an open QuickPick
 - \`When I type "<text>" into the InputBox\` - type into a VS Code InputBox prompt
 - \`When I click "<button>" on the dialog\` - click a button on a modal dialog
+- \`When I select "<label>" from the popup menu\` - select an item from a context menu, dropdown, or popup overlay (uses OS-level UI Automation with CDP fallback)
+- \`When I list the popup menu items\` - diagnostic: list all visible items in the current popup menu
 - \`When I type "<text>"\` - type text into whatever is focused (editors, webview Monaco, inputs)
 - \`When I press "<key>"\` - press a key or combo (Enter, Escape, Ctrl+S, Ctrl+Space, Shift+Tab, F5, etc.)
 - \`When I sign in with Microsoft as "<user>"\` - handle Microsoft auth flow

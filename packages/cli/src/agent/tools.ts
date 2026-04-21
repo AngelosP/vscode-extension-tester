@@ -136,6 +136,20 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'select_popup_item',
+      description: 'Select an item from an open popup menu, context menu, or dropdown overlay. Use this for any popup that is NOT a standard QuickPick or InputBox — e.g. right-click context menus, editor picker dropdowns, or split-button menus. Uses OS-level UI Automation (FlaUI) with CDP fallback.',
+      parameters: {
+        type: 'object',
+        properties: {
+          label: { type: 'string', description: 'The label (or partial text) of the item to select' },
+        },
+        required: ['label'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'read_source_file',
       description: 'Read a source file from the extension project. Path is relative to the project root.',
       parameters: {
@@ -338,6 +352,8 @@ export async function executeToolCall(
         return await toolRespondToInputBox(ctx, args);
       case 'respond_to_dialog':
         return await toolRespondToDialog(ctx, args);
+      case 'select_popup_item':
+        return await toolSelectPopupItem(ctx, args);
       case 'read_source_file':
         return toolReadSourceFile(ctx, args);
       case 'list_source_files':
@@ -432,6 +448,38 @@ async function toolRespondToDialog(ctx: ToolContext, args: Record<string, unknow
   const client = requireClient(ctx);
   await client.respondToDialog(args['button'] as string);
   return 'Dialog button clicked';
+}
+
+async function toolSelectPopupItem(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const label = args['label'] as string;
+  // Delegate to the test runner's popup dispatch logic: FlaUI first, CDP fallback.
+  // We import NativeUIClient and CdpClient lazily to avoid circular deps.
+  const { NativeUIClient } = await import('../runner/native-ui-client.js');
+  const { CdpClient } = await import('../runner/cdp-client.js');
+  const { CDP_PORT } = await import('../types.js');
+
+  // Strategy 1: FlaUI (OS-level — works when popup steals focus from webview)
+  const nativeUI = new NativeUIClient();
+  try {
+    await nativeUI.start();
+    const selected = await nativeUI.selectFromDevHostPopup(label, 3000);
+    nativeUI.stop();
+    return `Selected popup item: ${selected}`;
+  } catch {
+    nativeUI.stop();
+  }
+
+  // Strategy 2: CDP (DOM-level — works for monaco-list overlays)
+  const cdp = new CdpClient(CDP_PORT);
+  try {
+    await cdp.connect();
+    await cdp.selectPopupMenuItem(label);
+    cdp.disconnect();
+    return `Selected popup item: ${label}`;
+  } catch (err) {
+    cdp.disconnect();
+    throw err;
+  }
 }
 
 async function toolSetLogLevel(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {

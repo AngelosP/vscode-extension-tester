@@ -69,6 +69,16 @@ while ((line = Console.ReadLine()) != null)
             "pressKey" => await automation.PressKey(
                 new { key = p.GetProperty("key").GetString()! }),
 
+            "findPopupItems" => await automation.FindPopupItems(
+                new { windowId = p.GetProperty("windowId").GetString()! }),
+
+            "selectPopupItem" => await automation.SelectPopupItem(
+                new
+                {
+                    windowId = p.GetProperty("windowId").GetString()!,
+                    itemName = p.GetProperty("itemName").GetString()!
+                }),
+
             _ => throw new Exception($"Unknown method: {method}")
         };
 

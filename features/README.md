@@ -70,7 +70,9 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 | Step | Description |
 |------|-------------|
 | `When I execute command "<commandId>"` | Run a VS Code command (waits for completion) |
+| `When I execute command "<commandId>" with args '<json>'` | Run a VS Code command with arguments (JSON array, e.g. `'["arg1","arg2"]'`) |
 | `When I start command "<commandId>"` | Start a VS Code command without waiting (use for commands that show InputBox/QuickPick) |
+| `When I start command "<commandId>" with args '<json>'` | Start a VS Code command with arguments without waiting |
 | `When I add folder "<path>" to the workspace` | Add a folder to the workspace without reloading |
 | `When I select "<label>" from the QuickPick` | Choose an item from the QuickPick |
 | `When I type "<text>" into the InputBox` | Type into the InputBox |

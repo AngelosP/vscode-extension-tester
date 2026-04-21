@@ -99,6 +99,16 @@ export class NativeUIClient {
     await this.call('pressKey', { key });
   }
 
+  /** Find all visible popup/menu items in a window. */
+  async findPopupItems(windowId: string): Promise<NativeElement[]> {
+    return this.call('findPopupItems', { windowId }) as Promise<NativeElement[]>;
+  }
+
+  /** Select an item from a popup menu/list by name (partial match). */
+  async selectPopupItem(windowId: string, itemName: string): Promise<{ success: boolean; selected: string }> {
+    return this.call('selectPopupItem', { windowId, itemName }) as Promise<{ success: boolean; selected: string }>;
+  }
+
   // ─── High-level helpers ─────────────────────────────────────────
 
   /**
@@ -207,6 +217,40 @@ export class NativeUIClient {
   async getDevHostTree(): Promise<unknown> {
     const win = await this.findDevHostWindow();
     return this.getElementTree(win.id);
+  }
+
+  /**
+   * List all visible popup/menu items in the Dev Host window.
+   * Finds MenuItem, ListItem, and TreeItem descendants of popup containers.
+   * Useful for discovering what items are available in an open dropdown/menu.
+   */
+  async getDevHostPopupItems(): Promise<NativeElement[]> {
+    const win = await this.findDevHostWindow();
+    return this.findPopupItems(win.id);
+  }
+
+  /**
+   * Select an item from an open popup menu/dropdown in the Dev Host window.
+   * Uses Windows UI Automation to find the item by name (partial match)
+   * and click it directly — bypasses the webview focus issue with CDP/keyboard.
+   */
+  async selectFromDevHostPopup(itemName: string, timeoutMs = 5000): Promise<string> {
+    const win = await this.findDevHostWindow();
+    const deadline = Date.now() + timeoutMs;
+
+    // Poll — the popup may still be animating in
+    while (Date.now() < deadline) {
+      try {
+        const result = await this.selectPopupItem(win.id, itemName);
+        return result.selected;
+      } catch {
+        await delay(300);
+      }
+    }
+    throw new Error(
+      `Popup item "${itemName}" not found in Dev Host within ${timeoutMs}ms. ` +
+      `Use getDevHostPopupItems() to see available items.`
+    );
   }
 
   /**

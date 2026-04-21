@@ -179,6 +179,103 @@ export class CdpClient {
   }
 
   /**
+   * List items visible in VS Code's popup overlay menus (context menus,
+   * QuickPick lists, dropdown menus). Searches the main document for
+   * `.monaco-list-row`, `.context-view .action-label`, and
+   * `.quick-input-list .monaco-list-row` elements.
+   */
+  async getPopupMenuItems(): Promise<string[]> {
+    if (!this.client) throw new Error('CDP not connected');
+
+    const result = await this.client.Runtime.evaluate({
+      expression: `(() => {
+        const items = new Set();
+
+        // Context menus / dropdown menus
+        document.querySelectorAll('.context-view .action-label').forEach(el => {
+          const text = (el.textContent || '').trim();
+          if (text && !el.closest('[aria-disabled="true"]')) items.add(text);
+        });
+
+        // QuickPick / QuickInput list rows
+        document.querySelectorAll('.quick-input-list .monaco-list-row').forEach(el => {
+          const label = el.querySelector('.label-name, .label-description, .quick-input-list-entry .label-name');
+          const text = (label || el).textContent?.trim();
+          if (text) items.add(text);
+        });
+
+        // Generic monaco list rows (e.g. editor picker)
+        document.querySelectorAll('.monaco-list:not(.quick-input-list) .monaco-list-row').forEach(el => {
+          const text = (el.textContent || '').trim();
+          if (text) items.add(text);
+        });
+
+        return [...items];
+      })()`,
+      returnByValue: true,
+    });
+
+    return (result.result.value as string[]) ?? [];
+  }
+
+  /**
+   * Click an item in VS Code's popup overlay menu by matching its text.
+   * Searches context menus, QuickPick lists, dropdown menus, and generic
+   * monaco-list rows. Uses partial, case-insensitive matching.
+   */
+  async selectPopupMenuItem(itemText: string): Promise<void> {
+    if (!this.client) throw new Error('CDP not connected');
+
+    const safeText = itemText.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
+    const result = await this.client.Runtime.evaluate({
+      expression: `(() => {
+        const needle = '${safeText}'.toLowerCase();
+
+        // Helper: try to find and click in a set of elements
+        function tryClick(selector) {
+          const els = document.querySelectorAll(selector);
+          for (const el of els) {
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase().includes(needle)) {
+              el.scrollIntoView({ block: 'center' });
+              el.click();
+              return text;
+            }
+          }
+          return null;
+        }
+
+        // 1. Context menus / dropdown menus
+        let hit = tryClick('.context-view .action-label');
+        if (hit) return hit;
+
+        // 2. Context-view list items (broader)
+        hit = tryClick('.context-view .monaco-list-row');
+        if (hit) return hit;
+
+        // 3. QuickPick list rows
+        hit = tryClick('.quick-input-list .monaco-list-row');
+        if (hit) return hit;
+
+        // 4. Generic monaco list rows
+        hit = tryClick('.monaco-list .monaco-list-row');
+        if (hit) return hit;
+
+        return null;
+      })()`,
+      returnByValue: true,
+    });
+
+    if (!result.result.value) {
+      throw new Error(
+        `Popup menu item "${itemText}" not found in DOM. ` +
+        `Use getPopupMenuItems() to see available items.`
+      );
+    }
+  }
+
+  /**
    * Evaluate JavaScript in the page context. Returns the result.
    */
   async evaluate(expression: string): Promise<unknown> {

@@ -120,9 +120,6 @@ export class TestRunner {
         if (newOutput) outputLog = newOutput;
       } catch { /* best effort */ }
 
-      // Best-effort screenshot of what the UI looked like when the step failed
-      await this.takeFailureScreenshot(this.currentScenarioName, step.text);
-
       return { keyword: step.keyword, text: step.text, status: 'failed', durationMs: Date.now() - startTime, error: { message: error.message, stack: error.stack }, outputLog };
     }
   }
@@ -223,9 +220,15 @@ export class TestRunner {
     match = text.match(/^I execute command "([^"]+)"$/);
     if (match) { await this.client.executeCommand(match[1]); return; }
 
+    match = text.match(/^I execute command "([^"]+)" with args '([^']+)'$/);
+    if (match) { await this.client.executeCommand(match[1], JSON.parse(match[2])); return; }
+
     // ─── Start command (fire-and-forget, for commands that show UI) ───
     match = text.match(/^I start command "([^"]+)"$/);
     if (match) { await this.client.startCommand(match[1]); return; }
+
+    match = text.match(/^I start command "([^"]+)" with args '([^']+)'$/);
+    if (match) { await this.client.startCommand(match[1], JSON.parse(match[2])); return; }
 
     // ─── QuickPick ───
     match = text.match(/^I select "([^"]+)" from the QuickPick$/);
@@ -306,8 +309,37 @@ export class TestRunner {
     // ─── Native dialog: Dismiss Save As ───
     if (/^I cancel the (?:Save As|Save|Open|Open File) dialog$/.test(text)) {
       const ui = this.requireNativeUI();
-      await ui.pressKey('escape');
+      try { await ui.clickDialogButton('Save', 'Cancel'); } catch {
+        await ui.clickDialogButton('Open', 'Cancel');
+      }
       return;
+    }
+
+    // ─── Popup menu: select item (uses FlaUI, falls back to CDP) ───
+    match = text.match(/^I select "([^"]+)" from the popup menu$/);
+    if (match) {
+      const label = match[1];
+      // Strategy 1: FlaUI (OS-level, works when popup steals focus from webview)
+      try {
+        await this.requireNativeUI().selectFromDevHostPopup(label, 3000);
+        return;
+      } catch { /* fall through to CDP */ }
+      // Strategy 2: CDP DOM click (works for monaco-list overlays)
+      const cdp = await this.requireCdp();
+      await cdp.selectPopupMenuItem(label);
+      return;
+    }
+
+    // ─── Popup menu: list items (diagnostic) ───
+    if (/^I list the popup menu items$/.test(text)) {
+      try {
+        const items = await this.requireNativeUI().getDevHostPopupItems();
+        return items.map((i) => i.name).join(', ');
+      } catch {
+        const cdp = await this.requireCdp();
+        const items = await cdp.getPopupMenuItems();
+        return items.join(', ');
+      }
     }
 
     // ─── Native: resize window ───
@@ -483,28 +515,6 @@ export class TestRunner {
       const got = await (await this.requireCdp()).getTextInWebview(match[1], match[3]);
       if (!got.includes(match[2])) {
         throw new Error(`Element "${match[1]}" text "${got}" does not contain "${match[2]}".`);
-      }
-      return;
-    }
-
-    // ─── Settings ───
-    match = text.match(/^I set setting "([^"]+)" to "([^"]+)"$/);
-    if (match) {
-      let value: unknown = match[2];
-      try { value = JSON.parse(match[2]); } catch { /* use raw string */ }
-      await this.client.setSetting(match[1], value);
-      return;
-    }
-
-    match = text.match(/^setting "([^"]+)" should be "([^"]+)"$/);
-    if (match) {
-      const result = await this.client.getSetting(match[1]);
-      let expected: unknown = match[2];
-      try { expected = JSON.parse(match[2]); } catch { /* use raw string */ }
-      if (JSON.stringify(result.value) !== JSON.stringify(expected)) {
-        throw new Error(
-          `Setting "${match[1]}" is ${JSON.stringify(result.value)}, expected ${JSON.stringify(expected)}`
-        );
       }
       return;
     }
@@ -976,17 +986,6 @@ $bmp.Dispose()
       });
     } finally {
       try { fs.unlinkSync(scriptPath); } catch { /* best effort */ }
-    }
-  }
-
-  /** Best-effort screenshot on step failure. Never throws. */
-  private async takeFailureScreenshot(scenarioName: string | undefined, stepText: string): Promise<void> {
-    try {
-      const scenario = (scenarioName ?? 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
-      const step = stepText.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
-      await this.takeScreenshot(`failure-${scenario}-${step}`);
-    } catch {
-      // Best-effort — don't let screenshot failures mask the real test error.
     }
   }
 

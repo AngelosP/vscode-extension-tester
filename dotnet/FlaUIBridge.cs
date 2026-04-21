@@ -92,6 +92,97 @@ namespace FlaUIBridge
         }
 
         /// <summary>
+        /// Find all items in the currently visible popup menu / list overlay.
+        /// Searches for MenuItem, ListItem, and TreeItem descendants of Menu,
+        /// List, and Tree containers that are NOT offscreen.
+        /// Input: { windowId: string }
+        /// </summary>
+        public async Task<object> FindPopupItems(dynamic input)
+        {
+            string windowId = (string)input.windowId;
+            if (!_elementCache.TryGetValue(windowId, out var window))
+                throw new Exception($"Window {windowId} not found in cache");
+
+            var items = new List<object>();
+
+            // Search for visible popup containers (Menu, List, Tree, ComboBox dropdowns)
+            var containerTypes = new[] { ControlType.Menu, ControlType.List, ControlType.Tree };
+            foreach (var ct in containerTypes)
+            {
+                var containers = window.FindAllDescendants(
+                    new PropertyCondition(_automation.PropertyLibrary.Element.ControlType, ct));
+
+                foreach (var container in containers)
+                {
+                    if (container.Properties.IsOffscreen.ValueOrDefault) continue;
+
+                    // Check for a reasonably small bounding rect (popup, not the whole window)
+                    var cRect = container.BoundingRectangle;
+                    if (cRect.Width <= 0 || cRect.Height <= 0) continue;
+
+                    var childTypes = new[] { ControlType.MenuItem, ControlType.ListItem, ControlType.TreeItem };
+                    foreach (var childType in childTypes)
+                    {
+                        var children = container.FindAllDescendants(
+                            new PropertyCondition(_automation.PropertyLibrary.Element.ControlType, childType));
+
+                        foreach (var child in children)
+                        {
+                            if (child.Properties.IsOffscreen.ValueOrDefault) continue;
+                            var name = child.Name;
+                            if (string.IsNullOrEmpty(name)) continue;
+                            items.Add(CacheAndSerializeElement(child));
+                        }
+                    }
+                }
+            }
+
+            return items.ToArray();
+        }
+
+        /// <summary>
+        /// Select an item from a popup menu/list by name (partial match).
+        /// Searches MenuItem, ListItem, and TreeItem descendants, clicks the
+        /// first match whose Name contains the search text.
+        /// Input: { windowId: string, itemName: string }
+        /// </summary>
+        public async Task<object> SelectPopupItem(dynamic input)
+        {
+            string windowId = (string)input.windowId;
+            string itemName = (string)input.itemName;
+
+            if (!_elementCache.TryGetValue(windowId, out var window))
+                throw new Exception($"Window {windowId} not found in cache");
+
+            // Search all interactive item types that could be popup choices
+            var itemTypes = new[] { ControlType.MenuItem, ControlType.ListItem, ControlType.TreeItem };
+
+            foreach (var itemType in itemTypes)
+            {
+                var candidates = window.FindAllDescendants(
+                    new PropertyCondition(_automation.PropertyLibrary.Element.ControlType, itemType));
+
+                foreach (var candidate in candidates)
+                {
+                    if (candidate.Properties.IsOffscreen.ValueOrDefault) continue;
+                    var name = candidate.Name;
+                    if (string.IsNullOrEmpty(name)) continue;
+
+                    if (name.Contains(itemName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        candidate.Click();
+                        await Task.Delay(100);
+                        return new { success = true, selected = name };
+                    }
+                }
+            }
+
+            throw new Exception(
+                $"Popup item containing \"{itemName}\" not found. " +
+                $"Use findPopupItems to see available items.");
+        }
+
+        /// <summary>
         /// Press a keyboard key (e.g. Enter, Escape, Tab).
         /// Input: { key: string }
         /// </summary>

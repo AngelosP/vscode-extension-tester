@@ -237,6 +237,7 @@ AVAILABLE STEP DEFINITIONS (you MUST only use these exact patterns):
 When steps (actions):
   When I execute command "<commandId>"
   When I select "<label>" from the QuickPick
+  When I select "<label>" from the popup menu
   When I type "<value>" into the InputBox
   When I click "<button>" on the dialog
 
