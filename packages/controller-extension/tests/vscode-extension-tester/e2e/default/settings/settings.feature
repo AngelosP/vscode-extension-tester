@@ -1,5 +1,16 @@
 Feature: Settings manipulation
 
+  Scenario: Setting visually takes effect — giant font
+    Given the extension is in a clean state
+    And a file "proof.txt" exists with content "Hello from giant font test"
+    When I open file "proof.txt" in the editor
+    And I wait 1 second
+    And I take a screenshot "before-font-change"
+    And I set setting "editor.fontSize" to "40"
+    And I wait 1 second
+    And I take a screenshot "after-font-change"
+    Then setting "editor.fontSize" should be "40"
+
   Scenario: Set and verify a numeric setting
     Given the extension is in a clean state
     When I set setting "editor.fontSize" to "20"
