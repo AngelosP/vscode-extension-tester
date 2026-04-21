@@ -6,6 +6,8 @@ using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Conditions;
 using FlaUI.Core.Definitions;
+using FlaUI.Core.Input;
+using FlaUI.Core.WindowsAPI;
 using FlaUI.UIA3;
 
 namespace FlaUIBridge
@@ -86,6 +88,35 @@ namespace FlaUIBridge
                 throw new Exception($"Element {elementId} not found in cache");
 
             element.Click();
+            return new { success = true };
+        }
+
+        /// <summary>
+        /// Press a keyboard key (e.g. Enter, Escape, Tab).
+        /// Input: { key: string }
+        /// </summary>
+        public async Task<object> PressKey(dynamic input)
+        {
+            string key = (string)input.key;
+            var vk = key.ToLowerInvariant() switch
+            {
+                "enter" or "return" => VirtualKeyShort.ENTER,
+                "escape" or "esc" => VirtualKeyShort.ESCAPE,
+                "tab" => VirtualKeyShort.TAB,
+                "space" => VirtualKeyShort.SPACE,
+                "backspace" => VirtualKeyShort.BACK,
+                "delete" => VirtualKeyShort.DELETE,
+                "up" => VirtualKeyShort.UP,
+                "down" => VirtualKeyShort.DOWN,
+                "left" => VirtualKeyShort.LEFT,
+                "right" => VirtualKeyShort.RIGHT,
+                "home" => VirtualKeyShort.HOME,
+                "end" => VirtualKeyShort.END,
+                _ => throw new ArgumentException($"Unknown key: {key}")
+            };
+            Keyboard.Press(vk);
+            await Task.Delay(50); // brief settle time
+            Keyboard.Release(vk);
             return new { success = true };
         }
 

@@ -120,6 +120,9 @@ export class TestRunner {
         if (newOutput) outputLog = newOutput;
       } catch { /* best effort */ }
 
+      // Best-effort screenshot of what the UI looked like when the step failed
+      await this.takeFailureScreenshot(this.currentScenarioName, step.text);
+
       return { keyword: step.keyword, text: step.text, status: 'failed', durationMs: Date.now() - startTime, error: { message: error.message, stack: error.stack }, outputLog };
     }
   }
@@ -166,11 +169,31 @@ export class TestRunner {
       return;
     }
 
-    // ─── Utility: add folder to workspace (no reload) ───
+    // ─── Utility: add folder to workspace ───
+    // Adding the FIRST workspace folder restarts the Extension Host, which
+    // disconnects the WebSocket. We catch the disconnect error and reconnect.
     match = text.match(/^I add folder "([^"]+)" to the workspace$/);
     if (match) {
       const folderPath = this.resolveFilePath(match[1]);
-      await this.client.addWorkspaceFolder(folderPath);
+      try {
+        await this.client.addWorkspaceFolder(folderPath);
+      } catch {
+        // Extension Host likely restarted (first folder added) — reconnect.
+        this.client.disconnect();
+        await delay(3000);
+        for (let attempt = 0; attempt < 30; attempt++) {
+          try {
+            await this.client.connect();
+            await this.client.ping();
+            return;
+          } catch {
+            await delay(1000);
+          }
+        }
+        throw new Error(
+          `Extension Host did not come back after adding workspace folder "${folderPath}" within 30s.`
+        );
+      }
       return;
     }
 
@@ -283,9 +306,7 @@ export class TestRunner {
     // ─── Native dialog: Dismiss Save As ───
     if (/^I cancel the (?:Save As|Save|Open|Open File) dialog$/.test(text)) {
       const ui = this.requireNativeUI();
-      try { await ui.clickDialogButton('Save', 'Cancel'); } catch {
-        await ui.clickDialogButton('Open', 'Cancel');
-      }
+      await ui.pressKey('escape');
       return;
     }
 
@@ -933,6 +954,17 @@ $bmp.Dispose()
       });
     } finally {
       try { fs.unlinkSync(scriptPath); } catch { /* best effort */ }
+    }
+  }
+
+  /** Best-effort screenshot on step failure. Never throws. */
+  private async takeFailureScreenshot(scenarioName: string | undefined, stepText: string): Promise<void> {
+    try {
+      const scenario = (scenarioName ?? 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
+      const step = stepText.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
+      await this.takeScreenshot(`failure-${scenario}-${step}`);
+    } catch {
+      // Best-effort — don't let screenshot failures mask the real test error.
     }
   }
 

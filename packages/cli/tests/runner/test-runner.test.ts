@@ -21,6 +21,51 @@ vi.mock('../../src/agent/env.js', () => ({
   loadEnv: () => ({}),
 }));
 
+// ─── NativeUI mock ───────────────────────────────────────────────────────────
+// The TestRunner lazily creates a NativeUIClient via requireNativeUI(). We mock
+// the module so no real FlaUI bridge process is spawned.
+const { mockNativeUIRef } = vi.hoisted(() => ({
+  mockNativeUIRef: { current: null as Record<string, any> | null },
+}));
+
+vi.mock('../../src/runner/native-ui-client.js', () => {
+  return {
+    NativeUIClient: class MockNativeUIClient {
+      constructor() {
+        Object.assign(this, mockNativeUIRef.current);
+      }
+    },
+  };
+});
+
+function resetMockNativeUI(): void {
+  mockNativeUIRef.current = {
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn(),
+    get isRunning() { return true; },
+    findWindow: vi.fn().mockResolvedValue(null),
+    findElement: vi.fn().mockResolvedValue(null),
+    clickElement: vi.fn().mockResolvedValue(undefined),
+    setText: vi.fn().mockResolvedValue(undefined),
+    focusWindow: vi.fn().mockResolvedValue(undefined),
+    resizeWindow: vi.fn().mockResolvedValue(undefined),
+    moveWindow: vi.fn().mockResolvedValue(undefined),
+    listWindows: vi.fn().mockResolvedValue([]),
+    getElementTree: vi.fn().mockResolvedValue({}),
+    pressKey: vi.fn().mockResolvedValue(undefined),
+    handleSaveAsDialog: vi.fn().mockResolvedValue(undefined),
+    handleOpenDialog: vi.fn().mockResolvedValue(undefined),
+    clickDialogButton: vi.fn().mockResolvedValue(undefined),
+    clickInDevHost: vi.fn().mockResolvedValue(undefined),
+    focusInDevHost: vi.fn().mockResolvedValue(undefined),
+    resizeDevHost: vi.fn().mockResolvedValue(undefined),
+    moveDevHost: vi.fn().mockResolvedValue(undefined),
+    getDevHostTree: vi.fn().mockResolvedValue({}),
+  };
+}
+
+function getMockNativeUI() { return mockNativeUIRef.current!; }
+
 // ─── CDP mock ────────────────────────────────────────────────────────────────
 // The TestRunner lazily creates a CdpClient via requireCdp(). We mock the
 // module so no real Chrome DevTools connection is needed. Each test configures
@@ -139,6 +184,7 @@ describe('TestRunner', () => {
 
   beforeEach(() => {
     resetMockCdp();
+    resetMockNativeUI();
     client = createMockClient();
     runner = new TestRunner(client);
   });
@@ -1795,6 +1841,118 @@ describe('TestRunner', () => {
         expect(client.resetState).toHaveBeenCalled();
         expect(client.startCaptureChannel).toHaveBeenCalledWith('Kusto Workbench');
       });
+    });
+  });
+
+  // ─── Native UI steps ──────────────────────────────────────────────────────
+
+  describe('native UI steps', () => {
+    it('should handle "I click the element" step', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Click element', [
+          makeStep('When ', 'I click the element "Open"'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(getMockNativeUI().clickInDevHost).toHaveBeenCalledWith('Open');
+    });
+
+    it('should handle "I click the <name> <controlType>" step', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Click typed element', [
+          makeStep('When ', 'I click the "Save" button'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(getMockNativeUI().clickInDevHost).toHaveBeenCalledWith('Save', 'button');
+    });
+
+    it('should handle "I save the file as" step', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Save As', [
+          makeStep('When ', 'I save the file as "test.txt"'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(getMockNativeUI().handleSaveAsDialog).toHaveBeenCalledWith('test.txt');
+    });
+
+    it('should handle "I open the file" step', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Open File', [
+          makeStep('When ', 'I open the file "data.csv"'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(getMockNativeUI().handleOpenDialog).toHaveBeenCalledWith('data.csv');
+    });
+
+    it('should handle "I click <button> on the <title> dialog" step', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Dialog button', [
+          makeStep('When ', 'I click "OK" on the "Confirm" dialog'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(getMockNativeUI().clickDialogButton).toHaveBeenCalledWith('Confirm', 'OK');
+    });
+
+    it('should handle "I cancel the Save As dialog" step', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Cancel dialog', [
+          makeStep('When ', 'I cancel the Save As dialog'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(getMockNativeUI().pressKey).toHaveBeenCalledWith('escape');
+    });
+
+    it('should handle "I cancel the Open dialog" step', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Cancel dialog', [
+          makeStep('When ', 'I cancel the Open dialog'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(getMockNativeUI().pressKey).toHaveBeenCalledWith('escape');
+    });
+
+    it('should handle "I resize the Dev Host" step', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Resize', [
+          makeStep('When ', 'I resize the Dev Host to 1280x720'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(getMockNativeUI().resizeDevHost).toHaveBeenCalledWith(1280, 720);
+    });
+
+    it('should handle "I move the window" step', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Move', [
+          makeStep('When ', 'I move the window to 100, 200'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(getMockNativeUI().moveDevHost).toHaveBeenCalledWith(100, 200);
     });
   });
 });

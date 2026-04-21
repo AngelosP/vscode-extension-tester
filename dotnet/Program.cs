@@ -66,6 +66,9 @@ while ((line = Console.ReadLine()) != null)
             "getElementTree" => await automation.GetElementTree(
                 new { windowId = p.GetProperty("windowId").GetString()! }),
 
+            "pressKey" => await automation.PressKey(
+                new { key = p.GetProperty("key").GetString()! }),
+
             _ => throw new Exception($"Unknown method: {method}")
         };
 

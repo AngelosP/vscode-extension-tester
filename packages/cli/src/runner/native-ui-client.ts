@@ -94,65 +94,39 @@ export class NativeUIClient {
     return this.call('getElementTree', { windowId });
   }
 
+  /** Press a keyboard key (e.g. 'enter', 'escape', 'tab'). */
+  async pressKey(key: string): Promise<void> {
+    await this.call('pressKey', { key });
+  }
+
   // ─── High-level helpers ─────────────────────────────────────────
 
   /**
-   * Handle a Save As dialog: wait for it, type the filename, click Save.
+   * Handle a Save As dialog: wait for it, type the filename, confirm.
    */
   async handleSaveAsDialog(filename: string, timeoutMs = 10000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
-    let win: NativeWindow | null = null;
+    const result = await this.findFileDialog(['Save As', 'Save File'], deadline);
+    if (!result) throw new Error('Save As dialog not found');
 
-    // Poll for the dialog
-    while (Date.now() < deadline) {
-      win = await this.findWindow('Save As');
-      if (!win) win = await this.findWindow('Save File');
-      if (win) break;
-      await delay(500);
-    }
-    if (!win) throw new Error('Save As dialog not found');
-
-    await this.focusWindow(win.id);
-
-    // Find the filename text field and set the value
-    const fileNameBox = await this.findElement(win.id, 'File name:', 'edit');
-    if (!fileNameBox) throw new Error('File name field not found in Save As dialog');
-
+    const { fileNameBox } = result;
+    await this.clickElement(fileNameBox.id); // ensure focus in the edit
     await this.setText(fileNameBox.id, filename);
-
-    // Click Save button
-    const saveBtn = await this.findElement(win.id, 'Save', 'button');
-    if (!saveBtn) throw new Error('Save button not found in Save As dialog');
-
-    await this.clickElement(saveBtn.id);
+    await this.pressKey('enter'); // confirm — more reliable than clicking the split button
   }
 
   /**
-   * Handle an Open File dialog: wait for it, type the filename, click Open.
+   * Handle an Open File dialog: wait for it, type the filename, confirm.
    */
   async handleOpenDialog(filename: string, timeoutMs = 10000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
-    let win: NativeWindow | null = null;
+    const result = await this.findFileDialog(['Open', 'Open File'], deadline);
+    if (!result) throw new Error('Open dialog not found');
 
-    while (Date.now() < deadline) {
-      win = await this.findWindow('Open');
-      if (!win) win = await this.findWindow('Open File');
-      if (win) break;
-      await delay(500);
-    }
-    if (!win) throw new Error('Open dialog not found');
-
-    await this.focusWindow(win.id);
-
-    const fileNameBox = await this.findElement(win.id, 'File name:', 'edit');
-    if (!fileNameBox) throw new Error('File name field not found in Open dialog');
-
+    const { fileNameBox } = result;
+    await this.clickElement(fileNameBox.id); // ensure focus in the edit
     await this.setText(fileNameBox.id, filename);
-
-    const openBtn = await this.findElement(win.id, 'Open', 'button');
-    if (!openBtn) throw new Error('Open button not found in dialog');
-
-    await this.clickElement(openBtn.id);
+    await this.pressKey('enter'); // confirm — more reliable than clicking the split button
   }
 
   /**
@@ -161,19 +135,25 @@ export class NativeUIClient {
   async clickDialogButton(titlePattern: string, buttonName: string, timeoutMs = 10000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     let win: NativeWindow | null = null;
+    let btn: NativeElement | null = null;
 
+    // Poll for a window that both matches the title AND contains the button.
+    // This avoids false matches against unrelated windows (e.g. VS Code windows
+    // whose titles happen to contain the search pattern).
     while (Date.now() < deadline) {
-      win = await this.findWindow(titlePattern);
+      const allWindows = await this.listWindows() as NativeWindow[];
+      for (const w of allWindows) {
+        if (w.title.toLowerCase().includes(titlePattern.toLowerCase())) {
+          const candidate = await this.findElement(w.id, buttonName, 'button');
+          if (candidate) { win = w; btn = candidate; break; }
+        }
+      }
       if (win) break;
       await delay(500);
     }
-    if (!win) throw new Error(`Dialog "${titlePattern}" not found`);
+    if (!win || !btn) throw new Error(`Dialog "${titlePattern}" not found`);
 
     await this.focusWindow(win.id);
-
-    const btn = await this.findElement(win.id, buttonName, 'button');
-    if (!btn) throw new Error(`Button "${buttonName}" not found in "${titlePattern}" dialog`);
-
     await this.clickElement(btn.id);
   }
 
@@ -227,6 +207,59 @@ export class NativeUIClient {
   async getDevHostTree(): Promise<unknown> {
     const win = await this.findDevHostWindow();
     return this.getElementTree(win.id);
+  }
+
+  /**
+   * Poll for a native file dialog by trying each title pattern in turn.
+   * A window is only accepted if it contains a "File name:" edit field,
+   * which distinguishes a real file dialog from an unrelated window whose
+   * title happens to contain "Open" or "Save".
+   *
+   * On some Windows configurations the file dialog appears as a child of
+   * the owning window. As a fallback we also check every visible window,
+   * but we require it to also have an "Open" or "Save" button so we don't
+   * accidentally match the parent VS Code window (which can "see through"
+   * to its dialog's elements via UI Automation).
+   */
+  private async findFileDialog(
+    titlePatterns: string[],
+    deadline: number,
+  ): Promise<{ win: NativeWindow; fileNameBox: NativeElement } | null> {
+    while (Date.now() < deadline) {
+      const allWindows = await this.listWindows() as NativeWindow[];
+
+      // Pass 1: prefer windows whose title matches a pattern
+      for (const w of allWindows) {
+        const titleLower = w.title.toLowerCase();
+        const matches = titlePatterns.some(p => titleLower.includes(p.toLowerCase()));
+        if (!matches) continue;
+
+        const fileNameBox = await this.findElement(w.id, 'File name:', 'edit');
+        if (fileNameBox) {
+          await this.focusWindow(w.id);
+          return { win: w, fileNameBox };
+        }
+      }
+
+      // Pass 2: the dialog may be a child of the owning window.  Check ALL
+      // windows, but require BOTH a "File name:" edit AND a confirm button
+      // ("Open" or "Save") to avoid matching the parent VS Code window.
+      for (const w of allWindows) {
+        const fileNameBox = await this.findElement(w.id, 'File name:', 'edit');
+        if (!fileNameBox) continue;
+
+        // Verify this is a real dialog by checking for a confirm button
+        const hasOpen = await this.findElement(w.id, 'Open', 'button');
+        const hasSave = hasOpen ? null : await this.findElement(w.id, 'Save', 'button');
+        if (hasOpen || hasSave) {
+          await this.focusWindow(w.id);
+          return { win: w, fileNameBox };
+        }
+      }
+
+      await delay(500);
+    }
+    return null;
   }
 
   /** Find the Extension Development Host window. */
