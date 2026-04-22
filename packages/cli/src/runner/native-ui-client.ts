@@ -12,6 +12,13 @@ export class NativeUIClient {
   private rl?: readline.Interface;
   private pending?: { resolve: (v: unknown) => void; reject: (e: Error) => void };
 
+  /**
+   * When set, `findDevHostWindow` will only match windows whose process is a
+   * descendant of this PID (i.e. the VS Code main process we spawned).
+   * This prevents FlaUI from grabbing an unrelated Dev Host (e.g. an F5 session).
+   */
+  targetPid?: number;
+
   async start(): Promise<void> {
     const dllPath = path.resolve(
       __dirname, '..', '..', '..', '..', 'dotnet', 'bin', 'Release', 'net8.0-windows', 'FlaUIBridge.dll'
@@ -308,16 +315,22 @@ export class NativeUIClient {
 
   /** Find the Extension Development Host window. */
   private async findDevHostWindow(): Promise<NativeWindow> {
-    let win = await this.findWindow('Extension Development Host');
-    if (!win) {
-      // Try partial match
-      const windows = await this.listWindows();
-      const devHost = (windows as NativeWindow[]).find(
-        w => w.title.includes('Extension Development Host')
-      );
-      if (devHost) win = devHost;
+    const allowedPids = this.targetPid ? getDescendantPids(this.targetPid) : undefined;
+
+    const windows = await this.listWindows() as NativeWindow[];
+    const candidates = windows.filter(
+      w => w.title.includes('Extension Development Host')
+    );
+
+    let win: NativeWindow | undefined;
+    if (allowedPids && candidates.length > 1) {
+      // Pick the window that belongs to the VS Code instance we launched
+      win = candidates.find(w => allowedPids.has(w.processId));
     }
+    // Fall back to first match (single instance or no PID filter)
+    if (!win) win = candidates[0];
     if (!win) throw new Error('Dev Host window not found');
+
     await this.focusWindow(win.id);
     return win;
   }
@@ -343,6 +356,49 @@ export interface NativeWindow {
   processId: number;
   bounds: { x: number; y: number; width: number; height: number };
   isVisible: boolean;
+}
+
+/**
+ * Build a set containing `pid` and all its transitive child process IDs.
+ * Used to match a VS Code window (owned by a renderer child process)
+ * back to the main process we spawned.
+ */
+function getDescendantPids(pid: number): Set<number> {
+  const descendants = new Set<number>([pid]);
+  try {
+    const output = cp.execSync(
+      'wmic process get ProcessId,ParentProcessId /format:csv',
+      { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] },
+    );
+    // Build parent → children map
+    const children = new Map<number, number[]>();
+    for (const line of output.split('\n')) {
+      const parts = line.trim().split(',');
+      // CSV columns: Node, ParentProcessId, ProcessId
+      if (parts.length >= 3) {
+        const parentPid = parseInt(parts[1], 10);
+        const procPid = parseInt(parts[2], 10);
+        if (!isNaN(parentPid) && !isNaN(procPid)) {
+          if (!children.has(parentPid)) children.set(parentPid, []);
+          children.get(parentPid)!.push(procPid);
+        }
+      }
+    }
+    // BFS from pid
+    const queue = [pid];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      for (const child of children.get(current) ?? []) {
+        if (!descendants.has(child)) {
+          descendants.add(child);
+          queue.push(child);
+        }
+      }
+    }
+  } catch {
+    // If wmic fails, return just the root PID — best effort
+  }
+  return descendants;
 }
 
 export interface NativeElement {

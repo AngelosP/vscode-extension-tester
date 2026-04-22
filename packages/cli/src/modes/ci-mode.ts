@@ -131,7 +131,7 @@ export async function launchMode(options: RunOptions, artifactsDir?: string): Pr
     }
 
     // 6. Run tests
-    const result = await runFeatures(client, options, startTime, artifactsDir, userDataDir, cdpPort);
+    const result = await runFeatures(client, options, startTime, artifactsDir, userDataDir, cdpPort, vscProcess.pid);
     client.disconnect();
     return result;
   } finally {

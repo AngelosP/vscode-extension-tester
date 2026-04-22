@@ -27,6 +27,7 @@ export class TestRunner {
     private readonly artifactsDir?: string,
     private readonly userDataDir?: string,
     private readonly cdpPort: number = CDP_PORT,
+    private readonly targetPid?: number,
   ) {
     // Load .env values for ${VARIABLE} resolution in step text
     this.envData = loadEnv(process.cwd());
@@ -730,6 +731,7 @@ export class TestRunner {
   private requireNativeUI(): NativeUIClient {
     if (!this.nativeUI) {
       this.nativeUI = new NativeUIClient();
+      this.nativeUI.targetPid = this.targetPid;
       // Start synchronously - first call will await
       this.nativeUI.start().catch(() => { /* logged by individual calls */ });
     }
