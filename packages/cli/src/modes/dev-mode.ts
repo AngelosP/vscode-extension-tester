@@ -111,9 +111,10 @@ export async function runFeatures(
   startTime: number,
   artifactsDir?: string,
   userDataDir?: string,
+  cdpPort?: number,
 ): Promise<TestRunResult> {
   const parser = new GherkinParser();
-  const runner = new TestRunner(client, {}, artifactsDir, userDataDir);
+  const runner = new TestRunner(client, {}, artifactsDir, userDataDir, cdpPort);
 
   // Find all .feature files
   const featuresDir = path.resolve(options.extensionPath, options.features);

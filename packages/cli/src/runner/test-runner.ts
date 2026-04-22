@@ -26,6 +26,7 @@ export class TestRunner {
     private readonly testData: Record<string, string> = {},
     private readonly artifactsDir?: string,
     private readonly userDataDir?: string,
+    private readonly cdpPort: number = CDP_PORT,
   ) {
     // Load .env values for ${VARIABLE} resolution in step text
     this.envData = loadEnv(process.cwd());
@@ -738,7 +739,7 @@ export class TestRunner {
   /** Lazily connect a CDP client for webview interactions. */
   private async requireCdp(): Promise<CdpClient> {
     if (!this.cdp) {
-      this.cdp = new CdpClient(CDP_PORT);
+      this.cdp = new CdpClient(this.cdpPort);
       // Wire controller's tab activation so CDP can bring a webview to front
       // before probing its DOM title.
       this.cdp.onActivateTab = async (title: string) => {
@@ -751,7 +752,7 @@ export class TestRunner {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         throw new Error(
-          `Could not connect to Chrome DevTools Protocol on port ${CDP_PORT}: ${msg}\n` +
+          `Could not connect to Chrome DevTools Protocol on port ${this.cdpPort}: ${msg}\n` +
           'Make sure the Dev Host was launched via the "Debug extension with automation support" config ' +
           'so --remote-debugging-port is set.',
         );

@@ -64,11 +64,33 @@ export async function launchMode(options: RunOptions, artifactsDir?: string): Pr
   linkExtensionIntoDir(controllerDevDir, extensionsDir, '_controller');
   console.log('Controller extension installed into extensions dir.');
 
+  // 4. Resolve ports — avoid colliding with an already-running VS Code
+  //    (e.g. an F5 Dev Host on the default ports).
+  let controllerPort = options.controllerPort;
+  if (await isPortInUse(controllerPort)) {
+    const freePort = await findFreePort();
+    console.log(
+      `Controller port ${controllerPort} is already in use (another VS Code instance?). ` +
+      `Using port ${freePort} instead.`
+    );
+    controllerPort = freePort;
+  }
+
+  let cdpPort = options.cdpPort;
+  if (await isPortInUse(cdpPort)) {
+    const freePort = await findFreePort();
+    console.log(
+      `CDP port ${cdpPort} is already in use (another VS Code instance?). ` +
+      `Using port ${freePort} instead.`
+    );
+    cdpPort = freePort;
+  }
+
   const args: string[] = [
     '--new-window',
     `--user-data-dir=${userDataDir}`,
     `--extensions-dir=${extensionsDir}`,
-    `--remote-debugging-port=${options.cdpPort}`,
+    `--remote-debugging-port=${cdpPort}`,
     '--disable-telemetry',
     '--skip-welcome',
     '--skip-release-notes',
@@ -77,18 +99,6 @@ export async function launchMode(options: RunOptions, artifactsDir?: string): Pr
     // same as F5 / profile open.
     `--extensionDevelopmentPath=${extensionPath}`,
   ];
-
-  // 4. Resolve controller port — avoid colliding with an already-running
-  //    controller (e.g. an F5 Dev Host on the default port).
-  let controllerPort = options.controllerPort;
-  if (await isPortInUse(controllerPort)) {
-    const freePort = await findFreePort();
-    console.log(
-      `Port ${controllerPort} is already in use (another VS Code instance?). ` +
-      `Using port ${freePort} instead.`
-    );
-    controllerPort = freePort;
-  }
 
   // 5. Launch VS Code (with xvfb on Linux if needed)
   console.log('Launching VS Code...');
@@ -121,7 +131,7 @@ export async function launchMode(options: RunOptions, artifactsDir?: string): Pr
     }
 
     // 6. Run tests
-    const result = await runFeatures(client, options, startTime, artifactsDir, userDataDir);
+    const result = await runFeatures(client, options, startTime, artifactsDir, userDataDir, cdpPort);
     client.disconnect();
     return result;
   } finally {
