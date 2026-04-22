@@ -8,6 +8,7 @@ import { ControllerClient } from '../runner/controller-client.js';
 import { runFeatures } from './dev-mode.js';
 import { getVsixPath } from '../commands/install.js';
 import { getProfileDir, getProfileUserDataDir, getProfileExtensionsDir } from '../profile.js';
+import { isPortInUse, findFreePort } from '../utils/port.js';
 
 /**
  * Launch mode (default): download/launch an isolated VS Code instance, install
@@ -77,26 +78,38 @@ export async function launchMode(options: RunOptions, artifactsDir?: string): Pr
     `--extensionDevelopmentPath=${extensionPath}`,
   ];
 
-  // 4. Launch VS Code (with xvfb on Linux if needed)
+  // 4. Resolve controller port — avoid colliding with an already-running
+  //    controller (e.g. an F5 Dev Host on the default port).
+  let controllerPort = options.controllerPort;
+  if (await isPortInUse(controllerPort)) {
+    const freePort = await findFreePort();
+    console.log(
+      `Port ${controllerPort} is already in use (another VS Code instance?). ` +
+      `Using port ${freePort} instead.`
+    );
+    controllerPort = freePort;
+  }
+
+  // 5. Launch VS Code (with xvfb on Linux if needed)
   console.log('Launching VS Code...');
   let vscProcess: cp.ChildProcess;
 
   if (process.platform === 'linux' && (options.xvfb || isHeadlessCI())) {
     vscProcess = cp.spawn('xvfb-run', ['-a', vscPath, ...args], {
       stdio: 'pipe',
-      env: { ...process.env, VSCODE_EXT_TESTER_PORT: String(options.controllerPort) },
+      env: { ...process.env, VSCODE_EXT_TESTER_PORT: String(controllerPort) },
     });
   } else {
     vscProcess = cp.spawn(vscPath, args, {
       stdio: 'pipe',
-      env: { ...process.env, VSCODE_EXT_TESTER_PORT: String(options.controllerPort) },
+      env: { ...process.env, VSCODE_EXT_TESTER_PORT: String(controllerPort) },
     });
   }
 
   try {
-    // 5. Wait for controller to be ready
+    // 6. Wait for controller to be ready
     console.log('Waiting for controller extension...');
-    const client = new ControllerClient(options.controllerPort);
+    const client = new ControllerClient(controllerPort);
     await waitForController(client, VSCODE_LAUNCH_TIMEOUT_MS);
     console.log('Connected to controller extension.\n');
 
