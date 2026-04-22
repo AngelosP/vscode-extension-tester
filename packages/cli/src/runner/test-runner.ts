@@ -966,6 +966,23 @@ export class TestRunner {
     // Write the PS script to a temp file to avoid quoting issues
     const os = require('node:os');
     const scriptPath = path.join(os.tmpdir(), `vscode-ext-tester-screenshot-${process.pid}.ps1`);
+    // Build a PID filter for the PowerShell script — when we know which
+    // VS Code process tree to target, restrict the window search to children
+    // of that process to avoid capturing an unrelated Dev Host (e.g. F5).
+    let pidFilter = '';
+    if (this.targetPid) {
+      // Get all descendant PIDs and filter Get-Process to that set
+      pidFilter = `
+$parentPid = ${this.targetPid}
+$allProcs = Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId
+$tree = @{}; $allProcs | ForEach-Object { if (-not $tree[$_.ParentProcessId]) { $tree[$_.ParentProcessId] = @() }; $tree[$_.ParentProcessId] += $_.ProcessId }
+$allowed = [System.Collections.Generic.HashSet[int]]::new()
+$queue = [System.Collections.Generic.Queue[int]]::new()
+$queue.Enqueue($parentPid); $allowed.Add($parentPid) | Out-Null
+while ($queue.Count -gt 0) { $cur = $queue.Dequeue(); if ($tree[$cur]) { foreach ($c in $tree[$cur]) { if ($allowed.Add($c)) { $queue.Enqueue($c) } } } }
+`;
+    }
+
     const script = `
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -980,7 +997,10 @@ public class Win32Screenshot {
   public struct RECT { public int Left, Top, Right, Bottom; }
 }
 "@
-$devHost = Get-Process | Where-Object { $_.MainWindowTitle -like "*Extension Development Host*" } | Select-Object -First 1
+${pidFilter}
+$candidates = Get-Process | Where-Object { $_.MainWindowTitle -like "*Extension Development Host*" -and $_.MainWindowHandle -ne [IntPtr]::Zero }
+${this.targetPid ? '$candidates = $candidates | Where-Object { $allowed.Contains([int]$_.Id) }' : ''}
+$devHost = $candidates | Select-Object -First 1
 if ($devHost -and $devHost.MainWindowHandle -ne [IntPtr]::Zero) {
   [Win32Screenshot]::ShowWindow($devHost.MainWindowHandle, 9)
   [Win32Screenshot]::SetForegroundWindow($devHost.MainWindowHandle)
