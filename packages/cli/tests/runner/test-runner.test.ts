@@ -1919,10 +1919,16 @@ describe('TestRunner', () => {
 
       await runner.runFeature(feature);
 
-      expect(getMockNativeUI().pressKey).toHaveBeenCalledWith('escape');
+      expect(getMockNativeUI().clickDialogButton).toHaveBeenCalledWith('Save', 'Cancel');
     });
 
     it('should handle "I cancel the Open dialog" step', async () => {
+      // The implementation tries Save first, and if that throws, falls back to Open.
+      // Make the Save attempt throw so it falls through to the Open dialog.
+      getMockNativeUI().clickDialogButton = vi.fn()
+        .mockRejectedValueOnce(new Error('not found'))
+        .mockResolvedValueOnce(undefined);
+
       const feature = makeFeature('Test', [
         makeScenario('Cancel dialog', [
           makeStep('When ', 'I cancel the Open dialog'),
@@ -1931,7 +1937,7 @@ describe('TestRunner', () => {
 
       await runner.runFeature(feature);
 
-      expect(getMockNativeUI().pressKey).toHaveBeenCalledWith('escape');
+      expect(getMockNativeUI().clickDialogButton).toHaveBeenCalledWith('Open', 'Cancel');
     });
 
     it('should handle "I resize the Dev Host" step', async () => {

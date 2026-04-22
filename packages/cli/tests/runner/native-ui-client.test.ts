@@ -45,6 +45,7 @@ let fakeProcess: ReturnType<typeof createFakeProcess>;
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(() => fakeProcess),
+  execSync: vi.fn(() => ''),
 }));
 
 // Dynamic import after mock setup
@@ -430,14 +431,14 @@ describe('NativeUIClient', () => {
       const devWin = { ...SAMPLE_WINDOW, id: 'dev_win', title: 'Extension Development Host' };
       const el = { ...SAMPLE_ELEMENT, id: 'el_1', name: 'Submit' };
 
-      vi.spyOn(client, 'findWindow').mockResolvedValueOnce(devWin);
+      vi.spyOn(client, 'listWindows').mockResolvedValueOnce([devWin]);
       vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
       vi.spyOn(client, 'findElement').mockResolvedValueOnce(el);
       vi.spyOn(client, 'clickElement').mockResolvedValueOnce(undefined);
 
       await client.clickInDevHost('Submit');
 
-      expect(client.findWindow).toHaveBeenCalledWith('Extension Development Host');
+      expect(client.listWindows).toHaveBeenCalled();
       expect(client.focusWindow).toHaveBeenCalledWith('dev_win');
       expect(client.findElement).toHaveBeenCalledWith('dev_win', 'Submit', undefined);
       expect(client.clickElement).toHaveBeenCalledWith('el_1');
@@ -446,7 +447,7 @@ describe('NativeUIClient', () => {
     it('should throw when element is not found in Dev Host', async () => {
       const devWin = { ...SAMPLE_WINDOW, id: 'dev_win', title: 'Extension Development Host' };
 
-      vi.spyOn(client, 'findWindow').mockResolvedValueOnce(devWin);
+      vi.spyOn(client, 'listWindows').mockResolvedValueOnce([devWin]);
       vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
       vi.spyOn(client, 'findElement').mockResolvedValueOnce(null);
 
@@ -466,7 +467,7 @@ describe('NativeUIClient', () => {
     it('resizeDevHost() should find Dev Host window and resize', async () => {
       const devWin = { ...SAMPLE_WINDOW, id: 'dev_win', title: 'Extension Development Host' };
 
-      vi.spyOn(client, 'findWindow').mockResolvedValueOnce(devWin);
+      vi.spyOn(client, 'listWindows').mockResolvedValueOnce([devWin]);
       vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
       vi.spyOn(client, 'resizeWindow').mockResolvedValueOnce(undefined);
 
@@ -479,7 +480,7 @@ describe('NativeUIClient', () => {
     it('moveDevHost() should find Dev Host window and move', async () => {
       const devWin = { ...SAMPLE_WINDOW, id: 'dev_win', title: 'Extension Development Host' };
 
-      vi.spyOn(client, 'findWindow').mockResolvedValueOnce(devWin);
+      vi.spyOn(client, 'listWindows').mockResolvedValueOnce([devWin]);
       vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
       vi.spyOn(client, 'moveWindow').mockResolvedValueOnce(undefined);
 
@@ -489,16 +490,13 @@ describe('NativeUIClient', () => {
       expect(client.moveWindow).toHaveBeenCalledWith('dev_win', 100, 200);
     });
 
-    it('findDevHostWindow should fall back to listWindows partial match', async () => {
+    it('findDevHostWindow should match by partial title', async () => {
       const devWin = {
         ...SAMPLE_WINDOW,
         id: 'dev_win',
         title: 'test-project - Extension Development Host',
       };
 
-      // First findWindow("Extension Development Host") returns null (exact match fails)
-      vi.spyOn(client, 'findWindow').mockResolvedValueOnce(null);
-      // listWindows returns a window with partial match
       vi.spyOn(client, 'listWindows').mockResolvedValueOnce([devWin]);
       vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
       vi.spyOn(client, 'resizeWindow').mockResolvedValueOnce(undefined);
@@ -507,6 +505,116 @@ describe('NativeUIClient', () => {
 
       expect(client.listWindows).toHaveBeenCalled();
       expect(client.resizeWindow).toHaveBeenCalledWith('dev_win', 800, 600);
+    });
+  });
+
+  // ─── PID-based window disambiguation ────────────────────────────
+
+  describe('targetPid filtering', () => {
+    const f5Window = {
+      ...SAMPLE_WINDOW,
+      id: 'f5_win',
+      title: 'my-ext - Extension Development Host',
+      processId: 1000,
+    };
+    const launchedWindow = {
+      ...SAMPLE_WINDOW,
+      id: 'launched_win',
+      title: 'my-ext - Extension Development Host',
+      processId: 2000,
+    };
+
+    beforeEach(async () => {
+      await client.start();
+    });
+
+    it('should pick first window when no targetPid is set', async () => {
+      vi.spyOn(client, 'listWindows').mockResolvedValueOnce([f5Window, launchedWindow]);
+      vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
+      vi.spyOn(client, 'resizeWindow').mockResolvedValueOnce(undefined);
+
+      await client.resizeDevHost(800, 600);
+
+      // Without targetPid, grabs the first match
+      expect(client.focusWindow).toHaveBeenCalledWith('f5_win');
+    });
+
+    it('should pick the window matching targetPid process tree when set', async () => {
+      client.targetPid = 1999; // parent of launchedWindow (processId 2000)
+
+      // Mock wmic to return a process tree where 2000 is a child of 1999
+      (cp.execSync as any).mockReturnValue(
+        'Node,ParentProcessId,ProcessId\n' +
+        'PC,0,1\n' +
+        'PC,1,1000\n' +
+        'PC,1999,2000\n'
+      );
+
+      vi.spyOn(client, 'listWindows').mockResolvedValueOnce([f5Window, launchedWindow]);
+      vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
+      vi.spyOn(client, 'resizeWindow').mockResolvedValueOnce(undefined);
+
+      await client.resizeDevHost(800, 600);
+
+      // Should pick launched_win (PID 2000), not f5_win (PID 1000)
+      expect(client.focusWindow).toHaveBeenCalledWith('launched_win');
+      expect(client.resizeWindow).toHaveBeenCalledWith('launched_win', 800, 600);
+    });
+
+    it('should fall back to first window when targetPid has no matching descendants', async () => {
+      client.targetPid = 9999; // no children in the tree
+
+      (cp.execSync as any).mockReturnValue(
+        'Node,ParentProcessId,ProcessId\n' +
+        'PC,0,1\n' +
+        'PC,1,1000\n' +
+        'PC,1,2000\n'
+      );
+
+      vi.spyOn(client, 'listWindows').mockResolvedValueOnce([f5Window, launchedWindow]);
+      vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
+      vi.spyOn(client, 'resizeWindow').mockResolvedValueOnce(undefined);
+
+      await client.resizeDevHost(800, 600);
+
+      // Falls back to first match
+      expect(client.focusWindow).toHaveBeenCalledWith('f5_win');
+    });
+
+    it('should not filter by PID when only one Dev Host window exists', async () => {
+      client.targetPid = 1999;
+
+      (cp.execSync as any).mockReturnValue(
+        'Node,ParentProcessId,ProcessId\n' +
+        'PC,1999,2000\n'
+      );
+
+      // Only one window — no ambiguity, PID filter is skipped
+      vi.spyOn(client, 'listWindows').mockResolvedValueOnce([launchedWindow]);
+      vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
+      vi.spyOn(client, 'resizeWindow').mockResolvedValueOnce(undefined);
+
+      await client.resizeDevHost(800, 600);
+
+      expect(client.focusWindow).toHaveBeenCalledWith('launched_win');
+    });
+
+    it('should handle wmic failure gracefully and fall back to first window', async () => {
+      client.targetPid = 1999;
+
+      (cp.execSync as any).mockImplementation(() => {
+        throw new Error('wmic not found');
+      });
+
+      vi.spyOn(client, 'listWindows').mockResolvedValueOnce([f5Window, launchedWindow]);
+      vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
+      vi.spyOn(client, 'resizeWindow').mockResolvedValueOnce(undefined);
+
+      await client.resizeDevHost(800, 600);
+
+      // wmic failed, so allowedPids only contains targetPid (1999) — no match,
+      // falls back to first window
+      expect(client.focusWindow).toHaveBeenCalledWith('f5_win');
     });
   });
 });
