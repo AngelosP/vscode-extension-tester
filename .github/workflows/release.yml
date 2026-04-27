@@ -42,14 +42,14 @@ jobs:
             throw "Release tag v$tagVersion does not match packages/cli version $packageVersion"
           }
 
+      - name: Build native bridge
+        run: npm run build:native
+
       - name: Run tests
         run: npm test
 
       - name: Build TypeScript packages and controller VSIX
         run: npm run build
-
-      - name: Build native bridge
-        run: npm run build:native
 
       - name: Package release artifacts
         run: npm run package:release

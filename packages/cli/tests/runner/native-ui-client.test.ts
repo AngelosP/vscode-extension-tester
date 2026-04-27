@@ -48,9 +48,14 @@ vi.mock('node:child_process', () => ({
   execSync: vi.fn(() => ''),
 }));
 
+vi.mock('node:fs', () => ({
+  existsSync: vi.fn(),
+}));
+
 // Dynamic import after mock setup
 const { NativeUIClient } = await import('../../src/runner/native-ui-client.js');
 import * as cp from 'node:child_process';
+import * as fs from 'node:fs';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -116,6 +121,7 @@ describe('NativeUIClient', () => {
   beforeEach(() => {
     stdinWrites = [];
     fakeProcess = createFakeProcess();
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => String(filePath).endsWith('FlaUIBridge.exe'));
     client = new NativeUIClient();
   });
 
@@ -127,12 +133,12 @@ describe('NativeUIClient', () => {
   // ─── Lifecycle ───────────────────────────────────────────────────
 
   describe('lifecycle', () => {
-    it('should spawn dotnet with the correct DLL path', async () => {
+    it('should spawn the bundled bridge executable when available', async () => {
       await client.start();
 
       expect(cp.spawn).toHaveBeenCalledWith(
-        'dotnet',
-        [expect.stringContaining('FlaUIBridge.dll')],
+        expect.stringContaining('FlaUIBridge.exe'),
+        [],
         expect.objectContaining({ stdio: ['pipe', 'pipe', 'pipe'] }),
       );
     });
