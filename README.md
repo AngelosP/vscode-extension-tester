@@ -70,6 +70,30 @@ cd packages/controller-extension
 npm run package
 ```
 
+## Releasing
+
+Release artifacts are built by GitHub Actions on Windows so the packaged CLI includes both required runtime assets:
+
+- `assets/controller-extension.vsix` - bundled controller extension installed by `vscode-ext-test install`
+- `assets/native/win-x64/FlaUIBridge.exe` - self-contained native UI automation bridge for Windows CI agents
+
+To create a release, update the package versions, then push a semver tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The `Release` workflow runs tests, builds the TypeScript packages, packages the controller extension, publishes the native bridge, runs `npm pack`, and uploads the installable tarball to the GitHub Release. Manual workflow runs are also supported; they upload the same files as workflow artifacts without creating a GitHub Release.
+
+Downstream CI can install the released CLI directly from the tarball:
+
+```bash
+npm install -g https://github.com/<org>/vscode-extension-tester/releases/download/v0.1.0/vscode-ext-test-0.1.0.tgz
+vscode-ext-test install
+vscode-ext-test run --features tests/vscode-extension-tester/e2e
+```
+
 ## Commands
 
 | Command | Description |

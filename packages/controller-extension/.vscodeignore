@@ -1,6 +1,10 @@
-.turbo/
-src/
+.vscode/**
+.turbo/**
+src/**
+tests/**
+node_modules/**
+dist/**/*.map
+*.tsbuildinfo
 tsconfig.json
-*.ts
-!dist/**
-node_modules/
+*.vsix
+README.md

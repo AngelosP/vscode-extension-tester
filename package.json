@@ -9,9 +9,11 @@
   ],
   "scripts": {
     "build": "turbo run build",
+    "build:native": "dotnet publish dotnet/FlaUIBridge.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false -o packages/cli/assets/native/win-x64",
     "clean": "turbo run clean",
     "test": "vitest run",
-    "lint": "turbo run lint"
+    "lint": "turbo run lint",
+    "package:release": "node scripts/package-release.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

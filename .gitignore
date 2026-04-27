@@ -4,12 +4,14 @@ node_modules/
 # Build outputs
 dist/
 *.tsbuildinfo
+release-artifacts/
 
 # Turbo
 .turbo/
 
 # VS Code extension packages
 *.vsix
+packages/cli/assets/native/
 
 # .NET build outputs
 dotnet/bin/

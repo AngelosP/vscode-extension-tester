@@ -1,4 +1,5 @@
 import * as cp from 'node:child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
 
@@ -20,11 +21,9 @@ export class NativeUIClient {
   targetPid?: number;
 
   async start(): Promise<void> {
-    const dllPath = path.resolve(
-      __dirname, '..', '..', '..', '..', 'dotnet', 'bin', 'Release', 'net8.0-windows', 'FlaUIBridge.dll'
-    );
+    const bridge = resolveBridgeCommand();
 
-    this.process = cp.spawn('dotnet', [dllPath], {
+    this.process = cp.spawn(bridge.command, bridge.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -348,6 +347,54 @@ export class NativeUIClient {
       this.process.stdin!.write(line);
     });
   }
+}
+
+function resolveBridgeCommand(): { command: string; args: string[] } {
+  const bundledExePath = path.resolve(
+    __dirname,
+    '..',
+    '..',
+    'assets',
+    'native',
+    'win-x64',
+    'FlaUIBridge.exe'
+  );
+  if (fs.existsSync(bundledExePath)) {
+    return { command: bundledExePath, args: [] };
+  }
+
+  const bundledDllPath = path.resolve(
+    __dirname,
+    '..',
+    '..',
+    'assets',
+    'native',
+    'win-x64',
+    'FlaUIBridge.dll'
+  );
+  if (fs.existsSync(bundledDllPath)) {
+    return { command: 'dotnet', args: [bundledDllPath] };
+  }
+
+  const repoDllPath = path.resolve(
+    __dirname,
+    '..',
+    '..',
+    '..',
+    '..',
+    'dotnet',
+    'bin',
+    'Release',
+    'net8.0-windows',
+    'FlaUIBridge.dll'
+  );
+  if (fs.existsSync(repoDllPath)) {
+    return { command: 'dotnet', args: [repoDllPath] };
+  }
+
+  throw new Error(
+    'FlaUI bridge binary not found. Run `npm run build:native` before using native UI automation.'
+  );
 }
 
 export interface NativeWindow {
