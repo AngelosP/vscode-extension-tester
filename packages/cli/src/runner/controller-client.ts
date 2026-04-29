@@ -4,6 +4,10 @@ import type {
   ControllerResponse,
   VSCodeState,
   NotificationInfo,
+  ProgressState,
+  QuickInputSelectResult,
+  QuickInputState,
+  QuickInputTextResult,
 } from '../types.js';
 import { WS_CONNECT_TIMEOUT_MS } from '../types.js';
 
@@ -58,6 +62,26 @@ export class ControllerClient {
 
   async respondToDialog(button: string): Promise<unknown> {
     return this.send('respondToDialog', { button });
+  }
+
+  async getQuickInputState(): Promise<QuickInputState> {
+    return this.send('getQuickInputState') as Promise<QuickInputState>;
+  }
+
+  async selectQuickInputItem(label: string): Promise<QuickInputSelectResult> {
+    return this.send('selectQuickInputItem', { label }) as Promise<QuickInputSelectResult>;
+  }
+
+  async submitQuickInputText(value: string): Promise<QuickInputTextResult> {
+    return this.send('submitQuickInputText', { value }) as Promise<QuickInputTextResult>;
+  }
+
+  async clickNotificationAction(message: string, action: string): Promise<unknown> {
+    return this.send('clickNotificationAction', { message, action });
+  }
+
+  async getProgressState(): Promise<ProgressState> {
+    return this.send('getProgressState') as Promise<ProgressState>;
   }
 
   async getState(): Promise<VSCodeState> {

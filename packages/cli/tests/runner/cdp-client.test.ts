@@ -162,4 +162,56 @@ describe('CdpClient', () => {
     await expect(client.pressKey('Ctrl+DefinitelyNotAKey')).rejects.toThrow('Unsupported key spec');
     expect(mockClientRef.current.Input.dispatchKeyEvent).not.toHaveBeenCalled();
   });
+
+  it('reads visible workbench QuickInput state from the renderer DOM', async () => {
+    mockClientRef.current.Runtime.evaluate.mockResolvedValue({
+      result: {
+        value: {
+          active: true,
+          source: 'workbench',
+          title: 'Select subscription',
+          items: [{ id: 'workbench-item-0', label: 'Contoso', matchLabel: 'Contoso' }],
+        },
+      },
+    });
+    await client.connect();
+
+    const state = await client.getWorkbenchQuickInputState();
+
+    expect(state).toMatchObject({ active: true, source: 'workbench', title: 'Select subscription' });
+    expect(mockClientRef.current.Runtime.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      expression: expect.stringContaining('.quick-input-widget'),
+      returnByValue: true,
+    }));
+  });
+
+  it('selects a workbench QuickInput item with real pointer events', async () => {
+    mockClientRef.current.Runtime.evaluate.mockResolvedValue({
+      result: { value: { label: 'Contoso', x: 100, y: 200 } },
+    });
+    await client.connect();
+
+    const result = await client.selectWorkbenchQuickInputItem('Contoso');
+
+    expect(result).toEqual({ selected: 'Contoso', intercepted: false });
+    expect(mockClientRef.current.Input.dispatchMouseEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'mousePressed',
+      x: 100,
+      y: 200,
+    }));
+  });
+
+  it('focuses and accepts workbench QuickInput text', async () => {
+    mockClientRef.current.Runtime.evaluate.mockResolvedValue({ result: { value: { focused: true } } });
+    await client.connect();
+
+    const result = await client.submitWorkbenchQuickInputText('new-project');
+
+    expect(result).toEqual({ entered: 'new-project', intercepted: false, accepted: true });
+    expect(mockClientRef.current.Input.insertText).toHaveBeenCalledWith({ text: 'new-project' });
+    expect(mockClientRef.current.Input.dispatchKeyEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'keyDown',
+      key: 'Enter',
+    }));
+  });
 });

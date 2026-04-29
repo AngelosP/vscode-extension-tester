@@ -51,6 +51,41 @@ describe('ControllerClient', () => {
               result: [{ message: 'Hello', severity: 'info' }],
             }));
             break;
+          case 'getQuickInputState':
+            ws.send(JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              result: { active: true, title: 'Pick', items: [{ id: 'item-1', label: 'Create', matchLabel: 'Create' }] },
+            }));
+            break;
+          case 'selectQuickInputItem':
+            ws.send(JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              result: { selected: request.params?.label, intercepted: true },
+            }));
+            break;
+          case 'submitQuickInputText':
+            ws.send(JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              result: { entered: request.params?.value, intercepted: true, accepted: true },
+            }));
+            break;
+          case 'getProgressState':
+            ws.send(JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              result: { active: [], history: [{ id: 'progress-1', title: 'Deploy', status: 'completed', createdAt: 1, updatedAt: 2, completedAt: 2 }] },
+            }));
+            break;
+          case 'clickNotificationAction':
+            ws.send(JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              result: { action: request.params?.action },
+            }));
+            break;
           case 'errorCommand':
             ws.send(JSON.stringify({
               jsonrpc: '2.0',
@@ -145,6 +180,41 @@ describe('ControllerClient', () => {
       const notifications = await client.getNotifications();
       expect(notifications).toHaveLength(1);
       expect(notifications[0].message).toBe('Hello');
+    });
+  });
+
+  describe('QuickInput helpers', () => {
+    it('should return QuickInput state', async () => {
+      await client.connect();
+      const state = await client.getQuickInputState();
+      expect(state.active).toBe(true);
+      expect(state.items?.[0].label).toBe('Create');
+    });
+
+    it('should select a QuickInput item', async () => {
+      await client.connect();
+      const result = await client.selectQuickInputItem('Create');
+      expect(result).toEqual({ selected: 'Create', intercepted: true });
+    });
+
+    it('should submit QuickInput text', async () => {
+      await client.connect();
+      const result = await client.submitQuickInputText('prod-rg');
+      expect(result).toEqual({ entered: 'prod-rg', intercepted: true, accepted: true });
+    });
+  });
+
+  describe('progress and notification helpers', () => {
+    it('should return progress state', async () => {
+      await client.connect();
+      const progress = await client.getProgressState();
+      expect(progress.history[0].title).toBe('Deploy');
+    });
+
+    it('should click a notification action', async () => {
+      await client.connect();
+      const result = await client.clickNotificationAction('Hello', 'Retry') as { action: string };
+      expect(result.action).toBe('Retry');
     });
   });
 

@@ -1,16 +1,90 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock vscode module
 vi.mock('vscode', () => ({
+  QuickPickItemKind: { Separator: -1 },
+  InputBoxValidationSeverity: { Info: 1, Warning: 2, Error: 3 },
   commands: {
     executeCommand: vi.fn().mockResolvedValue(undefined),
   },
   window: {
+    showQuickPick: vi.fn().mockImplementation(() => new Promise(() => {})),
+    createQuickPick: vi.fn(),
     showInputBox: vi.fn().mockImplementation(() => new Promise(() => {})),
+    createInputBox: vi.fn(),
   },
 }));
 
 import { UIInterceptor } from '../src/ui-interceptor.js';
+
+function createEmitter<T>() {
+  const listeners: Array<(value: T) => void> = [];
+  return {
+    event: (listener: (value: T) => void) => {
+      listeners.push(listener);
+      return { dispose: vi.fn() };
+    },
+    fire: (value: T) => {
+      for (const listener of listeners) listener(value);
+    },
+  };
+}
+
+function createFakeQuickPick() {
+  const valueEmitter = createEmitter<string>();
+  const activeEmitter = createEmitter<any[]>();
+  const selectionEmitter = createEmitter<any[]>();
+  const hideEmitter = createEmitter<void>();
+  const quickPick = {
+    title: '',
+    placeholder: '',
+    value: '',
+    busy: false,
+    enabled: true,
+    canSelectMany: false,
+    items: [] as any[],
+    activeItems: [] as any[],
+    selectedItems: [] as any[],
+    onDidChangeValue: valueEmitter.event,
+    onDidChangeActive: activeEmitter.event,
+    onDidChangeSelection: selectionEmitter.event,
+    onDidHide: hideEmitter.event,
+    show: vi.fn(),
+    hide: vi.fn(() => hideEmitter.fire(undefined)),
+    dispose: vi.fn(),
+    fireValue: valueEmitter.fire,
+    fireActive: activeEmitter.fire,
+    fireSelection: selectionEmitter.fire,
+  };
+  return quickPick;
+}
+
+function createFakeInputBox(onValueChange?: (value: string, inputBox: any) => void) {
+  const valueEmitter = createEmitter<string>();
+  const hideEmitter = createEmitter<void>();
+  let currentValue = '';
+  const inputBox: any = {
+    title: '',
+    placeholder: '',
+    prompt: '',
+    validationMessage: undefined,
+    busy: false,
+    enabled: true,
+    onDidChangeValue: valueEmitter.event,
+    onDidHide: hideEmitter.event,
+    show: vi.fn(),
+    hide: vi.fn(() => hideEmitter.fire(undefined)),
+    dispose: vi.fn(),
+  };
+  Object.defineProperty(inputBox, 'value', {
+    get: () => currentValue,
+    set: (value: string) => {
+      currentValue = value;
+      onValueChange?.(value, inputBox);
+      valueEmitter.fire(value);
+    },
+  });
+  return inputBox;
+}
 
 describe('UIInterceptor', () => {
   let interceptor: UIInterceptor;
@@ -20,140 +94,198 @@ describe('UIInterceptor', () => {
     interceptor = new UIInterceptor();
     vscode = await import('vscode');
     vi.clearAllMocks();
+    vscode.window.showQuickPick.mockImplementation(() => new Promise(() => {}));
+    vscode.window.showInputBox.mockImplementation(() => new Promise(() => {}));
   });
 
-  describe('respondToQuickPick()', () => {
-    it('should type the label and accept', async () => {
+  describe('showQuickPick interception', () => {
+    it('captures items and resolves with the original object item', async () => {
+      const disposables = interceptor.register();
+      const item = { label: '$(zap) Deploy', description: 'Azure', detail: 'Create resources' };
+
+      const promise = (vscode.window.showQuickPick as any)([item], { title: 'Pick action' });
+      await Promise.resolve();
+
+      expect(interceptor.getQuickInputState()).toMatchObject({
+        active: true,
+        kind: 'quickPick',
+        title: 'Pick action',
+      });
+      expect(interceptor.getQuickInputState().items?.[0]).toMatchObject({
+        label: '$(zap) Deploy',
+        matchLabel: 'Deploy',
+      });
+
+      const result = await interceptor.selectQuickInputItem('Deploy');
+      await expect(promise).resolves.toBe(item);
+      expect(result).toEqual({ selected: '$(zap) Deploy', intercepted: true });
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith('workbench.action.closeQuickOpen');
+
+      disposables.forEach((d: any) => d.dispose());
+    });
+
+    it('invokes showQuickPick onDidSelectItem before resolving', async () => {
+      const disposables = interceptor.register();
+      const item = { label: 'Deploy' };
+      const onDidSelectItem = vi.fn();
+
+      const promise = (vscode.window.showQuickPick as any)([item], { onDidSelectItem });
+      await Promise.resolve();
+
+      await interceptor.selectQuickInputItem('Deploy');
+
+      expect(onDidSelectItem).toHaveBeenCalledWith(item);
+      await expect(promise).resolves.toBe(item);
+
+      disposables.forEach((d: any) => d.dispose());
+    });
+
+    it('rejects separator selection', async () => {
+      const disposables = interceptor.register();
+      (vscode.window.showQuickPick as any)([
+        { label: 'Group', kind: vscode.QuickPickItemKind.Separator },
+      ]);
+      await Promise.resolve();
+
+      await expect(interceptor.selectQuickInputItem('Group')).rejects.toThrow('separator');
+      disposables.forEach((d: any) => d.dispose());
+    });
+
+    it('falls back to legacy command selection when no QuickPick is active', async () => {
       const result = await interceptor.respondToQuickPick('TypeScript');
 
       expect(result).toEqual({ selected: 'TypeScript' });
-      expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
-        'workbench.action.quickOpenSelectNext'
-      );
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith('workbench.action.quickOpenSelectNext');
       expect(vscode.commands.executeCommand).toHaveBeenCalledWith('type', { text: 'TypeScript' });
     });
 
-    it('should return the selected label', async () => {
-      const result = await interceptor.respondToQuickPick('My Item');
+    it('falls back to legacy command selection when the captured model is stale', async () => {
+      const disposables = interceptor.register();
+      (vscode.window.showQuickPick as any)([{ label: 'Only visible later' }]);
+      await Promise.resolve();
 
-      expect(result.selected).toBe('My Item');
+      const result = await interceptor.respondToQuickPick('Create new resource group');
+
+      expect(result).toEqual({ selected: 'Create new resource group' });
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith('workbench.action.quickOpenSelectNext');
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith('type', { text: 'Create new resource group' });
+
+      disposables.forEach((d: any) => d.dispose());
     });
   });
 
-  describe('respondToInputBox()', () => {
-    it('should intercept showInputBox and resolve with provided value', async () => {
-      // Underlying showInputBox hangs (simulates open InputBox waiting for input)
-      vscode.window.showInputBox.mockImplementation(() => new Promise(() => {}));
-
+  describe('createQuickPick interception', () => {
+    it('tracks dynamic items and sets the real selectedItems before accepting', async () => {
+      const fakeQuickPick = createFakeQuickPick();
+      vscode.window.createQuickPick.mockReturnValue(fakeQuickPick);
       const disposables = interceptor.register();
 
-      // Simulate the extension under test calling showInputBox
-      const extensionPromise = vscode.window.showInputBox({ prompt: 'Enter URL' });
+      const quickPick = vscode.window.createQuickPick();
+      const item = { label: 'Create new resource group' };
+      quickPick.title = 'Resource group';
+      quickPick.items = [item];
+      quickPick.show();
 
-      // Respond programmatically
-      const result = await interceptor.respondToInputBox('https://example.com');
+      expect(interceptor.getQuickInputState()).toMatchObject({ title: 'Resource group' });
+      expect(interceptor.getQuickInputState().items?.[0].label).toBe('Create new resource group');
 
-      expect(result).toEqual({ entered: 'https://example.com', intercepted: true });
+      await interceptor.selectQuickInputItem('Create new resource group');
 
-      // The extension's await showInputBox() should have resolved with our value
-      const extensionResult = await extensionPromise;
-      expect(extensionResult).toBe('https://example.com');
+      expect(fakeQuickPick.activeItems).toEqual([item]);
+      expect(fakeQuickPick.selectedItems).toEqual([item]);
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith('workbench.action.acceptSelectedQuickOpenItem');
 
-      // closeQuickOpen should have been called to dismiss the visual InputBox
-      expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
-        'workbench.action.closeQuickOpen'
-      );
+      disposables.forEach((d: any) => d.dispose());
+    });
+  });
+
+  describe('showInputBox interception', () => {
+    it('waits for validation before resolving the original promise', async () => {
+      const disposables = interceptor.register();
+      const promise = vscode.window.showInputBox({
+        prompt: 'Name',
+        validateInput: (value: string) => value ? undefined : 'Name is required',
+      });
+
+      expect(await interceptor.submitQuickInputText('')).toEqual({
+        entered: '',
+        intercepted: true,
+        accepted: false,
+        validationMessage: 'Name is required',
+      });
+
+      expect(await interceptor.submitQuickInputText('prod-rg')).toEqual({
+        entered: 'prod-rg',
+        intercepted: true,
+        accepted: true,
+      });
+      await expect(promise).resolves.toBe('prod-rg');
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith('workbench.action.closeQuickOpen');
 
       disposables.forEach((d: any) => d.dispose());
     });
 
-    it('should return intercepted:false when no InputBox was intercepted', async () => {
-      // No register() call — no monkey-patch installed
-      const result = await interceptor.respondToInputBox('hello world');
-
+    it('returns intercepted:false when no InputBox is active', async () => {
+      const result = await interceptor.submitQuickInputText('hello world');
       expect(result).toEqual({ entered: 'hello world', intercepted: false });
-
-      // Should NOT have called any commands (caller will use CDP instead)
-      expect(vscode.commands.executeCommand).not.toHaveBeenCalled();
     });
 
-    it('should track lastInputBoxPrompt from intercepted call', async () => {
-      vscode.window.showInputBox.mockImplementation(() => new Promise(() => {}));
-
+    it('allows warning validation messages', async () => {
       const disposables = interceptor.register();
-      vscode.window.showInputBox({ prompt: 'Enter URL', placeHolder: 'https://...' });
+      const promise = vscode.window.showInputBox({
+        validateInput: () => ({ message: 'Looks unusual', severity: vscode.InputBoxValidationSeverity.Warning }),
+      });
 
-      expect(interceptor.getLastInputBoxPrompt()).toBe('Enter URL');
+      expect(await interceptor.submitQuickInputText('prod-rg')).toEqual({
+        entered: 'prod-rg',
+        intercepted: true,
+        accepted: true,
+      });
+      await expect(promise).resolves.toBe('prod-rg');
 
-      // Clean up (resolve pending to avoid hanging)
-      await interceptor.respondToInputBox('test');
       disposables.forEach((d: any) => d.dispose());
     });
   });
 
-  describe('respondToDialog()', () => {
-    it('should resolve pending dialog', async () => {
-      // Set up a pending dialog
+  describe('createInputBox interception', () => {
+    it('waits for async validation before accepting', async () => {
+      const fakeInputBox = createFakeInputBox((value, inputBox) => {
+        setTimeout(() => {
+          inputBox.validationMessage = value === 'bad' ? 'Still invalid' : undefined;
+        }, 75);
+      });
+      vscode.window.createInputBox.mockReturnValue(fakeInputBox);
+      const disposables = interceptor.register();
+
+      const inputBox = vscode.window.createInputBox();
+      inputBox.show();
+
+      expect(await interceptor.submitQuickInputText('bad')).toEqual({
+        entered: 'bad',
+        intercepted: true,
+        accepted: false,
+        validationMessage: 'Still invalid',
+      });
+
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith('workbench.action.acceptSelectedQuickOpenItem');
+
+      disposables.forEach((d: any) => d.dispose());
+    });
+  });
+
+  describe('dialogs', () => {
+    it('resolves pending dialog', async () => {
       const dialogPromise = interceptor.createDialogPromise();
-
-      // Respond to it
       const responsePromise = interceptor.respondToDialog('OK');
-      const dialogResult = await dialogPromise;
-
-      expect(dialogResult).toBe('OK');
-      const response = await responsePromise;
-      expect(response).toEqual({ clicked: 'OK' });
-    });
-
-    it('should throw when no dialog is pending', async () => {
-      await expect(interceptor.respondToDialog('OK')).rejects.toThrow('No dialog is currently pending');
+      await expect(dialogPromise).resolves.toBe('OK');
+      await expect(responsePromise).resolves.toEqual({ clicked: 'OK' });
     });
   });
 
-  describe('createDialogPromise()', () => {
-    it('should create a promise that resolves when responded to', async () => {
-      const promise = interceptor.createDialogPromise();
-
-      // Don't await yet - respond to it
-      setTimeout(() => {
-        interceptor.respondToDialog('Cancel');
-      }, 10);
-
-      const result = await promise;
-      expect(result).toBe('Cancel');
-    });
-  });
-
-  describe('register()', () => {
-    it('should return an array of disposables', () => {
-      const disposables = interceptor.register();
-      expect(Array.isArray(disposables)).toBe(true);
-      expect(disposables.length).toBeGreaterThan(0);
-      // Clean up
-      disposables.forEach((d: any) => d.dispose());
-    });
-
-    it('should monkey-patch vscode.window.showInputBox', () => {
-      const originalFn = vscode.window.showInputBox;
-      const disposables = interceptor.register();
-
-      // showInputBox should now be a different function (the wrapper)
-      expect(vscode.window.showInputBox).not.toBe(originalFn);
-
-      // Disposing should restore the original
-      disposables.forEach((d: any) => d.dispose());
-      expect(vscode.window.showInputBox).toBe(originalFn);
-    });
-  });
-
-  describe('getLastQuickPickItems()', () => {
-    it('should return empty array initially', () => {
+  describe('initial state', () => {
+    it('returns an inactive QuickInput state initially', () => {
+      expect(interceptor.getQuickInputState()).toEqual({ active: false });
       expect(interceptor.getLastQuickPickItems()).toEqual([]);
-    });
-  });
-
-  describe('getLastInputBoxPrompt()', () => {
-    it('should return empty string initially', () => {
       expect(interceptor.getLastInputBoxPrompt()).toBe('');
     });
   });

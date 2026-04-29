@@ -153,11 +153,26 @@ describe('Types and Constants', () => {
 
     it('should accept valid NotificationInfo', () => {
       const n: NotificationInfo = {
+        id: 'notification-1',
         message: 'Extension activated',
         severity: 'info',
         source: 'my-extension',
+        actions: [{ label: 'Open' }],
+        active: true,
       };
       expect(n.severity).toBe('info');
+    });
+
+    it('should accept QuickInput and progress state on VSCodeState', () => {
+      const state: VSCodeState = {
+        terminals: [],
+        notifications: [],
+        progress: {
+          active: [{ id: 'progress-1', title: 'Deploy', status: 'active', createdAt: 1, updatedAt: 1 }],
+          history: [],
+        },
+      };
+      expect(state.progress?.active[0].title).toBe('Deploy');
     });
   });
 });

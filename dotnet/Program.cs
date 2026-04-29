@@ -88,6 +88,13 @@ while ((line = Console.ReadLine()) != null)
                     y = p.GetProperty("y").GetDouble()
                 }),
 
+            "captureWindowScreenshot" => await automation.CaptureWindowScreenshot(
+                new
+                {
+                    windowId = p.GetProperty("windowId").GetString()!,
+                    filePath = p.GetProperty("filePath").GetString()!
+                }),
+
             "listWindows" => await automation.ListWindows(null!),
 
             "getElementTree" => await automation.GetElementTree(

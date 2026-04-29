@@ -254,12 +254,16 @@ vscode-ext-test profile open <profile-name>
 - `Given the extension is in a clean state` - reset: close all editors, dismiss notifications, clear output channels
 - `When I execute command "<command-id>"` - run any VS Code command (waits for completion)
 - `When I execute command "<command-id>" with args '<json>'` - run a VS Code command with arguments (JSON array in single quotes, e.g. `'["arg1","arg2"]'`)
-- `When I start command "<command-id>"` - start a VS Code command without waiting (use for commands that show InputBox/QuickPick dialogs, then interact with the dialog in the next step)
+- `When I start command "<command-id>"` - start a VS Code command without waiting (use for commands that show QuickInput dialogs, then interact with the dialog in the next step)
 - `When I start command "<command-id>" with args '<json>'` - start a VS Code command with arguments without waiting
 - `When I add folder "<path>" to the workspace` - add a folder to the workspace without reloading the window
-- `When I select "<label>" from the QuickPick` - pick an item from an open QuickPick
-- `When I type "<text>" into the InputBox` - type into a VS Code InputBox prompt
+- `When I inspect the QuickInput` - print the current QuickInput title, value, validation, and item IDs from captured extension-host state or the visible workbench widget
+- `When I select QuickInput item "<label>"` / `When I select "<label>" from the QuickInput` - pick an item from captured QuickInput state or the visible workbench widget
+- `When I select "<label>" from the QuickPick` - compatibility alias for selecting an open QuickPick item
+- `When I enter "<text>" in the QuickInput` - set and accept text after validation clears
+- `When I type "<text>" into the InputBox` - compatibility alias for entering text in a VS Code InputBox prompt
 - `When I click "<button>" on the dialog` - click a button on a modal dialog
+- `When I click "<action>" on notification "<text>"` - resolve a captured VS Code notification action
 - `When I select "<label>" from the popup menu` - select an item from a context menu, dropdown, or popup overlay (uses OS-level UI Automation with CDP fallback)
 - `When I list the popup menu items` - diagnostic: list all visible items in the current popup menu
 - `When I type "<text>"` - type text into whatever is focused (editors, webview Monaco, inputs)
@@ -271,6 +275,14 @@ vscode-ext-test profile open <profile-name>
 - `When I sign in with Microsoft as "<user>"` - handle Microsoft auth flow
 - `Then I should see notification "<text>"` - assert a notification contains text
 - `Then I should not see notification "<text>"` - assert NO notification contains text
+- `Then I wait for QuickInput item "<label>"` - wait for a visible QuickInput item
+- `Then I wait for QuickInput title "<text>"` - wait for a QuickInput title
+- `Then I wait for QuickInput value "<value>"` - wait for the current QuickInput value
+- `Then the QuickInput should contain item "<label>"` - assert the current QuickInput has an item
+- `Then the QuickInput title should contain "<text>"` - assert QuickInput title text
+- `Then the QuickInput value should be "<value>"` - assert QuickInput value
+- `Then I wait for progress "<title>" to start` / `Then I wait for progress "<title>" to complete` - wait for a tracked long-running operation
+- `Then progress "<title>" should be active` / `Then progress "<title>" should be completed` - assert tracked progress state
 - `Then the editor should contain "<text>"` - assert the active editor has text
 - `Then the output channel "<name>" should contain "<text>"` - assert output channel content
 - `Then the output channel "<name>" should not contain "<text>"` - assert output channel does NOT contain text
@@ -280,10 +292,11 @@ vscode-ext-test profile open <profile-name>
 
 Use the most semantic target that can reach the UI:
 
-1. Prefer VS Code commands and dedicated responders (`QuickPick`, `InputBox`, dialogs) when the behavior is command-driven.
+1. Prefer VS Code commands and QuickInput inspection/selection/text steps when the behavior is command-driven; these steps fall back to the visible workbench QuickInput widget when no extension-host session was intercepted.
 2. For webviews, prefer stable CSS selectors such as `[data-testid='...']`; selector clicks use CDP pointer events with a DOM-event fallback.
 3. For workbench/native UI, use accessible-name clicks such as `I click the element "Run Query"` or `I right click the element "Explorer"`.
-4. Use raw coordinates only as a last resort, and stabilize the window first with `I resize the Dev Host...` / `I move the Dev Host...`.
+4. Prefer QuickInput/progress/notification wait steps over fixed sleeps.
+5. Use raw coordinates only as a last resort, and stabilize the window first with `I resize the Dev Host...` / `I move the Dev Host...`.
 
 Right-clicking and popup selection are two separate actions: first use a
 right-click step to open the context menu, then use
@@ -606,8 +619,8 @@ Then the editor should contain "hello world"
 \\`\\`\\`
 
 ### Screenshots
-- `Then I take a screenshot` - capture the full screen, saved to the run directory
-- `Then I take a screenshot "label"` - capture with a descriptive label (e.g. "after-query-runs")
+- `Then I take a screenshot` - capture the targeted Extension Development Host window, saved to the run directory
+- `Then I take a screenshot "label"` - capture the targeted Dev Host with a descriptive label (e.g. "after-query-runs")
 
 ### File Utilities (direct via code - no UI dialogs)
 Use these for test setup when you don't need to test the actual dialog interaction:

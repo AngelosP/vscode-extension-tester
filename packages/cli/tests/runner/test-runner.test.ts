@@ -3,6 +3,7 @@ import type { ControllerClient } from '../../src/runner/controller-client.js';
 import type { ParsedFeature, ParsedScenario, ParsedStep } from '../../src/runner/gherkin-parser.js';
 import { TestRunner } from '../../src/runner/test-runner.js';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   WEBVIEW_BODY_TEXT,
@@ -62,6 +63,7 @@ function resetMockNativeUI(): void {
     focusInDevHost: vi.fn().mockResolvedValue(undefined),
     resizeDevHost: vi.fn().mockResolvedValue(undefined),
     moveDevHost: vi.fn().mockResolvedValue(undefined),
+    captureDevHostScreenshot: vi.fn().mockResolvedValue(undefined),
     getDevHostTree: vi.fn().mockResolvedValue({}),
   };
 }
@@ -112,6 +114,9 @@ function resetMockCdp(): void {
     evaluate: vi.fn().mockResolvedValue(null),
     getOutputChannelDescriptors: vi.fn().mockResolvedValue([]),
     readOutputChannelContent: vi.fn().mockResolvedValue(undefined),
+    getWorkbenchQuickInputState: vi.fn().mockResolvedValue({ active: false }),
+    selectWorkbenchQuickInputItem: vi.fn().mockResolvedValue({ selected: '', intercepted: false }),
+    submitWorkbenchQuickInputText: vi.fn().mockResolvedValue({ entered: '', intercepted: false, accepted: true }),
     listWebviews: vi.fn().mockResolvedValue([]),
     listWebviewFrameContexts: vi.fn().mockResolvedValue([]),
     insertText: vi.fn().mockResolvedValue(undefined),
@@ -156,6 +161,11 @@ function createMockClient(): ControllerClient {
     respondToQuickPick: vi.fn().mockResolvedValue({ selected: '' }),
     respondToInputBox: vi.fn().mockResolvedValue({ entered: '', intercepted: true }),
     respondToDialog: vi.fn().mockResolvedValue({ clicked: '' }),
+    getQuickInputState: vi.fn().mockResolvedValue({ active: false }),
+    selectQuickInputItem: vi.fn().mockResolvedValue({ selected: '', intercepted: true }),
+    submitQuickInputText: vi.fn().mockResolvedValue({ entered: '', intercepted: true, accepted: true }),
+    clickNotificationAction: vi.fn().mockResolvedValue({ action: '' }),
+    getProgressState: vi.fn().mockResolvedValue({ active: [], history: [] }),
     getState: vi.fn().mockResolvedValue({
       activeEditor: { fileName: 'test.ts', languageId: 'typescript', content: 'test content', isDirty: false },
       terminals: [],
@@ -327,7 +337,117 @@ describe('TestRunner', () => {
 
       await runner.runFeature(feature);
 
-      expect(client.respondToInputBox).toHaveBeenCalledWith('hello world');
+      expect(client.submitQuickInputText).toHaveBeenCalledWith('hello world');
+    });
+
+    it('should handle explicit QuickInput selection step', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('QuickInput', [
+          makeStep('When ', 'I select QuickInput item "Create new resource group"'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(client.selectQuickInputItem).toHaveBeenCalledWith('Create new resource group');
+    });
+
+    it('should wait for a QuickInput item', async () => {
+      (client.getQuickInputState as any).mockResolvedValue({
+        active: true,
+        items: [{ id: 'item-1', label: 'Create new resource group', matchLabel: 'Create new resource group' }],
+      });
+      const feature = makeFeature('Test', [
+        makeScenario('QuickInput wait', [
+          makeStep('Then ', 'I wait for QuickInput item "Create new resource group"'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+    });
+
+    it('should inspect visible workbench QuickInput when controller has no active session', async () => {
+      (client.getQuickInputState as any).mockResolvedValue({ active: false });
+      getMockCdp().getWorkbenchQuickInputState.mockResolvedValue({
+        active: true,
+        source: 'workbench',
+        title: 'Select subscription',
+        items: [{ id: 'workbench-item-0', label: 'Contoso', matchLabel: 'Contoso' }],
+      });
+      const feature = makeFeature('Test', [
+        makeScenario('Inspect workbench QuickInput', [
+          makeStep('When ', 'I inspect the QuickInput'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(result.scenarios[0].steps[0].outputLog).toContain('Select subscription');
+    });
+
+    it('should wait for visible workbench QuickInput items when controller state is inactive', async () => {
+      (client.getQuickInputState as any).mockResolvedValue({ active: false });
+      getMockCdp().getWorkbenchQuickInputState.mockResolvedValue({
+        active: true,
+        source: 'workbench',
+        items: [{ id: 'workbench-item-0', label: 'Contoso subscription', matchLabel: 'Contoso subscription' }],
+      });
+      const feature = makeFeature('Test', [
+        makeScenario('Workbench QuickInput wait', [
+          makeStep('Then ', 'I wait for QuickInput item "Contoso"'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+    });
+
+    it('should select visible workbench QuickInput item when controller has no session', async () => {
+      (client.selectQuickInputItem as any).mockRejectedValue(new Error('No QuickPick is currently active'));
+      getMockCdp().getWorkbenchQuickInputState.mockResolvedValue({ active: true, source: 'workbench' });
+      const feature = makeFeature('Test', [
+        makeScenario('Workbench QuickInput select', [
+          makeStep('When ', 'I select QuickInput item "Contoso"'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(getMockCdp().selectWorkbenchQuickInputItem).toHaveBeenCalledWith('Contoso');
+    });
+
+    it('should submit text to visible workbench QuickInput when controller has no session', async () => {
+      (client.submitQuickInputText as any).mockResolvedValueOnce({ entered: 'project-a', intercepted: false });
+      getMockCdp().getWorkbenchQuickInputState.mockResolvedValue({ active: true, source: 'workbench' });
+      const feature = makeFeature('Test', [
+        makeScenario('Workbench QuickInput text', [
+          makeStep('When ', 'I enter "project-a" in the QuickInput'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(getMockCdp().submitWorkbenchQuickInputText).toHaveBeenCalledWith('project-a');
+    });
+
+    it('should fallback to CDP when QuickInput text is not intercepted', async () => {
+      (client.submitQuickInputText as any).mockResolvedValueOnce({ entered: 'hello', intercepted: false });
+      const feature = makeFeature('Test', [
+        makeScenario('QuickInput fallback', [
+          makeStep('When ', 'I enter "hello" in the QuickInput'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(getMockCdp().insertText).toHaveBeenCalledWith('hello');
+      expect(getMockCdp().pressKey).toHaveBeenCalledWith('Enter');
     });
 
     it('should handle "I click on the dialog" step', async () => {
@@ -467,6 +587,56 @@ describe('TestRunner', () => {
       const result = await runner.runFeature(feature);
 
       expect(result.scenarios[0].status).toBe('failed');
+    });
+
+    it('should click a notification action', async () => {
+      (client.getNotifications as any).mockResolvedValue([
+        { message: 'Deploy failed', severity: 'error', active: true, actions: [{ label: 'Retry' }] },
+      ]);
+      const feature = makeFeature('Test', [
+        makeScenario('Notification action', [
+          makeStep('When ', 'I click "Retry" on notification "Deploy failed"'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(client.clickNotificationAction).toHaveBeenCalledWith('Deploy failed', 'Retry');
+    });
+
+    it('should poll before clicking a delayed notification action', async () => {
+      (client.getNotifications as any)
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          { message: 'Deploy failed', severity: 'error', active: true, actions: [{ label: 'Retry' }] },
+        ]);
+      const feature = makeFeature('Test', [
+        makeScenario('Delayed notification action', [
+          makeStep('When ', 'I click "Retry" on notification "Deploy failed"'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(client.getNotifications).toHaveBeenCalledTimes(2);
+      expect(client.clickNotificationAction).toHaveBeenCalledWith('Deploy failed', 'Retry');
+    });
+
+    it('should wait for completed progress', async () => {
+      (client.getProgressState as any).mockResolvedValue({
+        active: [],
+        history: [{ id: 'progress-1', title: 'Deploying', status: 'completed', createdAt: 1, updatedAt: 2, completedAt: 2 }],
+      });
+      const feature = makeFeature('Test', [
+        makeScenario('Progress', [
+          makeStep('Then ', 'I wait for progress "Deploying" to complete'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
     });
 
     it('should handle editor content assertion', async () => {
@@ -2082,6 +2252,26 @@ describe('TestRunner', () => {
       await runner.runFeature(feature);
 
       expect(getMockNativeUI().moveDevHost).toHaveBeenCalledWith(100, 200);
+    });
+
+    it('should capture screenshots through the native Dev Host target', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-artifacts-'));
+      const screenshotRunner = new TestRunner(client, {}, artifactsDir);
+      const feature = makeFeature('Test', [
+        makeScenario('Screenshot', [
+          makeStep('When ', 'I take a screenshot "resource picker"'),
+        ]),
+      ]);
+
+      try {
+        await screenshotRunner.runFeature(feature);
+        expect(getMockNativeUI().captureDevHostScreenshot).toHaveBeenCalledWith(
+          path.join(artifactsDir, '1-resource_picker.png')
+        );
+      } finally {
+        screenshotRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
     });
   });
 });

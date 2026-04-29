@@ -14,7 +14,7 @@ export async function attachMode(options: RunOptions, artifactsDir?: string): Pr
   const startTime = Date.now();
 
   // 1. Fast-fail: verify a Dev Host process exists before polling the WebSocket
-  const devHost = await detectDevHost();
+  const devHost = await detectDevHost(options.extensionPath);
   if (!devHost) {
     throw new Error(
       'No Extension Development Host found.\n' +

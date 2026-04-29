@@ -7,6 +7,7 @@ import { CDP_PORT } from '../types.js';
 import { readMemory, writeMemory, appendMemory } from './memory.js';
 import { GherkinParser } from '../runner/gherkin-parser.js';
 import { TestRunner } from '../runner/test-runner.js';
+import { CdpClient } from '../runner/cdp-client.js';
 
 // ─── Tool Context ───────────────────────────────────────────────────────────────
 
@@ -40,7 +41,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'start_command',
-      description: 'Start a VS Code command without waiting for it to complete. Use this for commands that show InputBox or QuickPick dialogs, then use respond_to_inputbox or respond_to_quickpick to interact with the dialog.',
+      description: 'Start a VS Code command without waiting for it to complete. Use this for commands that show QuickInput, then inspect_quickinput, select_quickinput_item, or submit_quickinput_text to wait and interact with the current state. Legacy respond_to_inputbox/respond_to_quickpick are compatibility fallbacks only.',
       parameters: {
         type: 'object',
         properties: {
@@ -83,6 +84,29 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'get_progress',
+      description: 'Get active and historical VS Code progress/long-running operation state captured from window.withProgress.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'click_notification_action',
+      description: 'Click/resolve an action on a captured VS Code notification by message text and action label.',
+      parameters: {
+        type: 'object',
+        properties: {
+          message: { type: 'string', description: 'Substring of the notification message' },
+          action: { type: 'string', description: 'The action button label to click' },
+        },
+        required: ['message', 'action'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_output_channel',
       description: 'Read the content of a VS Code output channel by name.',
       parameters: {
@@ -98,7 +122,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'respond_to_quickpick',
-      description: 'Select an item from an open QuickPick dialog.',
+      description: 'Compatibility alias: select an item from an open QuickPick dialog. Prefer inspect_quickinput and select_quickinput_item when possible.',
       parameters: {
         type: 'object',
         properties: {
@@ -111,8 +135,44 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'inspect_quickinput',
+      description: 'Inspect the current VS Code QuickInput state: title, value, validation, items, active item IDs, and selected item IDs. Falls back to the visible workbench QuickInput widget when no intercepted session exists.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'select_quickinput_item',
+      description: 'Select an item from the current QuickInput using captured state or the visible workbench widget. Accepts a visible label or stable item id from inspect_quickinput.',
+      parameters: {
+        type: 'object',
+        properties: {
+          label: { type: 'string', description: 'The visible item label or item id to select' },
+        },
+        required: ['label'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'submit_quickinput_text',
+      description: 'Set text in the current QuickInput/InputBox and accept it after validation clears.',
+      parameters: {
+        type: 'object',
+        properties: {
+          value: { type: 'string', description: 'The text to enter and accept' },
+        },
+        required: ['value'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'respond_to_inputbox',
-      description: 'Type a value into an open InputBox dialog.',
+      description: 'Compatibility alias: type a value into an open InputBox dialog. Prefer submit_quickinput_text when possible.',
       parameters: {
         type: 'object',
         properties: {
@@ -414,10 +474,20 @@ export async function executeToolCall(
         return await toolListCommands(ctx, args);
       case 'get_notifications':
         return await toolGetNotifications(ctx);
+      case 'get_progress':
+        return await toolGetProgress(ctx);
+      case 'click_notification_action':
+        return await toolClickNotificationAction(ctx, args);
       case 'get_output_channel':
         return await toolGetOutputChannel(ctx, args);
       case 'respond_to_quickpick':
         return await toolRespondToQuickPick(ctx, args);
+      case 'inspect_quickinput':
+        return await toolInspectQuickInput(ctx);
+      case 'select_quickinput_item':
+        return await toolSelectQuickInputItem(ctx, args);
+      case 'submit_quickinput_text':
+        return await toolSubmitQuickInputText(ctx, args);
       case 'respond_to_inputbox':
         return await toolRespondToInputBox(ctx, args);
       case 'respond_to_dialog':
@@ -474,6 +544,16 @@ function requireClient(ctx: ToolContext): ControllerClient {
   return ctx.controllerClient;
 }
 
+async function withCdp<T>(ctx: ToolContext, fn: (cdp: CdpClient) => Promise<T>): Promise<T> {
+  const cdp = new CdpClient(ctx.cdpPort ?? CDP_PORT);
+  await cdp.connect();
+  try {
+    return await fn(cdp);
+  } finally {
+    cdp.disconnect();
+  }
+}
+
 async function toolExecuteCommand(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
   const client = requireClient(ctx);
   const result = await client.executeCommand(args['commandId'] as string, args['args'] as unknown[] | undefined);
@@ -504,6 +584,18 @@ async function toolGetNotifications(ctx: ToolContext): Promise<string> {
   return JSON.stringify(notifications, null, 2);
 }
 
+async function toolGetProgress(ctx: ToolContext): Promise<string> {
+  const client = requireClient(ctx);
+  const progress = await client.getProgressState();
+  return JSON.stringify(progress, null, 2);
+}
+
+async function toolClickNotificationAction(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const client = requireClient(ctx);
+  const result = await client.clickNotificationAction(requiredString(args, 'message'), requiredString(args, 'action'));
+  return JSON.stringify(result ?? { status: 'ok' }, null, 2);
+}
+
 async function toolGetOutputChannel(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
   const client = requireClient(ctx);
   const output = await client.getOutputChannel(args['name'] as string);
@@ -514,6 +606,48 @@ async function toolRespondToQuickPick(ctx: ToolContext, args: Record<string, unk
   const client = requireClient(ctx);
   await client.respondToQuickPick(args['label'] as string);
   return 'QuickPick item selected';
+}
+
+async function toolInspectQuickInput(ctx: ToolContext): Promise<string> {
+  const client = requireClient(ctx);
+  const state = await client.getQuickInputState();
+  if (state.active) return JSON.stringify(state, null, 2);
+  const workbenchState = await withCdp(ctx, (cdp) => cdp.getWorkbenchQuickInputState());
+  return JSON.stringify(workbenchState.active ? workbenchState : state, null, 2);
+}
+
+async function toolSelectQuickInputItem(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const client = requireClient(ctx);
+  const label = requiredString(args, 'label');
+  try {
+    const result = await client.selectQuickInputItem(label);
+    return JSON.stringify(result, null, 2);
+  } catch (err) {
+    const result = await withCdp(ctx, async (cdp) => {
+      const state = await cdp.getWorkbenchQuickInputState();
+      if (!state.active) throw err;
+      return cdp.selectWorkbenchQuickInputItem(label);
+    });
+    return JSON.stringify(result, null, 2);
+  }
+}
+
+async function toolSubmitQuickInputText(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const client = requireClient(ctx);
+  const value = requiredString(args, 'value');
+  try {
+    const result = await client.submitQuickInputText(value);
+    if (result.intercepted !== false) return JSON.stringify(result, null, 2);
+  } catch { /* try visible workbench QuickInput below */ }
+
+  const result = await withCdp(ctx, async (cdp) => {
+    const state = await cdp.getWorkbenchQuickInputState();
+    if (state.active) return cdp.submitWorkbenchQuickInputText(value);
+    await cdp.insertText(value);
+    await cdp.pressKey('Enter');
+    return { entered: value, intercepted: false, accepted: true };
+  });
+  return JSON.stringify(result, null, 2);
 }
 
 async function toolRespondToInputBox(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {

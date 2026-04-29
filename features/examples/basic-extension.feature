@@ -11,9 +11,11 @@ Feature: Basic Extension Testing
     Then I should see notification "Hello World!"
 
   Scenario: Multiple commands execute in sequence
-    When I execute command "myExtension.createFile"
-    And I type "test.txt" into the InputBox
+    When I start command "myExtension.createFile"
+    Then I wait for QuickInput title "File"
+    When I enter "test.txt" in the QuickInput
     Then I should see notification "File created: test.txt"
-    When I execute command "myExtension.openFile"
-    And I select "test.txt" from the QuickPick
+    When I start command "myExtension.openFile"
+    Then I wait for QuickInput item "test.txt"
+    When I select QuickInput item "test.txt"
     Then the editor should contain "// New file"

@@ -58,8 +58,13 @@ describe('tools', () => {
     it('should include UI interaction tools', () => {
       const names = TOOL_DEFINITIONS.map((t) => t.function.name);
       expect(names).toContain('respond_to_quickpick');
+      expect(names).toContain('inspect_quickinput');
+      expect(names).toContain('select_quickinput_item');
+      expect(names).toContain('submit_quickinput_text');
       expect(names).toContain('respond_to_inputbox');
       expect(names).toContain('respond_to_dialog');
+      expect(names).toContain('click_notification_action');
+      expect(names).toContain('get_progress');
       expect(names).toContain('move_mouse');
       expect(names).toContain('click');
       expect(names).toContain('press_key');
@@ -85,6 +90,15 @@ describe('tools', () => {
 
       const typeText = TOOL_DEFINITIONS.find((t) => t.function.name === 'type_text')!;
       expect(typeText.function.parameters['required']).toEqual(['text']);
+
+      const selectQuickInput = TOOL_DEFINITIONS.find((t) => t.function.name === 'select_quickinput_item')!;
+      expect(selectQuickInput.function.parameters['required']).toEqual(['label']);
+
+      const submitQuickInput = TOOL_DEFINITIONS.find((t) => t.function.name === 'submit_quickinput_text')!;
+      expect(submitQuickInput.function.parameters['required']).toEqual(['value']);
+
+      const clickNotification = TOOL_DEFINITIONS.find((t) => t.function.name === 'click_notification_action')!;
+      expect(clickNotification.function.parameters['required']).toEqual(['message', 'action']);
     });
   });
 });

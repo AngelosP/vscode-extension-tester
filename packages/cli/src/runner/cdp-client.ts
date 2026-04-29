@@ -1,6 +1,7 @@
 import CDP from 'chrome-remote-interface';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import type { QuickInputSelectResult, QuickInputState, QuickInputTextResult } from '../types.js';
 
 /**
  * A JS function string that finds an element by CSS selector, piercing open
@@ -31,6 +32,123 @@ export const DEEP_QS = `function(sel) {
     return null;
   }
   return walk(document);
+}`;
+
+const WORKBENCH_QUICK_INPUT_HELPERS = `
+function isVisible(el) {
+  if (!el) return false;
+  const style = getComputedStyle(el);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+function clean(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
+}
+function stripThemeIcons(text) {
+  return clean(text).replace(/\$\([^)]+\)\s*/g, '').trim();
+}
+function widget() {
+  const widgets = Array.from(document.querySelectorAll('.quick-input-widget'));
+  return widgets.find(isVisible) || null;
+}
+function inputFor(root) {
+  return root.querySelector('.quick-input-box input, .quick-input-header input, input');
+}
+function readRow(row, index) {
+  const labelEl = row.querySelector('.quick-input-list-label .label-name, .monaco-icon-label .label-name, .label-name, .monaco-highlighted-label');
+  const descriptionEl = row.querySelector('.quick-input-list-label .label-description, .monaco-icon-label .label-description, .label-description');
+  const detailEl = row.querySelector('.quick-input-list-label .label-detail, .monaco-icon-label .label-detail, .label-detail, .quick-input-list-entry-detail');
+  const aria = clean(row.getAttribute('aria-label'));
+  const rowText = clean(row.textContent);
+  const label = clean(labelEl && labelEl.textContent) || aria || rowText;
+  const description = clean(descriptionEl && descriptionEl.textContent) || undefined;
+  const detail = clean(detailEl && detailEl.textContent) || undefined;
+  const rawId = row.getAttribute('data-index') || row.getAttribute('aria-posinset') || String(index);
+  const info = {
+    id: 'workbench-item-' + rawId,
+    label,
+    matchLabel: stripThemeIcons(label),
+    description,
+    detail,
+    kind: row.classList.contains('quick-input-list-separator') || row.getAttribute('role') === 'separator' ? 'separator' : 'item',
+    picked: row.classList.contains('selected') || row.getAttribute('aria-selected') === 'true' || row.getAttribute('aria-checked') === 'true',
+    buttons: Array.from(row.querySelectorAll('.quick-input-list-entry-action-bar .action-label, .monaco-action-bar .action-label'))
+      .map((button) => clean(button.getAttribute('aria-label') || button.getAttribute('title') || button.textContent))
+      .filter(Boolean),
+  };
+  return { row, info };
+}
+function readRows(root) {
+  return Array.from(root.querySelectorAll('.quick-input-list .monaco-list-row'))
+    .filter(isVisible)
+    .map(readRow);
+}
+function normalize(text) {
+  return stripThemeIcons(text).toLowerCase();
+}
+function matches(item, target) {
+  const needle = normalize(target);
+  return item.info.id === target || normalize(item.info.label) === needle || normalize(item.info.matchLabel) === needle;
+}
+function fuzzyMatches(item, target) {
+  const needle = normalize(target);
+  return item.info.id === target || normalize(item.info.label).includes(needle) || normalize(item.info.matchLabel).includes(needle);
+}
+`;
+
+const WORKBENCH_QUICK_INPUT_STATE = `function() {
+  ${WORKBENCH_QUICK_INPUT_HELPERS}
+  const root = widget();
+  if (!root) return { active: false };
+  const input = inputFor(root);
+  const title = clean((root.querySelector('.quick-input-titlebar .quick-input-title, .quick-input-title') || {}).textContent);
+  const placeholder = input ? clean(input.getAttribute('placeholder') || input.getAttribute('aria-label')) : undefined;
+  const rows = readRows(root);
+  const activeItems = rows.filter((item) => item.row.classList.contains('focused') || item.row.classList.contains('active') || item.row.getAttribute('aria-selected') === 'true');
+  const selectedItems = rows.filter((item) => item.info.picked);
+  return {
+    active: true,
+    kind: rows.length > 0 ? 'quickPick' : 'inputBox',
+    source: 'workbench',
+    title: title || placeholder || undefined,
+    placeholder,
+    value: input ? input.value : undefined,
+    enabled: input ? !input.disabled : undefined,
+    items: rows.map((item) => item.info),
+    activeItems: activeItems.map((item) => item.info),
+    selectedItems: selectedItems.map((item) => item.info),
+    updatedAt: Date.now(),
+  };
+}`;
+
+const WORKBENCH_QUICK_INPUT_ITEM_POINT = `function(target) {
+  ${WORKBENCH_QUICK_INPUT_HELPERS}
+  const root = widget();
+  if (!root) return { error: 'No visible workbench QuickInput widget found' };
+  const rows = readRows(root).filter((item) => item.info.kind !== 'separator');
+  const exact = rows.filter((item) => matches(item, target));
+  const candidates = exact.length > 0 ? exact : rows.filter((item) => fuzzyMatches(item, target));
+  if (candidates.length === 0) {
+    return { error: 'Workbench QuickInput item "' + target + '" not found. Available items: ' + rows.map((item) => item.info.label + ' (' + item.info.id + ')').join(', ') };
+  }
+  if (candidates.length > 1) {
+    return { error: 'Workbench QuickInput item "' + target + '" matched multiple items. Use an item id: ' + candidates.map((item) => item.info.label + ' (' + item.info.id + ')').join(', ') };
+  }
+  const hit = candidates[0];
+  hit.row.scrollIntoView({ block: 'center', inline: 'nearest' });
+  const rect = hit.row.getBoundingClientRect();
+  return { label: hit.info.label, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+}`;
+
+const WORKBENCH_QUICK_INPUT_FOCUS_INPUT = `function() {
+  ${WORKBENCH_QUICK_INPUT_HELPERS}
+  const root = widget();
+  if (!root) return { error: 'No visible workbench QuickInput widget found' };
+  const input = inputFor(root);
+  if (!input || !isVisible(input)) return { error: 'No visible workbench QuickInput input found' };
+  input.focus();
+  return { focused: document.activeElement === input || root.contains(document.activeElement) };
 }`;
 
 export type CdpMouseButton = 'left' | 'right' | 'middle';
@@ -251,6 +369,56 @@ export class CdpClient {
     });
 
     return (result.result.value as string[]) ?? [];
+  }
+
+  /** Inspect the visible workbench QuickInput widget from the renderer DOM. */
+  async getWorkbenchQuickInputState(): Promise<QuickInputState> {
+    if (!this.client) throw new Error('CDP not connected');
+
+    const result = await this.client.Runtime.evaluate({
+      expression: `(${WORKBENCH_QUICK_INPUT_STATE})()`,
+      returnByValue: true,
+    });
+
+    return (result.result.value as QuickInputState | undefined) ?? { active: false };
+  }
+
+  /** Select a visible workbench QuickInput item by label or generated item id. */
+  async selectWorkbenchQuickInputItem(labelOrId: string): Promise<QuickInputSelectResult> {
+    if (!this.client) throw new Error('CDP not connected');
+
+    const safeTarget = JSON.stringify(labelOrId);
+    const result = await this.client.Runtime.evaluate({
+      expression: `(${WORKBENCH_QUICK_INPUT_ITEM_POINT})(${safeTarget})`,
+      returnByValue: true,
+    });
+    const value = result.result.value as { label: string; x: number; y: number; error?: string } | undefined;
+    if (!value || value.error) {
+      throw new Error(value?.error ?? `Workbench QuickInput item "${labelOrId}" not found`);
+    }
+
+    await this.clickAt(value.x, value.y);
+    return { selected: value.label, intercepted: false };
+  }
+
+  /** Focus the visible workbench QuickInput input, replace its value, and accept. */
+  async submitWorkbenchQuickInputText(value: string): Promise<QuickInputTextResult> {
+    if (!this.client) throw new Error('CDP not connected');
+
+    const focusResult = await this.client.Runtime.evaluate({
+      expression: `(${WORKBENCH_QUICK_INPUT_FOCUS_INPUT})()`,
+      returnByValue: true,
+    });
+    const focused = focusResult.result.value as { focused?: boolean; error?: string } | undefined;
+    if (!focused?.focused) {
+      throw new Error(focused?.error ?? 'No visible workbench QuickInput input found');
+    }
+
+    await this.pressKey('Ctrl+A');
+    await this.insertText(value);
+    await delay(100);
+    await this.pressKey('Enter');
+    return { entered: value, intercepted: false, accepted: true };
   }
 
   /**

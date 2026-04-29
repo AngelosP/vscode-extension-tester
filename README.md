@@ -172,6 +172,11 @@ Scenario: Monitor only the channels I care about
 | ---- | ---- | ----------- |
 | `I capture the output channel "<name>"` | Given/When | Start capturing a specific channel (switches to allow-list mode) |
 | `I stop capturing the output channel "<name>"` | When | Stop capturing a specific channel |
+| `I wait for QuickInput item "<label>"` | Then | Wait for a QuickInput item from the captured model or visible workbench widget |
+| `I select QuickInput item "<label>"` | When | Select a QuickInput item by visible label or item id |
+| `I enter "<text>" in the QuickInput` | When | Enter and accept QuickInput text after validation clears |
+| `I click "<action>" on notification "<text>"` | When | Resolve a captured VS Code notification action |
+| `I wait for progress "<title>" to complete` | Then | Wait for a tracked VS Code progress operation to finish |
 | `the output channel "<name>" should contain "<text>"` | Then | Assert the channel contains the given text |
 | `the output channel "<name>" should not contain "<text>"` | Then | Assert the channel does NOT contain the given text |
 | `the output channel "<name>" should have been captured` | Then | Assert that any content was captured for the channel |

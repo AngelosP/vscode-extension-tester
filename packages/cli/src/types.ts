@@ -96,12 +96,87 @@ export interface VSCodeState {
   };
   readonly terminals: Array<{ name: string; isActive: boolean }>;
   readonly notifications: NotificationInfo[];
+  readonly progress?: ProgressState;
 }
 
 export interface NotificationInfo {
+  readonly id?: string;
   readonly message: string;
   readonly severity: 'info' | 'warning' | 'error';
   readonly source?: string;
+  readonly actions?: NotificationActionInfo[];
+  readonly selectedAction?: string;
+  readonly createdAt?: number;
+  readonly updatedAt?: number;
+  readonly active?: boolean;
+}
+
+export interface NotificationActionInfo {
+  readonly label: string;
+  readonly isCloseAffordance?: boolean;
+}
+
+export interface QuickInputItemInfo {
+  readonly id: string;
+  readonly label: string;
+  readonly matchLabel: string;
+  readonly description?: string;
+  readonly detail?: string;
+  readonly kind?: 'item' | 'separator';
+  readonly picked?: boolean;
+  readonly alwaysShow?: boolean;
+  readonly buttons?: string[];
+}
+
+export interface QuickInputState {
+  readonly active: boolean;
+  readonly id?: string;
+  readonly kind?: 'quickPick' | 'inputBox';
+  readonly source?: 'showQuickPick' | 'createQuickPick' | 'showInputBox' | 'createInputBox' | 'workbench';
+  readonly title?: string;
+  readonly placeholder?: string;
+  readonly prompt?: string;
+  readonly value?: string;
+  readonly validationMessage?: string;
+  readonly busy?: boolean;
+  readonly enabled?: boolean;
+  readonly canSelectMany?: boolean;
+  readonly items?: QuickInputItemInfo[];
+  readonly activeItems?: QuickInputItemInfo[];
+  readonly selectedItems?: QuickInputItemInfo[];
+  readonly createdAt?: number;
+  readonly updatedAt?: number;
+}
+
+export interface QuickInputSelectResult {
+  readonly selected: string | string[];
+  readonly intercepted: boolean;
+}
+
+export interface QuickInputTextResult {
+  readonly entered: string;
+  readonly intercepted: boolean;
+  readonly accepted?: boolean;
+  readonly validationMessage?: string;
+}
+
+export interface ProgressInfo {
+  readonly id: string;
+  readonly title?: string;
+  readonly location?: string;
+  readonly cancellable?: boolean;
+  readonly message?: string;
+  readonly increment?: number;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly completedAt?: number;
+  readonly status: 'active' | 'completed' | 'failed' | 'canceled';
+  readonly error?: string;
+}
+
+export interface ProgressState {
+  readonly active: ProgressInfo[];
+  readonly history: ProgressInfo[];
 }
 
 /** Metadata about how a test run was invoked (embedded in reports & artifacts). */

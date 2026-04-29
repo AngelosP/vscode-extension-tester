@@ -134,8 +134,8 @@ Runs inside the VS Code Extension Host. Activated when `VSCODE_EXT_TESTER_PORT` 
 
 - **`ws-server.ts`** - Listens on the configured port, accepts one client, and dispatches JSON-RPC requests to handlers.
 - **`command-executor.ts`** - Calls `vscode.commands.executeCommand()` for any registered command.
-- **`ui-interceptor.ts`** - Monkey-patches `vscode.window.showInputBox` so InputBox prompts can be answered programmatically while still showing the UI. QuickPick responses use workbench commands, and message/dialog handling is best-effort through explicit responder/native UI paths.
-- **`state-reader.ts`** - Reads the current editor, visible text editors, terminals, and workspace state.
+- **`ui-interceptor.ts`** - Tracks VS Code QuickInput APIs (`showQuickPick`, `createQuickPick`, `showInputBox`, `createInputBox`) so tests can inspect titles/items/values, select the original QuickPick item object, and submit text after validation.
+- **`state-reader.ts`** - Reads the current editor, visible text editors, terminals, workspace state, captured notifications/actions, and `withProgress` activity.
 - **`output-monitor.ts`** - Patches `vscode.window.createOutputChannel` at load time to capture all output channel content for later retrieval.
 - **`auth-handler.ts`** - Handles `vscode.authentication` session flows.
 

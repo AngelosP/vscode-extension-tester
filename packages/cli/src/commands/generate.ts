@@ -237,9 +237,14 @@ AVAILABLE STEP DEFINITIONS (you MUST only use these exact patterns):
 When steps (actions):
   When I execute command "<commandId>"
   When I start command "<commandId>"
+  When I inspect the QuickInput
+  When I select QuickInput item "<label>"
+  When I select "<label>" from the QuickInput
   When I select "<label>" from the QuickPick
   When I select "<label>" from the popup menu
+  When I enter "<value>" in the QuickInput
   When I type "<value>" into the InputBox
+  When I click "<action>" on notification "<text>"
   When I type "<text>"
   When I press "<key>"
   When I click "<button>" on the dialog
@@ -264,6 +269,16 @@ When steps (actions):
 Then steps (assertions):
   Then I should see notification "<text>"
   Then I should not see notification "<text>"
+  Then I wait for QuickInput item "<label>"
+  Then I wait for QuickInput title "<text>"
+  Then I wait for QuickInput value "<value>"
+  Then the QuickInput should contain item "<label>"
+  Then the QuickInput title should contain "<text>"
+  Then the QuickInput value should be "<value>"
+  Then I wait for progress "<title>" to start
+  Then I wait for progress "<title>" to complete
+  Then progress "<title>" should be active
+  Then progress "<title>" should be completed
   Then the editor should contain "<text>"
   Then the output channel "<name>" should contain "<text>"
   Then the webview should contain "<text>"
@@ -277,10 +292,10 @@ RULES:
 - NEVER test commands that require authentication or network connections unless handling auth explicitly.
 - Only test commands that are self-contained and can complete without user interaction beyond QuickPick/InputBox.
 - Each scenario should be independent - do not depend on state from a previous scenario.
-- Use "I wait N seconds" sparingly, only when the command needs time to complete.
+- Prefer QuickInput/progress/notification wait steps over "I wait N seconds".
 - Keep scenarios focused - test one behavior per scenario.
 - Include at least one assertion per scenario (notification, editor content, or output channel).
-- If a command opens a QuickPick or InputBox, handle it with the appropriate step.
+- If a command opens a QuickPick or InputBox, first wait for/inspect the QuickInput, then select by visible label or item id and enter text with QuickInput steps; these can use captured state or the visible workbench widget.
 - Prefer commands and stable webview selectors/data-testid values; use accessible-name clicks next; use raw coordinates only as a last resort.
 - Use right-click steps to open context menus before selecting items from popup menus.
 `;

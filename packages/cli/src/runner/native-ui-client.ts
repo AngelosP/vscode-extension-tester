@@ -120,6 +120,11 @@ export class NativeUIClient {
     await this.call('moveWindow', { windowId, x, y });
   }
 
+  /** Capture a window screenshot to a PNG file. */
+  async captureWindowScreenshot(windowId: string, filePath: string): Promise<void> {
+    await this.call('captureWindowScreenshot', { windowId, filePath });
+  }
+
   /** List all visible windows. */
   async listWindows(): Promise<NativeWindow[]> {
     return this.call('listWindows', {}) as Promise<NativeWindow[]>;
@@ -246,6 +251,12 @@ export class NativeUIClient {
     await this.moveWindow(win.id, x, y);
   }
 
+  /** Capture the Dev Host window to a PNG file. */
+  async captureDevHostScreenshot(filePath: string): Promise<void> {
+    const win = await this.findDevHostWindow();
+    await this.captureWindowScreenshot(win.id, filePath);
+  }
+
   /**
    * Get the accessibility tree of the Dev Host window - useful for debugging
    * what elements are available to click/focus.
@@ -355,6 +366,12 @@ export class NativeUIClient {
     if (allowedPids && candidates.length > 1) {
       // Pick the window that belongs to the VS Code instance we launched
       win = candidates.find(w => allowedPids.has(w.processId));
+      if (!win) {
+        throw new Error(
+          `Multiple Dev Host windows found, but none match target PID ${this.targetPid}. ` +
+          `Candidates: ${candidates.map(w => `${w.title} (pid ${w.processId})`).join(', ')}`
+        );
+      }
     }
     // Fall back to first match (single instance or no PID filter)
     if (!win) win = candidates[0];
@@ -555,22 +572,19 @@ export interface NativeWindow {
 function getDescendantPids(pid: number): Set<number> {
   const descendants = new Set<number>([pid]);
   try {
-    const output = cp.execSync(
-      'wmic process get ProcessId,ParentProcessId /format:csv',
-      { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] },
-    );
+    const output = getProcessTreeCsv();
     // Build parent → children map
     const children = new Map<number, number[]>();
     for (const line of output.split('\n')) {
-      const parts = line.trim().split(',');
-      // CSV columns: Node, ParentProcessId, ProcessId
-      if (parts.length >= 3) {
-        const parentPid = parseInt(parts[1], 10);
-        const procPid = parseInt(parts[2], 10);
-        if (!isNaN(parentPid) && !isNaN(procPid)) {
-          if (!children.has(parentPid)) children.set(parentPid, []);
-          children.get(parentPid)!.push(procPid);
-        }
+      const parts = line.trim().split(',').map((part) => part.trim().replace(/^"|"$/g, ''));
+      if (parts.length < 2 || parts[0] === 'Node' || parts[0] === 'ParentProcessId') continue;
+      const parentIndex = parts.length >= 3 ? parts.length - 2 : 0;
+      const processIndex = parts.length >= 3 ? parts.length - 1 : 1;
+      const parentPid = parseInt(parts[parentIndex], 10);
+      const procPid = parseInt(parts[processIndex], 10);
+      if (!isNaN(parentPid) && !isNaN(procPid)) {
+        if (!children.has(parentPid)) children.set(parentPid, []);
+        children.get(parentPid)!.push(procPid);
       }
     }
     // BFS from pid
@@ -585,9 +599,23 @@ function getDescendantPids(pid: number): Set<number> {
       }
     }
   } catch {
-    // If wmic fails, return just the root PID — best effort
+    // If process discovery fails, return just the root PID — best effort
   }
   return descendants;
+}
+
+function getProcessTreeCsv(): string {
+  try {
+    return cp.execSync(
+      'wmic process get ProcessId,ParentProcessId /format:csv',
+      { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] },
+    );
+  } catch {
+    return cp.execSync(
+      'powershell -NoProfile -Command "Get-CimInstance Win32_Process | Select-Object ParentProcessId, ProcessId | ConvertTo-Csv -NoTypeInformation"',
+      { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
+    );
+  }
 }
 
 export interface NativeElement {

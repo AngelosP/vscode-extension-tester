@@ -39,8 +39,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   try {
     const commandExecutor = new CommandExecutor();
-    const uiInterceptor = new UIInterceptor();
     const stateReader = new StateReader();
+    const uiInterceptor = new UIInterceptor();
     const authHandler = new AuthHandler();
 
     server = new WSServer(port, {
@@ -56,6 +56,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     context.subscriptions.push(
       { dispose: () => server?.stop() },
+      ...stateReader.register(),
       ...uiInterceptor.register(),
       ...authHandler.register(),
     );

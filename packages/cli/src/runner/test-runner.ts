@@ -1,11 +1,10 @@
 import type { ControllerClient } from './controller-client.js';
 import type { ParsedFeature, ParsedScenario, ParsedStep } from './gherkin-parser.js';
-import type { FeatureResult, ScenarioResult, StepResult } from '../types.js';
+import type { FeatureResult, NotificationInfo, ProgressInfo, QuickInputState, ScenarioResult, StepResult } from '../types.js';
 import { CDP_PORT } from '../types.js';
 import { NativeUIClient } from './native-ui-client.js';
 import { CdpClient } from './cdp-client.js';
 import { loadEnv } from '../agent/env.js';
-import * as cp from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -232,23 +231,46 @@ export class TestRunner {
     match = text.match(/^I start command "([^"]+)" with args '([^']+)'$/);
     if (match) { await this.client.startCommand(match[1], JSON.parse(match[2])); return; }
 
-    // ─── QuickPick ───
+    // ─── QuickInput / QuickPick ───
+    if (/^I inspect the QuickInput$/.test(text)) {
+      const state = await this.getQuickInputState();
+      return JSON.stringify(state, null, 2);
+    }
+
+    match = text.match(/^I select QuickInput item "([^"]+)"$/);
+    if (match) { await this.selectQuickInputItem(match[1]); return; }
+
+    match = text.match(/^I select "([^"]+)" from the QuickInput$/);
+    if (match) { await this.selectQuickInputItem(match[1]); return; }
+
     match = text.match(/^I select "([^"]+)" from the QuickPick$/);
     if (match) { await this.client.respondToQuickPick(match[1]); return; }
 
-    // ─── InputBox ───
+    match = text.match(/^I wait for QuickInput item "([^"]+)"(?: for (\d+) seconds?)?$/);
+    if (match) { await this.waitForQuickInput((state) => this.quickInputHasItem(state, match![1]), `item "${match[1]}"`, match[2]); return; }
+
+    match = text.match(/^I wait for QuickInput title "([^"]+)"(?: for (\d+) seconds?)?$/);
+    if (match) { await this.waitForQuickInput((state) => (state.title ?? '').includes(match![1]), `title "${match[1]}"`, match[2]); return; }
+
+    match = text.match(/^I wait for QuickInput value "([^"]*)"(?: for (\d+) seconds?)?$/);
+    if (match) { await this.waitForQuickInput((state) => (state.value ?? '') === match![1], `value "${match[1]}"`, match[2]); return; }
+
+    match = text.match(/^the QuickInput should contain item "([^"]+)"$/);
+    if (match) { await this.assertQuickInputItem(match[1]); return; }
+
+    match = text.match(/^the QuickInput title should contain "([^"]+)"$/);
+    if (match) { await this.assertQuickInputTitle(match[1]); return; }
+
+    match = text.match(/^the QuickInput value should be "([^"]*)"$/);
+    if (match) { await this.assertQuickInputValue(match[1]); return; }
+
+    // ─── InputBox / QuickInput text ───
+    match = text.match(/^I (?:enter|type) "([^"]*)" (?:in|into) the QuickInput$/);
+    if (match) { await this.submitQuickInputText(match[1]); return; }
+
     match = text.match(/^I type "([^"]+)" into the InputBox$/);
     if (match) {
-      const result = await this.client.respondToInputBox(match[1]) as { entered: string; intercepted?: boolean };
-      if (result.intercepted === false) {
-        // Monkey-patch didn't fire — use CDP to type into the focused InputBox
-        // DOM element directly. This handles extensions that cached the original
-        // showInputBox reference before the controller's patch was installed.
-        const cdp = await this.requireCdp();
-        await cdp.insertText(match[1]);
-        await delay(100);
-        await cdp.pressKey('Enter');
-      }
+      await this.submitQuickInputText(match[1]);
       return;
     }
 
@@ -264,9 +286,19 @@ export class TestRunner {
     match = text.match(/^I should see notification "([^"]+)"$/);
     if (match) { await this.assertNotification(match[1]); return; }
 
+    match = text.match(/^I click "([^"]+)" on notification "([^"]+)"$/);
+    if (match) { await this.clickNotificationAction(match[2], match[1]); return; }
+
     // ─── Negative notification assertion ───
     match = text.match(/^I should not see notification "([^"]+)"$/);
     if (match) { await this.assertNoNotification(match[1]); return; }
+
+    // ─── Progress assertions ───
+    match = text.match(/^I wait for progress "([^"]+)" to (start|finish|complete)(?: for (\d+) seconds?)?$/);
+    if (match) { await this.waitForProgress(match[1], match[2] === 'start' ? 'active' : 'completed', match[3]); return; }
+
+    match = text.match(/^progress "([^"]+)" should be (active|completed|failed|canceled)$/);
+    if (match) { await this.assertProgress(match[1], match[2] as ProgressInfo['status']); return; }
 
     // ─── Editor assertion ───
     match = text.match(/^the editor should contain "([^"]+)"$/);
@@ -582,6 +614,136 @@ export class TestRunner {
     throw new Error(`No step definition matches: "${text}"`);
   }
 
+  private async submitQuickInputText(value: string): Promise<void> {
+    let result: Awaited<ReturnType<ControllerClient['submitQuickInputText']>> | undefined;
+    let controllerError: unknown;
+    try {
+      result = await this.client.submitQuickInputText(value);
+    } catch (err) {
+      controllerError = err;
+    }
+
+    if (result && result.intercepted !== false) {
+      if (result.accepted === false) {
+        throw new Error(`QuickInput rejected value "${value}"${result.validationMessage ? `: ${result.validationMessage}` : ''}`);
+      }
+      return;
+    }
+
+    const cdp = await this.requireCdp();
+    const workbenchState = await cdp.getWorkbenchQuickInputState();
+    if (workbenchState.active) {
+      await cdp.submitWorkbenchQuickInputText(value);
+      return;
+    }
+
+    if (controllerError) throw controllerError instanceof Error ? controllerError : new Error(String(controllerError));
+    if (result?.intercepted === false) {
+      await cdp.insertText(value);
+      await delay(100);
+      await cdp.pressKey('Enter');
+      return;
+    }
+  }
+
+  private async getQuickInputState(): Promise<QuickInputState> {
+    const controllerState = await this.client.getQuickInputState();
+    if (controllerState.active) return controllerState;
+
+    const workbenchState = await (await this.requireCdp()).getWorkbenchQuickInputState();
+    return workbenchState.active ? workbenchState : controllerState;
+  }
+
+  private async selectQuickInputItem(labelOrId: string): Promise<void> {
+    let controllerError: unknown;
+    try {
+      await this.client.selectQuickInputItem(labelOrId);
+      return;
+    } catch (err) {
+      controllerError = err;
+    }
+
+    const cdp = await this.requireCdp();
+    const workbenchState = await cdp.getWorkbenchQuickInputState();
+    if (workbenchState.active) {
+      await cdp.selectWorkbenchQuickInputItem(labelOrId);
+      return;
+    }
+
+    throw controllerError instanceof Error ? controllerError : new Error(String(controllerError));
+  }
+
+  private async waitForQuickInput(
+    predicate: (state: QuickInputState) => boolean,
+    description: string,
+    timeoutSeconds?: string,
+  ): Promise<QuickInputState> {
+    const timeoutMs = timeoutSeconds ? parseInt(timeoutSeconds, 10) * 1000 : 10_000;
+    const deadline = Date.now() + timeoutMs;
+    let lastState: QuickInputState = { active: false };
+    while (Date.now() < deadline) {
+      lastState = await this.getQuickInputState();
+      if (lastState.active && predicate(lastState)) return lastState;
+      await delay(100);
+    }
+    throw new Error(`QuickInput ${description} not found within ${timeoutMs}ms. Last state: ${JSON.stringify(lastState)}`);
+  }
+
+  private quickInputHasItem(state: QuickInputState, labelOrId: string): boolean {
+    const target = normalizeQuickInputText(labelOrId);
+    return Boolean(state.items?.some((item) =>
+      item.id === labelOrId ||
+      normalizeQuickInputText(item.label).includes(target) ||
+      normalizeQuickInputText(item.matchLabel).includes(target)
+    ));
+  }
+
+  private async assertQuickInputItem(labelOrId: string): Promise<void> {
+    const state = await this.getQuickInputState();
+    if (!state.active) throw new Error('No QuickInput is active');
+    if (!this.quickInputHasItem(state, labelOrId)) {
+      throw new Error(`QuickInput item "${labelOrId}" not found. Items: ${(state.items ?? []).map((item) => item.label).join(', ')}`);
+    }
+  }
+
+  private async assertQuickInputTitle(expectedText: string): Promise<void> {
+    const state = await this.getQuickInputState();
+    if (!state.active) throw new Error('No QuickInput is active');
+    if (!(state.title ?? '').includes(expectedText)) {
+      throw new Error(`QuickInput title "${state.title ?? ''}" does not contain "${expectedText}"`);
+    }
+  }
+
+  private async assertQuickInputValue(expectedValue: string): Promise<void> {
+    const state = await this.getQuickInputState();
+    if (!state.active) throw new Error('No QuickInput is active');
+    if ((state.value ?? '') !== expectedValue) {
+      throw new Error(`QuickInput value "${state.value ?? ''}" does not equal "${expectedValue}"`);
+    }
+  }
+
+  private async waitForProgress(title: string, status: 'active' | 'completed', timeoutSeconds?: string): Promise<ProgressInfo> {
+    const timeoutMs = timeoutSeconds ? parseInt(timeoutSeconds, 10) * 1000 : 30_000;
+    const deadline = Date.now() + timeoutMs;
+    let lastProgress: ProgressInfo[] = [];
+    while (Date.now() < deadline) {
+      const state = await this.client.getProgressState();
+      lastProgress = [...state.active, ...state.history];
+      const match = findProgressByTitle(lastProgress, title, status);
+      if (match) return match;
+      await delay(200);
+    }
+    throw new Error(`Progress "${title}" did not become ${status} within ${timeoutMs}ms. Seen: ${lastProgress.map((item) => `${item.title ?? '(untitled)'}:${item.status}`).join(', ')}`);
+  }
+
+  private async assertProgress(title: string, status: ProgressInfo['status']): Promise<void> {
+    const state = await this.client.getProgressState();
+    const match = findProgressByTitle([...state.active, ...state.history], title, status);
+    if (!match) {
+      throw new Error(`Progress "${title}" with status ${status} not found`);
+    }
+  }
+
   private async assertNotification(expectedText: string): Promise<void> {
     for (let i = 0; i < 10; i++) {
       const notifications = await this.client.getNotifications();
@@ -589,6 +751,29 @@ export class TestRunner {
       await delay(500);
     }
     throw new Error(`Notification containing "${expectedText}" not found after 5s`);
+  }
+
+  private async clickNotificationAction(message: string, action: string): Promise<void> {
+    const timeoutMs = 10_000;
+    const deadline = Date.now() + timeoutMs;
+    let lastNotifications: NotificationInfo[] = [];
+    while (Date.now() < deadline) {
+      lastNotifications = await this.client.getNotifications();
+      const match = lastNotifications.find((notification) =>
+        notification.active &&
+        notification.message.toLowerCase().includes(message.toLowerCase()) &&
+        (notification.actions ?? []).some((candidate) => labelsMatch(candidate.label, action))
+      );
+      if (match) {
+        await this.client.clickNotificationAction(message, action);
+        return;
+      }
+      await delay(200);
+    }
+    const seen = lastNotifications
+      .map((notification) => `"${notification.message}" [${(notification.actions ?? []).map((candidate) => candidate.label).join(', ')}]`)
+      .join('; ');
+    throw new Error(`Notification containing "${message}" with action "${action}" not found within ${timeoutMs}ms. Seen: ${seen}`);
   }
 
   private async assertNoNotification(text: string): Promise<void> {
@@ -1017,81 +1202,7 @@ export class TestRunner {
     const filePath = path.join(this.artifactsDir, name);
     fs.mkdirSync(this.artifactsDir, { recursive: true });
 
-    // Write the PS script to a temp file to avoid quoting issues
-    const os = require('node:os');
-    const scriptPath = path.join(os.tmpdir(), `vscode-ext-tester-screenshot-${process.pid}.ps1`);
-    // Build a PID filter for the PowerShell script — when we know which
-    // VS Code process tree to target, restrict the window search to children
-    // of that process to avoid capturing an unrelated Dev Host (e.g. F5).
-    let pidFilter = '';
-    if (this.targetPid) {
-      // Get all descendant PIDs and filter Get-Process to that set
-      pidFilter = `
-$parentPid = ${this.targetPid}
-$allProcs = Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId
-$tree = @{}; $allProcs | ForEach-Object { if (-not $tree[$_.ParentProcessId]) { $tree[$_.ParentProcessId] = @() }; $tree[$_.ParentProcessId] += $_.ProcessId }
-$allowed = [System.Collections.Generic.HashSet[int]]::new()
-$queue = [System.Collections.Generic.Queue[int]]::new()
-$queue.Enqueue($parentPid); $allowed.Add($parentPid) | Out-Null
-while ($queue.Count -gt 0) { $cur = $queue.Dequeue(); if ($tree[$cur]) { foreach ($c in $tree[$cur]) { if ($allowed.Add($c)) { $queue.Enqueue($c) } } } }
-`;
-    }
-
-    const script = `
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class Win32Screenshot {
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-  [StructLayout(LayoutKind.Sequential)]
-  public struct RECT { public int Left, Top, Right, Bottom; }
-}
-"@
-${pidFilter}
-$candidates = Get-Process | Where-Object { $_.MainWindowTitle -like "*Extension Development Host*" -and $_.MainWindowHandle -ne [IntPtr]::Zero }
-${this.targetPid ? '$candidates = $candidates | Where-Object { $allowed.Contains([int]$_.Id) }' : ''}
-$devHost = $candidates | Select-Object -First 1
-if ($devHost -and $devHost.MainWindowHandle -ne [IntPtr]::Zero) {
-  [Win32Screenshot]::ShowWindow($devHost.MainWindowHandle, 9)
-  [Win32Screenshot]::SetForegroundWindow($devHost.MainWindowHandle)
-  Start-Sleep -Milliseconds 500
-  $rect = New-Object Win32Screenshot+RECT
-  [Win32Screenshot]::GetWindowRect($devHost.MainWindowHandle, [ref]$rect)
-  $w = $rect.Right - $rect.Left
-  $h = $rect.Bottom - $rect.Top
-  if ($w -gt 0 -and $h -gt 0) {
-    $bmp = New-Object System.Drawing.Bitmap($w, $h)
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($rect.Left, $rect.Top, 0, 0, (New-Object System.Drawing.Size($w, $h)))
-    $bmp.Save('${filePath.replace(/\\/g, '\\\\').replace(/'/g, "''")}', [System.Drawing.Imaging.ImageFormat]::Png)
-    $g.Dispose()
-    $bmp.Dispose()
-    exit 0
-  }
-}
-# Fallback: capture full screen if Dev Host window not found
-$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-$bmp = New-Object System.Drawing.Bitmap($b.Width, $b.Height)
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
-$bmp.Save('${filePath.replace(/\\/g, '\\\\').replace(/'/g, "''")}', [System.Drawing.Imaging.ImageFormat]::Png)
-$g.Dispose()
-$bmp.Dispose()
-`;
-    fs.writeFileSync(scriptPath, script, 'utf-8');
-
-    try {
-      cp.execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`, {
-        timeout: 15000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-    } finally {
-      try { fs.unlinkSync(scriptPath); } catch { /* best effort */ }
-    }
+    await (await this.requireNativeUI()).captureDevHostScreenshot(filePath);
   }
 
   // ─── File utility helpers ───────────────────────────────────────
@@ -1138,4 +1249,19 @@ function delay(ms: number): Promise<void> {
 
 function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'unnamed';
+}
+
+function normalizeQuickInputText(text: string): string {
+  return text.replace(/\$\([^)]+\)\s*/g, '').trim().toLowerCase();
+}
+
+function labelsMatch(actual: string, expected: string): boolean {
+  return actual.toLowerCase() === expected.toLowerCase();
+}
+
+function findProgressByTitle(items: ProgressInfo[], title: string, status: ProgressInfo['status']): ProgressInfo | undefined {
+  const needle = title.toLowerCase();
+  return [...items].reverse().find((item) =>
+    (item.title ?? '').toLowerCase().includes(needle) && item.status === status
+  );
 }

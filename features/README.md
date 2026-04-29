@@ -71,11 +71,16 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 |------|-------------|
 | `When I execute command "<commandId>"` | Run a VS Code command (waits for completion) |
 | `When I execute command "<commandId>" with args '<json>'` | Run a VS Code command with arguments (JSON array, e.g. `'["arg1","arg2"]'`) |
-| `When I start command "<commandId>"` | Start a VS Code command without waiting (use for commands that show InputBox/QuickPick) |
+| `When I start command "<commandId>"` | Start a VS Code command without waiting (use for commands that show QuickInput) |
 | `When I start command "<commandId>" with args '<json>'` | Start a VS Code command with arguments without waiting |
 | `When I add folder "<path>" to the workspace` | Add a folder to the workspace without reloading |
-| `When I select "<label>" from the QuickPick` | Choose an item from the QuickPick |
-| `When I type "<text>" into the InputBox` | Type into the InputBox |
+| `When I inspect the QuickInput` | Print the current QuickInput title, value, validation, and items |
+| `When I select QuickInput item "<label>"` | Choose an item from the captured QuickInput model or visible workbench widget |
+| `When I select "<label>" from the QuickInput` | Choose an item from the captured QuickInput model or visible workbench widget |
+| `When I select "<label>" from the QuickPick` | Compatibility alias for choosing an item from the QuickPick |
+| `When I enter "<text>" in the QuickInput` | Enter and accept QuickInput text after validation clears |
+| `When I type "<text>" into the InputBox` | Compatibility alias for entering text in the InputBox |
+| `When I click "<action>" on notification "<text>"` | Click/resolve a captured notification action |
 | `When I click "<button>" on the dialog` | Click a dialog button |
 | `When I type "<text>"` | Type text into the focused editor/input using real input with fallback |
 | `When I press "<key>"` | Press a key or combo such as Enter, Escape, Ctrl+S, Shift+Tab |
@@ -109,11 +114,12 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 
 ### Input Targeting Guidance
 
-Prefer commands and dedicated UI responders first, webview CSS selectors next,
+Prefer commands and QuickInput inspection/selection/text steps first; they use captured extension-host state when available and the visible workbench widget as a fallback. Use webview CSS selectors next,
 and accessible-name clicks for workbench/native UI. Use raw mouse coordinates
 only when no command, selector, or accessible name can target the UI; stabilize
 the Dev Host window with resize/move steps first. To use a context menu,
 right-click to open it, then select the item with the popup menu step.
+Prefer QuickInput, progress, and notification wait/assertion steps over fixed waits.
 
 `vscode-ext-test init` also installs these instructions into downstream repos
 as `.github/skills/e2e-test-extension/SKILL.md`. Rerun init after upgrading the
@@ -124,6 +130,17 @@ CLI to refresh that generated skill file; `repo-knowledge.md` is preserved.
 | Step | Description |
 |------|-------------|
 | `Then I should see notification "<text>"` | Assert a notification appeared |
+| `Then I should not see notification "<text>"` | Assert a notification did not appear |
+| `Then I wait for QuickInput item "<label>"` | Wait for a QuickInput item to be present |
+| `Then I wait for QuickInput title "<text>"` | Wait for a QuickInput title |
+| `Then I wait for QuickInput value "<value>"` | Wait for the current QuickInput value |
+| `Then the QuickInput should contain item "<label>"` | Assert the active QuickInput has an item |
+| `Then the QuickInput title should contain "<text>"` | Assert QuickInput title text |
+| `Then the QuickInput value should be "<value>"` | Assert QuickInput value |
+| `Then I wait for progress "<title>" to start` | Wait for tracked progress to become active |
+| `Then I wait for progress "<title>" to complete` | Wait for tracked progress to complete |
+| `Then progress "<title>" should be active` | Assert tracked progress is active |
+| `Then progress "<title>" should be completed` | Assert tracked progress completed |
 | `Then the editor should contain "<text>"` | Assert editor content |
 | `Then the output channel "<name>" should contain "<text>"` | Assert output channel content |
 | `Then the output channel "<name>" should not contain "<text>"` | Assert output channel does NOT contain text |

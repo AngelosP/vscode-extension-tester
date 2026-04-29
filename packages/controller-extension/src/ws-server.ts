@@ -146,6 +146,23 @@ export class WSServer {
         return this.services.uiInterceptor.respondToDialog(
           p['button'] as string
         );
+      case 'getQuickInputState':
+        return this.services.uiInterceptor.getQuickInputState();
+      case 'selectQuickInputItem':
+        return this.services.uiInterceptor.selectQuickInputItem(
+          p['label'] as string
+        );
+      case 'submitQuickInputText':
+        return this.services.uiInterceptor.submitQuickInputText(
+          p['value'] as string
+        );
+      case 'clickNotificationAction':
+        return this.services.stateReader.clickNotificationAction(
+          p['message'] as string,
+          p['action'] as string
+        );
+      case 'getProgressState':
+        return this.services.stateReader.getProgressState();
 
       // ─── State reading ───
       case 'getState':
@@ -216,8 +233,10 @@ export class WSServer {
         await vscode.commands.executeCommand('workbench.action.closeSidebar');
         // Close any quick picks / input boxes
         await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
-        // Clear tracked notifications
+        // Clear tracked UI state
+        this.services.uiInterceptor.clearQuickInput();
         this.services.stateReader.clearNotifications();
+        this.services.stateReader.clearProgress();
         return { status: 'reset' };
       }
 

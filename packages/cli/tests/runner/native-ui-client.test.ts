@@ -277,6 +277,17 @@ describe('NativeUIClient', () => {
       });
     });
 
+    it('captureWindowScreenshot() should send correct JSON', async () => {
+      respondWith({ success: true });
+      await client.captureWindowScreenshot('win_1', 'C:\\tmp\\shot.png');
+
+      const sent = JSON.parse(stdinWrites[0]);
+      expect(sent).toMatchObject({
+        method: 'captureWindowScreenshot',
+        params: { windowId: 'win_1', filePath: 'C:\\tmp\\shot.png' },
+      });
+    });
+
     it('listWindows() should send correct JSON and return array', async () => {
       respondWith([SAMPLE_WINDOW]);
       const result = await client.listWindows();
@@ -642,7 +653,7 @@ describe('NativeUIClient', () => {
       expect(client.resizeWindow).toHaveBeenCalledWith('launched_win', 800, 600);
     });
 
-    it('should fall back to first window when targetPid has no matching descendants', async () => {
+    it('should throw when multiple Dev Hosts exist and targetPid has no matching descendants', async () => {
       client.targetPid = 9999; // no children in the tree
 
       (cp.execSync as any).mockReturnValue(
@@ -656,10 +667,9 @@ describe('NativeUIClient', () => {
       vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
       vi.spyOn(client, 'resizeWindow').mockResolvedValueOnce(undefined);
 
-      await client.resizeDevHost(800, 600);
+      await expect(client.resizeDevHost(800, 600)).rejects.toThrow('none match target PID 9999');
 
-      // Falls back to first match
-      expect(client.focusWindow).toHaveBeenCalledWith('f5_win');
+      expect(client.focusWindow).not.toHaveBeenCalled();
     });
 
     it('should not filter by PID when only one Dev Host window exists', async () => {
@@ -680,12 +690,15 @@ describe('NativeUIClient', () => {
       expect(client.focusWindow).toHaveBeenCalledWith('launched_win');
     });
 
-    it('should handle wmic failure gracefully and fall back to first window', async () => {
+    it('should use PowerShell process discovery when wmic fails', async () => {
       client.targetPid = 1999;
 
-      (cp.execSync as any).mockImplementation(() => {
-        throw new Error('wmic not found');
-      });
+      (cp.execSync as any)
+        .mockImplementationOnce(() => { throw new Error('wmic not found'); })
+        .mockReturnValueOnce(
+          '"ParentProcessId","ProcessId"\n' +
+          '"1999","2000"\n'
+        );
 
       vi.spyOn(client, 'listWindows').mockResolvedValueOnce([f5Window, launchedWindow]);
       vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
@@ -693,9 +706,7 @@ describe('NativeUIClient', () => {
 
       await client.resizeDevHost(800, 600);
 
-      // wmic failed, so allowedPids only contains targetPid (1999) — no match,
-      // falls back to first window
-      expect(client.focusWindow).toHaveBeenCalledWith('f5_win');
+      expect(client.focusWindow).toHaveBeenCalledWith('launched_win');
     });
   });
 });

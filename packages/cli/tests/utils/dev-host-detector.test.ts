@@ -52,6 +52,21 @@ MYPC,12345,"C:\\Program Files\\Microsoft VS Code\\Code.exe" --extensionDevelopme
       expect(result).not.toBeNull();
       expect(result!.extensionPath).toBe('/home/user/my-ext');
     });
+
+    it('should filter Dev Hosts by extension path when provided', async () => {
+      const output = `
+Node,ProcessId,CommandLine
+MYPC,11111,"Code.exe" --extensionDevelopmentPath=C:\\other-extension
+MYPC,22222,"Code.exe" --extensionDevelopmentPath=C:\\my-extension
+`;
+      (cp.execSync as any).mockReturnValue(output);
+
+      const result = await detectDevHost('C:\\my-extension');
+
+      expect(result).not.toBeNull();
+      expect(result!.pid).toBe(22222);
+      expect(result!.extensionPath).toBe('C:\\my-extension');
+    });
   });
 
   describe('waitForDevHost()', () => {

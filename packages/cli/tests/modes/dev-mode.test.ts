@@ -95,6 +95,7 @@ describe('attachMode', () => {
   it('passes attach-mode CDP port and Dev Host PID into TestRunner', async () => {
     await attachMode(makeOptions(tempDir));
 
+    expect(mockDetectDevHost).toHaveBeenCalledWith(tempDir);
     expect(mockRunnerCtorArgs).toHaveLength(1);
     expect(mockRunnerCtorArgs[0][4]).toBe(9333);
     expect(mockRunnerCtorArgs[0][5]).toBe(4242);

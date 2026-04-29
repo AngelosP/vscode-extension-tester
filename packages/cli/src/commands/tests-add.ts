@@ -42,9 +42,14 @@ AVAILABLE STEP DEFINITIONS (use ONLY these exact patterns):
 When steps (actions):
   When I execute command "<commandId>"
   When I start command "<commandId>"
+  When I inspect the QuickInput
+  When I select QuickInput item "<label>"
+  When I select "<label>" from the QuickInput
   When I select "<label>" from the QuickPick
   When I select "<label>" from the popup menu
+  When I enter "<value>" in the QuickInput
   When I type "<value>" into the InputBox
+  When I click "<action>" on notification "<text>"
   When I type "<text>"
   When I press "<key>"
   When I click "<button>" on the dialog
@@ -69,6 +74,16 @@ When steps (actions):
 Then steps (assertions):
   Then I should see notification "<text>"
   Then I should not see notification "<text>"
+  Then I wait for QuickInput item "<label>"
+  Then I wait for QuickInput title "<text>"
+  Then I wait for QuickInput value "<value>"
+  Then the QuickInput should contain item "<label>"
+  Then the QuickInput title should contain "<text>"
+  Then the QuickInput value should be "<value>"
+  Then I wait for progress "<title>" to start
+  Then I wait for progress "<title>" to complete
+  Then progress "<title>" should be active
+  Then progress "<title>" should be completed
   Then the editor should contain "<text>"
   Then the output channel "<name>" should contain "<text>"
   Then the webview should contain "<text>"
@@ -76,7 +91,8 @@ Then steps (assertions):
   Then I wait <N> seconds
 
 INPUT TARGETING RULES:
-- Prefer VS Code commands, QuickPick/InputBox/dialog responders, and stable webview CSS selectors/data-testid values.
+- Prefer VS Code commands, QuickInput inspection/selection/text steps, dialog responders, and stable webview CSS selectors/data-testid values.
+- Prefer QuickInput/progress/notification wait steps over fixed waits; QuickInput steps can use captured state or the visible workbench widget.
 - Use accessible-name clicks for native/workbench UI when a stable name exists.
 - Use right-click steps to open context menus before selecting from the popup menu.
 - Use raw mouse coordinates only as a last resort when no command, selector, or accessible name can target the UI.

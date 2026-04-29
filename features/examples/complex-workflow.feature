@@ -9,10 +9,13 @@ Feature: Create Azure Functions Project
     And recording is enabled as "gif"
 
   Scenario Outline: Create project with different languages
-    When I execute command "azureFunctions.createNewProject"
-    And I select "<language>" from the QuickPick
-    And I select "<template>" from the QuickPick
-    And I type "<functionName>" into the InputBox
+    When I start command "azureFunctions.createNewProject"
+    Then I wait for QuickInput item "<language>"
+    When I select QuickInput item "<language>"
+    Then I wait for QuickInput item "<template>"
+    When I select QuickInput item "<template>"
+    Then I wait for QuickInput title "Function"
+    When I enter "<functionName>" in the QuickInput
     Then I should see notification "Project created"
     And the output channel "Azure Functions" should contain "Created <functionName>"
 
@@ -23,15 +26,19 @@ Feature: Create Azure Functions Project
       | C#         | Blob trigger    | myBlobFunc    |
 
   Scenario: Create project with connection string
-    When I execute command "azureFunctions.createNewProject"
-    And I select "JavaScript" from the QuickPick
-    And I select "Azure Cosmos DB trigger" from the QuickPick
-    And I type "myCosmosFunc" into the InputBox
-    And I type "${TEST_CONN_STRING}" into the InputBox
+    When I start command "azureFunctions.createNewProject"
+    Then I wait for QuickInput item "JavaScript"
+    When I select QuickInput item "JavaScript"
+    Then I wait for QuickInput item "Azure Cosmos DB trigger"
+    When I select QuickInput item "Azure Cosmos DB trigger"
+    Then I wait for QuickInput title "Function"
+    When I enter "myCosmosFunc" in the QuickInput
+    Then I wait for QuickInput title "Connection"
+    When I enter "${TEST_CONN_STRING}" in the QuickInput
     Then I should see notification "Project created"
 
   Scenario: Cancel project creation
-    When I execute command "azureFunctions.createNewProject"
+    When I start command "azureFunctions.createNewProject"
+    Then I wait for QuickInput item "JavaScript"
     And I execute command "workbench.action.closeQuickOpen"
-    And I wait 2 seconds
     Then I should see notification "Project creation cancelled"

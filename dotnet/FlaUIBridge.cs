@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Imaging;
+using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
@@ -19,9 +22,13 @@ namespace FlaUIBridge
     /// </summary>
     public class Automation
     {
+        private const int SW_RESTORE = 9;
         private static readonly UIA3Automation _automation = new();
         private static readonly Dictionary<string, AutomationElement> _elementCache = new();
         private static int _elementIdCounter = 0;
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
         /// <summary>
         /// Find a window by title pattern (partial match).
@@ -365,6 +372,45 @@ namespace FlaUIBridge
 
             window.Patterns.Transform.Pattern.Move(x, y);
             return new { success = true };
+        }
+
+        /// <summary>
+        /// Capture a cached window's current bounds to a PNG file.
+        /// Input: { windowId: string, filePath: string }
+        /// </summary>
+        public async Task<object> CaptureWindowScreenshot(dynamic input)
+        {
+            string windowId = (string)input.windowId;
+            string filePath = (string)input.filePath;
+
+            if (!_elementCache.TryGetValue(windowId, out var element))
+                throw new Exception($"Window {windowId} not found in cache");
+
+            var window = element.AsWindow();
+            var nativeHandle = element.Properties.NativeWindowHandle.ValueOrDefault;
+            if (nativeHandle != 0) ShowWindow(new IntPtr(nativeHandle), SW_RESTORE);
+            window.SetForeground();
+            await Task.Delay(200);
+
+            if (element.Properties.IsOffscreen.ValueOrDefault)
+                throw new Exception("Window is minimized or offscreen after restore; cannot capture screenshot");
+
+            var rect = element.BoundingRectangle;
+            int x = Convert.ToInt32(Math.Round(Convert.ToDouble(rect.X)));
+            int y = Convert.ToInt32(Math.Round(Convert.ToDouble(rect.Y)));
+            int width = Convert.ToInt32(Math.Round(Convert.ToDouble(rect.Width)));
+            int height = Convert.ToInt32(Math.Round(Convert.ToDouble(rect.Height)));
+            if (width <= 0 || height <= 0)
+                throw new Exception($"Window has invalid screenshot bounds: {rect}");
+
+            var directory = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+
+            using var bitmap = new Bitmap(width, height);
+            using var graphics = Graphics.FromImage(bitmap);
+            graphics.CopyFromScreen(x, y, 0, 0, new Size(width, height));
+            bitmap.Save(filePath, ImageFormat.Png);
+            return new { success = true, filePath, width, height };
         }
 
         // ─── Helpers ─────────────────────────────────────────────────
