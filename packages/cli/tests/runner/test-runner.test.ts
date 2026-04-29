@@ -46,6 +46,8 @@ function resetMockNativeUI(): void {
     findWindow: vi.fn().mockResolvedValue(null),
     findElement: vi.fn().mockResolvedValue(null),
     clickElement: vi.fn().mockResolvedValue(undefined),
+    moveMouse: vi.fn().mockResolvedValue(undefined),
+    clickMouse: vi.fn().mockResolvedValue(undefined),
     setText: vi.fn().mockResolvedValue(undefined),
     focusWindow: vi.fn().mockResolvedValue(undefined),
     resizeWindow: vi.fn().mockResolvedValue(undefined),
@@ -112,6 +114,10 @@ function resetMockCdp(): void {
     readOutputChannelContent: vi.fn().mockResolvedValue(undefined),
     listWebviews: vi.fn().mockResolvedValue([]),
     listWebviewFrameContexts: vi.fn().mockResolvedValue([]),
+    insertText: vi.fn().mockResolvedValue(undefined),
+    pressKey: vi.fn().mockResolvedValue(undefined),
+    moveMouse: vi.fn().mockResolvedValue(undefined),
+    clickAt: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -345,7 +351,8 @@ describe('TestRunner', () => {
 
       await runner.runFeature(feature);
 
-      expect(client.typeText).toHaveBeenCalledWith('hello');
+      expect(getMockCdp().insertText).toHaveBeenCalledWith('hello');
+      expect(client.typeText).not.toHaveBeenCalled();
     });
 
     it('should handle "I press" step (press key)', async () => {
@@ -357,7 +364,48 @@ describe('TestRunner', () => {
 
       await runner.runFeature(feature);
 
-      expect(client.pressKey).toHaveBeenCalledWith('Enter');
+      expect(getMockCdp().pressKey).toHaveBeenCalledWith('Enter');
+      expect(client.pressKey).not.toHaveBeenCalled();
+    });
+
+    it('should fallback to controller for multi-stroke key chords', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Press', [
+          makeStep('When ', 'I press "Ctrl+K Ctrl+S"'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(client.pressKey).toHaveBeenCalledWith('Ctrl+K Ctrl+S');
+      expect(getMockCdp().pressKey).not.toHaveBeenCalled();
+    });
+
+    it('should fallback to controller when CDP key dispatch fails', async () => {
+      getMockCdp().pressKey.mockRejectedValueOnce(new Error('Unsupported key spec'));
+      const feature = makeFeature('Test', [
+        makeScenario('Press', [
+          makeStep('When ', 'I press "Ctrl+/"'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(getMockCdp().pressKey).toHaveBeenCalledWith('Ctrl+/');
+      expect(client.pressKey).toHaveBeenCalledWith('Ctrl+/');
+    });
+
+    it('should fallback to controller when CDP text insertion fails', async () => {
+      getMockCdp().insertText.mockRejectedValueOnce(new Error('CDP unavailable'));
+      const feature = makeFeature('Test', [
+        makeScenario('Type', [
+          makeStep('When ', 'I type "hello"'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(client.typeText).toHaveBeenCalledWith('hello');
     });
 
     it('should handle notification assertion step', async () => {
@@ -1134,6 +1182,40 @@ describe('TestRunner', () => {
     });
   });
 
+  describe('webview input steps', () => {
+    it('should click a webview selector with default left click options', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Click webview', [
+          makeStep('When ', 'I click "[data-testid=run]" in the webview'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(getMockCdp().clickInWebviewBySelector).toHaveBeenCalledWith('[data-testid=run]', undefined, {
+        button: 'left',
+        clickCount: 1,
+      });
+    });
+
+    it('should right-click a selector in a titled webview', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Right click webview', [
+          makeStep('When ', 'I right click ".row" in the webview "Dashboard"'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(getMockCdp().clickInWebviewBySelector).toHaveBeenCalledWith('.row', 'Dashboard', {
+        button: 'right',
+        clickCount: 1,
+      });
+    });
+  });
+
   describe('element existence assertions', () => {
     it('should pass when element exists (immediate)', async () => {
       getMockCdp().waitForSelectorInWebview.mockResolvedValue(undefined);
@@ -1859,7 +1941,42 @@ describe('TestRunner', () => {
 
       await runner.runFeature(feature);
 
-      expect(getMockNativeUI().clickInDevHost).toHaveBeenCalledWith('Open');
+      expect(getMockNativeUI().clickInDevHost).toHaveBeenCalledWith('Open', undefined, {
+        button: 'left',
+        clickCount: 1,
+      });
+    });
+
+    it('should handle raw mouse move and right-click steps', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Mouse', [
+          makeStep('When ', 'I move the mouse to 100, 200'),
+          makeStep('And ', 'I right click at 110, 210'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(getMockNativeUI().moveMouse).toHaveBeenCalledWith(100, 200);
+      expect(getMockNativeUI().clickMouse).toHaveBeenCalledWith(110, 210, {
+        button: 'right',
+        clickCount: 1,
+      });
+    });
+
+    it('should handle right-click accessible element steps', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Right click element', [
+          makeStep('When ', 'I right click the element "Open"'),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(getMockNativeUI().clickInDevHost).toHaveBeenCalledWith('Open', undefined, {
+        button: 'right',
+        clickCount: 1,
+      });
     });
 
     it('should handle "I click the <name> <controlType>" step', async () => {
@@ -1871,7 +1988,10 @@ describe('TestRunner', () => {
 
       await runner.runFeature(feature);
 
-      expect(getMockNativeUI().clickInDevHost).toHaveBeenCalledWith('Save', 'button');
+      expect(getMockNativeUI().clickInDevHost).toHaveBeenCalledWith('Save', 'button', {
+        button: 'left',
+        clickCount: 1,
+      });
     });
 
     it('should handle "I save the file as" step', async () => {

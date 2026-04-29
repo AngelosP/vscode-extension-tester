@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ControllerClient } from '../runner/controller-client.js';
-import { CONTROLLER_WS_PORT, DEFAULT_FEATURES_DIR } from '../types.js';
+import { CDP_PORT, CONTROLLER_WS_PORT, DEFAULT_FEATURES_DIR } from '../types.js';
 import { loadEnv, getAgentConfig, getUserDataSummary } from '../agent/env.js';
 import { loadMemories, appendMemory } from '../agent/memory.js';
 import { runAgentLoop } from '../agent/agent-loop.js';
@@ -16,6 +16,7 @@ interface TestsAddOptions {
   maxIterations?: string;
   model?: string;
   port?: string;
+  cdpPort?: string;
 }
 
 interface ResumeMarker {
@@ -40,15 +41,45 @@ AVAILABLE STEP DEFINITIONS (use ONLY these exact patterns):
 
 When steps (actions):
   When I execute command "<commandId>"
+  When I start command "<commandId>"
   When I select "<label>" from the QuickPick
+  When I select "<label>" from the popup menu
   When I type "<value>" into the InputBox
+  When I type "<text>"
+  When I press "<key>"
   When I click "<button>" on the dialog
+  When I click the element "<accessible name>"
+  When I right click the element "<accessible name>"
+  When I middle click the element "<accessible name>"
+  When I double click the element "<accessible name>"
+  When I click "<css selector>" in the webview
+  When I right click "<css selector>" in the webview
+  When I middle click "<css selector>" in the webview
+  When I double click "<css selector>" in the webview
+  When I move the mouse to <x>, <y>
+  When I click
+  When I right click
+  When I middle click
+  When I double click
+  When I click at <x>, <y>
+  When I right click at <x>, <y>
+  When I middle click at <x>, <y>
+  When I double click at <x>, <y>
 
 Then steps (assertions):
   Then I should see notification "<text>"
+  Then I should not see notification "<text>"
   Then the editor should contain "<text>"
   Then the output channel "<name>" should contain "<text>"
+  Then the webview should contain "<text>"
+  Then element "<css selector>" should exist
   Then I wait <N> seconds
+
+INPUT TARGETING RULES:
+- Prefer VS Code commands, QuickPick/InputBox/dialog responders, and stable webview CSS selectors/data-testid values.
+- Use accessible-name clicks for native/workbench UI when a stable name exists.
+- Use right-click steps to open context menus before selecting from the popup menu.
+- Use raw mouse coordinates only as a last resort when no command, selector, or accessible name can target the UI.
 
 Variables from .env can be used as \${VARIABLE_NAME} in step text.
 
@@ -117,6 +148,7 @@ export async function testsAddCommand(
   const memories = loadMemories(cwd);
   const userData = getUserDataSummary(env);
   const port = parseInt(opts.port ?? String(CONTROLLER_WS_PORT), 10);
+  const cdpPort = parseInt(opts.cdpPort ?? String(CDP_PORT), 10);
   const maxIterations = parseInt(opts.maxIterations ?? String(agentConfig.maxIterations), 10);
   const shouldExplore = opts.explore !== false;
   const shouldRun = opts.run !== false;
@@ -126,7 +158,7 @@ export async function testsAddCommand(
   const resumePath = path.join(cwd, RESUME_DIR, RESUME_FILE);
   if (fs.existsSync(resumePath)) {
     console.log('Found resume marker from previous run. Resuming...\n');
-    await resumeFlow(cwd, resumePath, env, memories, userData, agentConfig, port, maxIterations, opts.model, shouldExplore);
+    await resumeFlow(cwd, resumePath, env, memories, userData, agentConfig, port, cdpPort, maxIterations, opts.model, shouldExplore);
     return;
   }
 
@@ -172,6 +204,7 @@ export async function testsAddCommand(
     cwd,
     controllerClient: client,
     env,
+    cdpPort,
   };
 
   console.log('Agent is working...\n');
@@ -234,6 +267,7 @@ async function resumeFlow(
   userData: string,
   agentConfig: ReturnType<typeof getAgentConfig>,
   port: number,
+  cdpPort: number,
   maxIterations: number,
   modelOverride?: string,
   shouldExplore?: boolean,
@@ -286,6 +320,7 @@ async function resumeFlow(
     cwd,
     controllerClient: client,
     env,
+    cdpPort,
   };
 
   console.log('Agent is fixing tests...\n');

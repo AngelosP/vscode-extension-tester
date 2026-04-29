@@ -74,6 +74,7 @@ testsCmd
   .option('--max-iterations <n>', 'Max agent iterations', '20')
   .option('--model <name>', 'LLM model to use')
   .option('--port <number>', 'Controller WebSocket port', '9788')
+  .option('--cdp-port <number>', 'Chrome DevTools Protocol port', '9222')
   .action(testsAddCommand);
 
 // ─── Profile management ──────────────────────────────────────────────────────

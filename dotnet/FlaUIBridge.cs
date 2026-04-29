@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Linq;
 using System.Threading.Tasks;
 using FlaUI.Core;
@@ -87,7 +88,51 @@ namespace FlaUIBridge
             if (!_elementCache.TryGetValue(elementId, out var element))
                 throw new Exception($"Element {elementId} not found in cache");
 
-            element.Click();
+            var point = GetClickableCenter(element);
+            var button = ParseMouseButton(input.button as string);
+            int clickCount = NormalizeClickCount((int)input.clickCount);
+
+            ClickAt(point, button, clickCount);
+            await Task.Delay(100);
+            return new { success = true };
+        }
+
+        /// <summary>
+        /// Move the OS mouse cursor to screen coordinates.
+        /// Input: { x: double, y: double }
+        /// </summary>
+        public async Task<object> MoveMouse(dynamic input)
+        {
+            var point = new Point(Convert.ToInt32((double)input.x), Convert.ToInt32((double)input.y));
+            Mouse.MoveTo(point);
+            await Task.Delay(50);
+            return new { success = true };
+        }
+
+        /// <summary>
+        /// Click at screen coordinates, or at the current cursor position if x/y are omitted.
+        /// Input: { x?: double, y?: double, button?: string, clickCount?: int }
+        /// </summary>
+        public async Task<object> ClickMouse(dynamic input)
+        {
+            var button = ParseMouseButton(input.button as string);
+            int clickCount = NormalizeClickCount((int)input.clickCount);
+
+            object? rawX = input.x;
+            object? rawY = input.y;
+            if (rawX == null || rawY == null)
+            {
+                Click(button, clickCount);
+            }
+            else
+            {
+                var point = new Point(
+                    Convert.ToInt32(Convert.ToDouble(rawX)),
+                    Convert.ToInt32(Convert.ToDouble(rawY)));
+                ClickAt(point, button, clickCount);
+            }
+
+            await Task.Delay(100);
             return new { success = true };
         }
 
@@ -170,7 +215,8 @@ namespace FlaUIBridge
 
                     if (name.Contains(itemName, StringComparison.OrdinalIgnoreCase))
                     {
-                        candidate.Click();
+                        var point = GetClickableCenter(candidate);
+                        ClickAt(point, MouseButton.Left, 1);
                         await Task.Delay(100);
                         return new { success = true, selected = name };
                     }
@@ -189,25 +235,29 @@ namespace FlaUIBridge
         public async Task<object> PressKey(dynamic input)
         {
             string key = (string)input.key;
-            var vk = key.ToLowerInvariant() switch
+
+            if (key.Contains(' '))
             {
-                "enter" or "return" => VirtualKeyShort.ENTER,
-                "escape" or "esc" => VirtualKeyShort.ESCAPE,
-                "tab" => VirtualKeyShort.TAB,
-                "space" => VirtualKeyShort.SPACE,
-                "backspace" => VirtualKeyShort.BACK,
-                "delete" => VirtualKeyShort.DELETE,
-                "up" => VirtualKeyShort.UP,
-                "down" => VirtualKeyShort.DOWN,
-                "left" => VirtualKeyShort.LEFT,
-                "right" => VirtualKeyShort.RIGHT,
-                "home" => VirtualKeyShort.HOME,
-                "end" => VirtualKeyShort.END,
-                _ => throw new ArgumentException($"Unknown key: {key}")
-            };
+                throw new ArgumentException($"Multi-stroke key chords are not supported by the native bridge: {key}");
+            }
+
+            var parts = key.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (parts.Length == 0) throw new ArgumentException("Key cannot be empty");
+
+            var modifiers = new List<VirtualKeyShort>();
+            string mainKey = parts[^1];
+            for (int i = 0; i < parts.Length - 1; i++)
+            {
+                modifiers.Add(ParseModifier(parts[i]));
+            }
+
+            var vk = ParseVirtualKey(mainKey);
+
+            foreach (var modifier in modifiers) Keyboard.Press(modifier);
             Keyboard.Press(vk);
             await Task.Delay(50); // brief settle time
             Keyboard.Release(vk);
+            for (int i = modifiers.Count - 1; i >= 0; i--) Keyboard.Release(modifiers[i]);
             return new { success = true };
         }
 
@@ -354,6 +404,136 @@ namespace FlaUIBridge
             var id = $"elem_{++_elementIdCounter}";
             _elementCache[id] = element;
             return id;
+        }
+
+        private static Point GetClickableCenter(AutomationElement element)
+        {
+            if (!element.IsEnabled)
+                throw new Exception($"Element \"{element.Name}\" is disabled");
+            if (element.Properties.IsOffscreen.ValueOrDefault)
+                throw new Exception($"Element \"{element.Name}\" is offscreen");
+
+            var rect = element.BoundingRectangle;
+            if (rect.Width <= 0 || rect.Height <= 0)
+                throw new Exception($"Element \"{element.Name}\" has invalid bounds: {rect}");
+
+            return new Point(
+                Convert.ToInt32(Math.Round(Convert.ToDouble(rect.X + rect.Width / 2))),
+                Convert.ToInt32(Math.Round(Convert.ToDouble(rect.Y + rect.Height / 2))));
+        }
+
+        private static MouseButton ParseMouseButton(string? button)
+        {
+            return (button ?? "left").ToLowerInvariant() switch
+            {
+                "left" => MouseButton.Left,
+                "right" => MouseButton.Right,
+                "middle" => MouseButton.Middle,
+                _ => throw new ArgumentException($"Unknown mouse button: {button}")
+            };
+        }
+
+        private static int NormalizeClickCount(int clickCount)
+        {
+            if (clickCount <= 0) throw new ArgumentException($"Invalid clickCount: {clickCount}");
+            return clickCount;
+        }
+
+        private static void ClickAt(Point point, MouseButton button, int clickCount)
+        {
+            Mouse.MoveTo(point);
+            if (clickCount == 2)
+            {
+                Mouse.DoubleClick(point, button);
+                return;
+            }
+            for (int i = 0; i < clickCount; i++)
+            {
+                Mouse.Click(point, button);
+            }
+        }
+
+        private static void Click(MouseButton button, int clickCount)
+        {
+            if (clickCount == 2)
+            {
+                Mouse.DoubleClick(button);
+                return;
+            }
+            for (int i = 0; i < clickCount; i++)
+            {
+                Mouse.Click(button);
+            }
+        }
+
+        private static VirtualKeyShort ParseModifier(string key)
+        {
+            return key.ToLowerInvariant() switch
+            {
+                "ctrl" or "control" => VirtualKeyShort.CONTROL,
+                "shift" => VirtualKeyShort.SHIFT,
+                "alt" => VirtualKeyShort.LMENU,
+                "meta" or "cmd" or "command" or "win" or "windows" => VirtualKeyShort.LWIN,
+                _ => throw new ArgumentException($"Unknown modifier key: {key}")
+            };
+        }
+
+        private static VirtualKeyShort ParseVirtualKey(string key)
+        {
+            var lower = key.ToLowerInvariant();
+            switch (lower)
+            {
+                case "enter":
+                case "return": return VirtualKeyShort.ENTER;
+                case "escape":
+                case "esc": return VirtualKeyShort.ESCAPE;
+                case "tab": return VirtualKeyShort.TAB;
+                case "space": return VirtualKeyShort.SPACE;
+                case "backspace": return VirtualKeyShort.BACK;
+                case "delete": return VirtualKeyShort.DELETE;
+                case "up":
+                case "arrowup": return VirtualKeyShort.UP;
+                case "down":
+                case "arrowdown": return VirtualKeyShort.DOWN;
+                case "left":
+                case "arrowleft": return VirtualKeyShort.LEFT;
+                case "right":
+                case "arrowright": return VirtualKeyShort.RIGHT;
+                case "home": return VirtualKeyShort.HOME;
+                case "end": return VirtualKeyShort.END;
+                case "pageup": return VirtualKeyShort.PRIOR;
+                case "pagedown": return VirtualKeyShort.NEXT;
+                case "+": return VirtualKeyShort.OEM_PLUS;
+                case "-": return VirtualKeyShort.OEM_MINUS;
+                case ",": return VirtualKeyShort.OEM_COMMA;
+                case ".": return VirtualKeyShort.OEM_PERIOD;
+                case "/": return VirtualKeyShort.OEM_2;
+                case "\\": return VirtualKeyShort.OEM_5;
+                case "[": return VirtualKeyShort.OEM_4;
+                case "]": return VirtualKeyShort.OEM_6;
+                case "`": return VirtualKeyShort.OEM_3;
+                case "'": return VirtualKeyShort.OEM_7;
+            }
+
+            if (key.Length == 1)
+            {
+                char c = char.ToUpperInvariant(key[0]);
+                if (c >= 'A' && c <= 'Z')
+                {
+                    return Enum.Parse<VirtualKeyShort>($"KEY_{c}");
+                }
+                if (c >= '0' && c <= '9')
+                {
+                    return Enum.Parse<VirtualKeyShort>($"KEY_{c}");
+                }
+            }
+
+            if (lower.StartsWith("f") && int.TryParse(lower[1..], out var functionKey) && functionKey >= 1 && functionKey <= 24)
+            {
+                return Enum.Parse<VirtualKeyShort>($"F{functionKey}");
+            }
+
+            throw new ArgumentException($"Unknown key: {key}");
         }
 
         private static string? TryGetValue(AutomationElement element)

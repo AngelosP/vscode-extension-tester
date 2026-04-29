@@ -66,9 +66,10 @@ function respondWith(result: unknown): void {
   const writeFn = fakeProcess.stdin!.write as ReturnType<typeof vi.fn>;
   writeFn.mockImplementationOnce((data: string) => {
     stdinWrites.push(data);
+    const id = JSON.parse(data).id;
     // Push on next microtick so readline has time to process
     queueMicrotask(() => {
-      fakeStdout.push(JSON.stringify({ result }) + '\n');
+      fakeStdout.push(JSON.stringify({ id, result }) + '\n');
     });
     return true;
   });
@@ -78,8 +79,9 @@ function respondWithError(error: string): void {
   const writeFn = fakeProcess.stdin!.write as ReturnType<typeof vi.fn>;
   writeFn.mockImplementationOnce((data: string) => {
     stdinWrites.push(data);
+    const id = JSON.parse(data).id;
     queueMicrotask(() => {
-      fakeStdout.push(JSON.stringify({ error }) + '\n');
+      fakeStdout.push(JSON.stringify({ id, error }) + '\n');
     });
     return true;
   });
@@ -174,7 +176,8 @@ describe('NativeUIClient', () => {
 
       expect(stdinWrites).toHaveLength(1);
       const sent = JSON.parse(stdinWrites[0]);
-      expect(sent).toEqual({ method: 'findWindow', params: { titlePattern: 'Test' } });
+      expect(sent).toMatchObject({ method: 'findWindow', params: { titlePattern: 'Test' } });
+      expect(sent.id).toEqual(expect.any(Number));
       expect(result).toEqual(SAMPLE_WINDOW);
     });
 
@@ -183,7 +186,7 @@ describe('NativeUIClient', () => {
       const result = await client.findElement('win_1', 'File name:', 'edit');
 
       const sent = JSON.parse(stdinWrites[0]);
-      expect(sent).toEqual({
+      expect(sent).toMatchObject({
         method: 'findElement',
         params: { windowId: 'win_1', name: 'File name:', controlType: 'edit' },
       });
@@ -203,7 +206,37 @@ describe('NativeUIClient', () => {
       await client.clickElement('elem_1');
 
       const sent = JSON.parse(stdinWrites[0]);
-      expect(sent).toEqual({ method: 'clickElement', params: { elementId: 'elem_1' } });
+      expect(sent).toMatchObject({ method: 'clickElement', params: { elementId: 'elem_1' } });
+    });
+
+    it('clickElement() should include mouse button options', async () => {
+      respondWith({ success: true });
+      await client.clickElement('elem_1', { button: 'right', clickCount: 2 });
+
+      const sent = JSON.parse(stdinWrites[0]);
+      expect(sent).toMatchObject({
+        method: 'clickElement',
+        params: { elementId: 'elem_1', button: 'right', clickCount: 2 },
+      });
+    });
+
+    it('moveMouse() should send screen coordinates', async () => {
+      respondWith({ success: true });
+      await client.moveMouse(100, 200);
+
+      const sent = JSON.parse(stdinWrites[0]);
+      expect(sent).toMatchObject({ method: 'moveMouse', params: { x: 100, y: 200 } });
+    });
+
+    it('clickMouse() should send coordinates and options', async () => {
+      respondWith({ success: true });
+      await client.clickMouse(100, 200, { button: 'middle', clickCount: 2 });
+
+      const sent = JSON.parse(stdinWrites[0]);
+      expect(sent).toMatchObject({
+        method: 'clickMouse',
+        params: { x: 100, y: 200, button: 'middle', clickCount: 2 },
+      });
     });
 
     it('setText() should send correct JSON', async () => {
@@ -211,7 +244,7 @@ describe('NativeUIClient', () => {
       await client.setText('elem_1', 'hello.txt');
 
       const sent = JSON.parse(stdinWrites[0]);
-      expect(sent).toEqual({ method: 'setText', params: { elementId: 'elem_1', text: 'hello.txt' } });
+      expect(sent).toMatchObject({ method: 'setText', params: { elementId: 'elem_1', text: 'hello.txt' } });
     });
 
     it('focusWindow() should send correct JSON', async () => {
@@ -219,7 +252,7 @@ describe('NativeUIClient', () => {
       await client.focusWindow('win_1');
 
       const sent = JSON.parse(stdinWrites[0]);
-      expect(sent).toEqual({ method: 'focusWindow', params: { windowId: 'win_1' } });
+      expect(sent).toMatchObject({ method: 'focusWindow', params: { windowId: 'win_1' } });
     });
 
     it('resizeWindow() should send correct JSON', async () => {
@@ -227,7 +260,7 @@ describe('NativeUIClient', () => {
       await client.resizeWindow('win_1', 1280, 720);
 
       const sent = JSON.parse(stdinWrites[0]);
-      expect(sent).toEqual({
+      expect(sent).toMatchObject({
         method: 'resizeWindow',
         params: { windowId: 'win_1', width: 1280, height: 720 },
       });
@@ -238,7 +271,7 @@ describe('NativeUIClient', () => {
       await client.moveWindow('win_1', 100, 200);
 
       const sent = JSON.parse(stdinWrites[0]);
-      expect(sent).toEqual({
+      expect(sent).toMatchObject({
         method: 'moveWindow',
         params: { windowId: 'win_1', x: 100, y: 200 },
       });
@@ -249,7 +282,7 @@ describe('NativeUIClient', () => {
       const result = await client.listWindows();
 
       const sent = JSON.parse(stdinWrites[0]);
-      expect(sent).toEqual({ method: 'listWindows', params: {} });
+      expect(sent).toMatchObject({ method: 'listWindows', params: {} });
       expect(result).toEqual([SAMPLE_WINDOW]);
     });
 
@@ -259,7 +292,7 @@ describe('NativeUIClient', () => {
       const result = await client.getElementTree('win_1');
 
       const sent = JSON.parse(stdinWrites[0]);
-      expect(sent).toEqual({ method: 'getElementTree', params: { windowId: 'win_1' } });
+      expect(sent).toMatchObject({ method: 'getElementTree', params: { windowId: 'win_1' } });
       expect(result).toEqual(tree);
     });
   });
@@ -281,9 +314,51 @@ describe('NativeUIClient', () => {
       await expect(client.findWindow('Test')).rejects.toThrow('Invalid response');
     });
 
+    it('should still accept legacy responses without request IDs', async () => {
+      respondWithRaw(JSON.stringify({ result: SAMPLE_WINDOW }));
+
+      await expect(client.findWindow('Test')).resolves.toEqual(SAMPLE_WINDOW);
+    });
+
     it('should reject when bridge is not running', async () => {
       client.stop();
       await expect(client.findWindow('Test')).rejects.toThrow('FlaUI bridge not running');
+    });
+
+    it('should reject a pending request when the bridge emits an error', async () => {
+      const request = client.findWindow('Test');
+      const assertion = expect(request).rejects.toThrow('FlaUI bridge failed: spawn failed');
+      await Promise.resolve();
+
+      fakeProcess.emit('error', new Error('spawn failed'));
+
+      await assertion;
+    });
+
+    it('should reject a pending request when the bridge exits', async () => {
+      const request = client.findWindow('Test');
+      const assertion = expect(request).rejects.toThrow('FlaUI bridge exited with code 1');
+      await Promise.resolve();
+
+      fakeProcess.emit('exit', 1, null);
+
+      await assertion;
+    });
+
+    it('should restart the bridge after a protocol timeout', async () => {
+      vi.useFakeTimers();
+      try {
+        const request = client.findWindow('Slow');
+        const assertion = expect(request).rejects.toThrow('Native UI request "findWindow" timed out');
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        await assertion;
+        expect(fakeProcess.kill).toHaveBeenCalled();
+        expect(client.isRunning).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -447,7 +522,7 @@ describe('NativeUIClient', () => {
       expect(client.listWindows).toHaveBeenCalled();
       expect(client.focusWindow).toHaveBeenCalledWith('dev_win');
       expect(client.findElement).toHaveBeenCalledWith('dev_win', 'Submit', undefined);
-      expect(client.clickElement).toHaveBeenCalledWith('el_1');
+      expect(client.clickElement).toHaveBeenCalledWith('el_1', undefined);
     });
 
     it('should throw when element is not found in Dev Host', async () => {

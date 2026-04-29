@@ -12,6 +12,11 @@ applyTo: "tests/vscode-extension-tester/**"
 
 Use this skill to create, run, and verify E2E tests for a VS Code extension.
 
+This file is installed into extension repos by `vscode-ext-test init` at
+`.github/skills/e2e-test-extension/SKILL.md`. Rerun `vscode-ext-test init`
+after upgrading the CLI to refresh these framework instructions; repo-specific
+knowledge belongs in `repo-knowledge.md`, which init preserves.
+
 ## Execution Modes
 
 The framework has two execution modes:
@@ -259,6 +264,10 @@ vscode-ext-test profile open <profile-name>
 - `When I list the popup menu items` - diagnostic: list all visible items in the current popup menu
 - `When I type "<text>"` - type text into whatever is focused (editors, webview Monaco, inputs)
 - `When I press "<key>"` - press a key or combo (Enter, Escape, Ctrl+S, Ctrl+Space, Shift+Tab, F5, etc.)
+- `When I move the mouse to <x>, <y>` - move the OS cursor to absolute screen coordinates
+- `When I click` / `When I right click` / `When I middle click` / `When I double click` - click at the current mouse position
+- `When I click at <x>, <y>` / `When I right click at <x>, <y>` / `When I middle click at <x>, <y>` / `When I double click at <x>, <y>` - click absolute screen coordinates
+- `When I right click the element "<name>"` - open a context menu on an accessible element by name/text
 - `When I sign in with Microsoft as "<user>"` - handle Microsoft auth flow
 - `Then I should see notification "<text>"` - assert a notification contains text
 - `Then I should not see notification "<text>"` - assert NO notification contains text
@@ -266,6 +275,19 @@ vscode-ext-test profile open <profile-name>
 - `Then the output channel "<name>" should contain "<text>"` - assert output channel content
 - `Then the output channel "<name>" should not contain "<text>"` - assert output channel does NOT contain text
 - `Then I wait <n> second(s)` - pause for n seconds
+
+### Reliable Input Targeting
+
+Use the most semantic target that can reach the UI:
+
+1. Prefer VS Code commands and dedicated responders (`QuickPick`, `InputBox`, dialogs) when the behavior is command-driven.
+2. For webviews, prefer stable CSS selectors such as `[data-testid='...']`; selector clicks use CDP pointer events with a DOM-event fallback.
+3. For workbench/native UI, use accessible-name clicks such as `I click the element "Run Query"` or `I right click the element "Explorer"`.
+4. Use raw coordinates only as a last resort, and stabilize the window first with `I resize the Dev Host...` / `I move the Dev Host...`.
+
+Right-clicking and popup selection are two separate actions: first use a
+right-click step to open the context menu, then use
+`When I select "<label>" from the popup menu`.
 
 ### Settings
 
@@ -308,10 +330,13 @@ Feature: Extension respects font size setting
     When I set setting "editor.fontSize" to "null"
 \\`\\`\\`
 
-### Click/Focus Elements in Webviews (Windows UI Automation)
+### Click/Focus Elements by Accessible Name (Windows UI Automation)
 These use Windows accessibility to find and click elements by their name or text.
 They work for ANY element - including inside webviews, custom editors, and dialogs:
 - `When I click the element "<name>"` - click an element by its accessible name/text
+- `When I right click the element "<name>"` - right-click an element by its accessible name/text
+- `When I middle click the element "<name>"` - middle-click an element by its accessible name/text
+- `When I double click the element "<name>"` - double-click an element by its accessible name/text
 - `When I click the "<name>" button` - click a button by name
 - `When I click the "<name>" edit` - click a text field by name
 
@@ -393,6 +418,9 @@ in the extension source is part of the testing process.
 | `When I wait for "<sel>" in the webview for <n> seconds` | Custom timeout |
 | `When I click "<sel>" in the webview` | Click any element by selector |
 | `When I click "<sel>" in the webview "<title>"` | Click in a specific webview |
+| `When I right click "<sel>" in the webview` | Right-click an element by selector |
+| `When I middle click "<sel>" in the webview` | Middle-click an element by selector |
+| `When I double click "<sel>" in the webview` | Double-click an element by selector |
 | `When I focus "<sel>" in the webview` | Focus an input or scroll container |
 | `When I scroll "<sel>" by <dx> <dy>` | Scroll a container relatively |
 | `When I scroll "<sel>" to <x> <y>` | Scroll to absolute coords |

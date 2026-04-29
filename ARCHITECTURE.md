@@ -72,7 +72,7 @@ vscode-extension-tester/
 │           ├── extension.ts        # Activation + WS server bootstrap
 │           ├── ws-server.ts        # WebSocket JSON-RPC server
 │           ├── command-executor.ts # Execute VS Code commands
-│           ├── ui-interceptor.ts   # Intercept QuickPick/InputBox/Dialog
+│           ├── ui-interceptor.ts   # Intercept InputBox prompts
 │           ├── state-reader.ts     # Read editor/terminal/notification state
 │           ├── output-monitor.ts   # Capture output channel content
 │           ├── auth-handler.ts     # Handle authentication flows
@@ -125,8 +125,8 @@ Bridges Gherkin semantics to controller calls:
 - **`gherkin-parser.ts`** - Parses `.feature` files into structured `ParsedFeature` / `ParsedScenario` / `ParsedStep` objects.
 - **`test-runner.ts`** - Iterates scenarios and steps, dispatching each step to the controller. Handles Background steps, step timeouts, and `.env` variable interpolation (`${VAR}`).
 - **`controller-client.ts`** - WebSocket client implementing a simple JSON-RPC protocol. Sends requests (method + params) and awaits responses.
-- **`cdp-client.ts`** - Chrome DevTools Protocol client for deeper browser-level introspection (screenshot capture, DOM access).
-- **`native-ui-client.ts`** - Client for the FlaUI .NET bridge, used for OS-level automation: native dialog handling (file pickers, message boxes) and window management (resize, move).
+- **`cdp-client.ts`** - Chrome DevTools Protocol client for renderer/webview automation: screenshot capture, DOM access, text insertion, keyboard events, and selector-centered pointer clicks.
+- **`native-ui-client.ts`** - Client for the FlaUI .NET bridge, used for OS-level automation: native dialog handling (file pickers, message boxes), window management (resize, move), screen-coordinate mouse movement/clicking, accessible-element clicks, and native keyboard fallback.
 
 ### 4. Controller Extension (`packages/controller-extension/src/`)
 
@@ -134,14 +134,14 @@ Runs inside the VS Code Extension Host. Activated when `VSCODE_EXT_TESTER_PORT` 
 
 - **`ws-server.ts`** - Listens on the configured port, accepts one client, and dispatches JSON-RPC requests to handlers.
 - **`command-executor.ts`** - Calls `vscode.commands.executeCommand()` for any registered command.
-- **`ui-interceptor.ts`** - Monkey-patches `vscode.window.showQuickPick`, `showInputBox`, and `showInformationMessage` (and variants) to queue UI events and allow programmatic responses from the CLI.
+- **`ui-interceptor.ts`** - Monkey-patches `vscode.window.showInputBox` so InputBox prompts can be answered programmatically while still showing the UI. QuickPick responses use workbench commands, and message/dialog handling is best-effort through explicit responder/native UI paths.
 - **`state-reader.ts`** - Reads the current editor, visible text editors, terminals, and workspace state.
 - **`output-monitor.ts`** - Patches `vscode.window.createOutputChannel` at load time to capture all output channel content for later retrieval.
 - **`auth-handler.ts`** - Handles `vscode.authentication` session flows.
 
 ### 5. FlaUI Bridge (`dotnet/`)
 
-An optional .NET 8 process that uses [FlaUI](https://github.com/FlaUI/FlaUI) to automate native Windows UI elements that can't be reached through the VS Code API (e.g., OS file dialogs, system message boxes, window resize/move). Communicates with the CLI over stdin/stdout.
+An optional .NET 8 process that uses [FlaUI](https://github.com/FlaUI/FlaUI) to automate native Windows UI elements that can't be reached through the VS Code API (e.g., OS file dialogs, system message boxes, window resize/move, screen-coordinate mouse input, right-click/context-menu opening). Communicates with the CLI over stdin/stdout using request IDs so delayed native responses cannot be confused with later requests.
 
 ## Communication Protocol
 

@@ -5,17 +5,23 @@ using FlaUIBridge;
 var automation = new Automation();
 
 // Read one JSON command per line from stdin, write JSON result to stdout.
-// Protocol: { "method": "...", "params": { ... } }
-// Response: { "result": ... } or { "error": "..." }
+// Protocol: { "id": 1, "method": "...", "params": { ... } }
+// Response: { "id": 1, "result": ... } or { "id": 1, "error": "..." }
 string? line;
 while ((line = Console.ReadLine()) != null)
 {
     if (string.IsNullOrWhiteSpace(line)) continue;
 
+    int? id = null;
+
     try
     {
         using var doc = JsonDocument.Parse(line);
         var root = doc.RootElement;
+        if (root.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.Number)
+        {
+            id = idEl.GetInt32();
+        }
         var method = root.GetProperty("method").GetString()!;
         var p = root.TryGetProperty("params", out var paramsEl) ? paramsEl : default;
 
@@ -33,7 +39,28 @@ while ((line = Console.ReadLine()) != null)
                 }),
 
             "clickElement" => await automation.ClickElement(
-                new { elementId = p.GetProperty("elementId").GetString()! }),
+                new
+                {
+                    elementId = p.GetProperty("elementId").GetString()!,
+                    button = p.TryGetProperty("button", out var btn) ? btn.GetString() : null,
+                    clickCount = p.TryGetProperty("clickCount", out var cc) ? cc.GetInt32() : 1
+                }),
+
+            "moveMouse" => await automation.MoveMouse(
+                new
+                {
+                    x = p.GetProperty("x").GetDouble(),
+                    y = p.GetProperty("y").GetDouble()
+                }),
+
+            "clickMouse" => await automation.ClickMouse(
+                new
+                {
+                    x = p.TryGetProperty("x", out var mx) && mx.ValueKind != JsonValueKind.Null ? mx.GetDouble() : (double?)null,
+                    y = p.TryGetProperty("y", out var my) && my.ValueKind != JsonValueKind.Null ? my.GetDouble() : (double?)null,
+                    button = p.TryGetProperty("button", out var mouseBtn) ? mouseBtn.GetString() : null,
+                    clickCount = p.TryGetProperty("clickCount", out var mouseCc) ? mouseCc.GetInt32() : 1
+                }),
 
             "setText" => await automation.SetText(
                 new
@@ -82,11 +109,11 @@ while ((line = Console.ReadLine()) != null)
             _ => throw new Exception($"Unknown method: {method}")
         };
 
-        Console.WriteLine(JsonSerializer.Serialize(new { result }));
+        Console.WriteLine(JsonSerializer.Serialize(new { id, result }));
     }
     catch (Exception ex)
     {
-        Console.WriteLine(JsonSerializer.Serialize(new { error = ex.Message }));
+        Console.WriteLine(JsonSerializer.Serialize(new { id, error = ex.Message }));
     }
 
     Console.Out.Flush();

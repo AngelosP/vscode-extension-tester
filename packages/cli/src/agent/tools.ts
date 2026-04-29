@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as cp from 'node:child_process';
 import type { ControllerClient } from '../runner/controller-client.js';
 import type { ToolDefinition } from './llm.js';
+import { CDP_PORT } from '../types.js';
 import { readMemory, writeMemory, appendMemory } from './memory.js';
 import { GherkinParser } from '../runner/gherkin-parser.js';
 import { TestRunner } from '../runner/test-runner.js';
@@ -13,6 +14,8 @@ export interface ToolContext {
   cwd: string;
   controllerClient?: ControllerClient;
   env: Record<string, string>;
+  cdpPort?: number;
+  targetPid?: number;
 }
 
 // ─── Tool Definitions ───────────────────────────────────────────────────────────
@@ -144,6 +147,73 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           label: { type: 'string', description: 'The label (or partial text) of the item to select' },
         },
         required: ['label'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'move_mouse',
+      description: 'Move the OS mouse cursor to absolute screen coordinates. Prefer stable selectors or accessible names for clicks; use raw coordinates only when no semantic target exists.',
+      parameters: {
+        type: 'object',
+        properties: {
+          x: { type: 'number', description: 'Absolute screen X coordinate' },
+          y: { type: 'number', description: 'Absolute screen Y coordinate' },
+          reason: { type: 'string', description: 'Why raw coordinates are needed instead of a selector or accessible name' },
+        },
+        required: ['x', 'y'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'click',
+      description: 'Click using the most reliable target available: webview selector, accessible name, screen coordinates, or current mouse position. Supports left/right/middle and double-clicks.',
+      parameters: {
+        type: 'object',
+        properties: {
+          target: { type: 'string', enum: ['webviewSelector', 'accessibleName', 'coordinates', 'currentPosition'], description: 'How to target the click' },
+          selector: { type: 'string', description: 'CSS selector when target=webviewSelector' },
+          webviewTitle: { type: 'string', description: 'Optional webview title substring to disambiguate' },
+          name: { type: 'string', description: 'Accessible name/text when target=accessibleName' },
+          controlType: { type: 'string', description: 'Optional accessibility control type, e.g. button, edit, menuitem' },
+          x: { type: 'number', description: 'Absolute screen X coordinate when target=coordinates' },
+          y: { type: 'number', description: 'Absolute screen Y coordinate when target=coordinates' },
+          button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Mouse button' },
+          clickCount: { type: 'number', description: '1 for click, 2 for double-click' },
+          reason: { type: 'string', description: 'Why coordinates/current position are needed when using raw mouse targeting' },
+        },
+        required: ['target'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'press_key',
+      description: 'Send a keyboard key or key combination to the focused target, using CDP real key events with controller fallback for VS Code command-style chords.',
+      parameters: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: 'Key or combo, e.g. Enter, Escape, Ctrl+S, Shift+Tab' },
+        },
+        required: ['key'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'type_text',
+      description: 'Type or insert text into the currently focused editor, input, or webview control using CDP with controller fallback.',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'Text to type' },
+        },
+        required: ['text'],
       },
     },
   },
@@ -354,6 +424,14 @@ export async function executeToolCall(
         return await toolRespondToDialog(ctx, args);
       case 'select_popup_item':
         return await toolSelectPopupItem(ctx, args);
+      case 'move_mouse':
+        return await toolMoveMouse(ctx, args);
+      case 'click':
+        return await toolClick(ctx, args);
+      case 'press_key':
+        return await toolPressKey(ctx, args);
+      case 'type_text':
+        return await toolTypeText(ctx, args);
       case 'read_source_file':
         return toolReadSourceFile(ctx, args);
       case 'list_source_files':
@@ -456,10 +534,10 @@ async function toolSelectPopupItem(ctx: ToolContext, args: Record<string, unknow
   // We import NativeUIClient and CdpClient lazily to avoid circular deps.
   const { NativeUIClient } = await import('../runner/native-ui-client.js');
   const { CdpClient } = await import('../runner/cdp-client.js');
-  const { CDP_PORT } = await import('../types.js');
 
   // Strategy 1: FlaUI (OS-level — works when popup steals focus from webview)
   const nativeUI = new NativeUIClient();
+  nativeUI.targetPid = ctx.targetPid;
   try {
     await nativeUI.start();
     const selected = await nativeUI.selectFromDevHostPopup(label, 3000);
@@ -470,7 +548,7 @@ async function toolSelectPopupItem(ctx: ToolContext, args: Record<string, unknow
   }
 
   // Strategy 2: CDP (DOM-level — works for monaco-list overlays)
-  const cdp = new CdpClient(CDP_PORT);
+  const cdp = new CdpClient(ctx.cdpPort ?? CDP_PORT);
   try {
     await cdp.connect();
     await cdp.selectPopupMenuItem(label);
@@ -480,6 +558,109 @@ async function toolSelectPopupItem(ctx: ToolContext, args: Record<string, unknow
     cdp.disconnect();
     throw err;
   }
+}
+
+async function toolMoveMouse(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const { NativeUIClient } = await import('../runner/native-ui-client.js');
+  const nativeUI = new NativeUIClient();
+  nativeUI.targetPid = ctx.targetPid;
+  try {
+    await nativeUI.start();
+    await nativeUI.moveMouse(requiredNumber(args, 'x'), requiredNumber(args, 'y'));
+    return `Mouse moved to ${args['x']}, ${args['y']}`;
+  } finally {
+    nativeUI.stop();
+  }
+}
+
+async function toolClick(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const target = args['target'] as string;
+  const button = normalizeButton(args['button']);
+  const clickCount = args['clickCount'] === undefined ? 1 : requiredNumber(args, 'clickCount');
+
+  if ((target === 'coordinates' || target === 'currentPosition') && !args['reason']) {
+    throw new Error('Raw mouse targeting requires a reason. Prefer webviewSelector or accessibleName when possible.');
+  }
+
+  if (target === 'webviewSelector') {
+    const selector = requiredString(args, 'selector');
+    const { CdpClient } = await import('../runner/cdp-client.js');
+    const cdp = new CdpClient(ctx.cdpPort ?? CDP_PORT);
+    if (ctx.controllerClient) {
+      cdp.onActivateTab = async (title: string) => {
+        await ctx.controllerClient!.activateTab(title);
+      };
+    }
+    try {
+      await cdp.connect();
+      await cdp.clickInWebviewBySelector(selector, args['webviewTitle'] as string | undefined, { button, clickCount });
+      return `${button} click sent to webview selector: ${selector}`;
+    } finally {
+      cdp.disconnect();
+    }
+  }
+
+  const { NativeUIClient } = await import('../runner/native-ui-client.js');
+  const nativeUI = new NativeUIClient();
+  nativeUI.targetPid = ctx.targetPid;
+  try {
+    await nativeUI.start();
+    if (target === 'accessibleName') {
+      const name = requiredString(args, 'name');
+      await nativeUI.clickInDevHost(name, args['controlType'] as string | undefined, { button, clickCount });
+      return `${button} click sent to accessible element: ${name}`;
+    }
+    if (target === 'coordinates') {
+      await nativeUI.clickMouse(requiredNumber(args, 'x'), requiredNumber(args, 'y'), { button, clickCount });
+      return `${button} click sent to ${args['x']}, ${args['y']}`;
+    }
+    if (target === 'currentPosition') {
+      await nativeUI.clickMouse(undefined, undefined, { button, clickCount });
+      return `${button} click sent at current mouse position`;
+    }
+    throw new Error(`Unknown click target: ${target}`);
+  } finally {
+    nativeUI.stop();
+  }
+}
+
+async function toolPressKey(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const key = requiredString(args, 'key');
+
+  if (!key.includes(' ')) {
+    const { CdpClient } = await import('../runner/cdp-client.js');
+    const cdp = new CdpClient(ctx.cdpPort ?? CDP_PORT);
+    try {
+      await cdp.connect();
+      await cdp.pressKey(key);
+      cdp.disconnect();
+      return `Pressed key: ${key}`;
+    } catch {
+      cdp.disconnect();
+    }
+  }
+
+  const client = requireClient(ctx);
+  await client.pressKey(key);
+  return `Pressed key via controller fallback: ${key}`;
+}
+
+async function toolTypeText(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const text = requiredString(args, 'text');
+  const { CdpClient } = await import('../runner/cdp-client.js');
+  const cdp = new CdpClient(ctx.cdpPort ?? CDP_PORT);
+  try {
+    await cdp.connect();
+    await cdp.insertText(text);
+    cdp.disconnect();
+    return `Typed text (${text.length} chars)`;
+  } catch {
+    cdp.disconnect();
+  }
+
+  const client = requireClient(ctx);
+  await client.typeText(text);
+  return `Typed text via controller fallback (${text.length} chars)`;
 }
 
 async function toolSetLogLevel(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
@@ -580,7 +761,7 @@ async function toolRunTest(ctx: ToolContext, args: Record<string, unknown>): Pro
   }
 
   const parser = new GherkinParser();
-  const runner = new TestRunner(client, ctx.env);
+  const runner = new TestRunner(client, ctx.env, undefined, undefined, ctx.cdpPort, ctx.targetPid);
   const feature = await parser.parseFile(featurePath);
   const result = await runner.runFeature(feature);
 
@@ -649,6 +830,28 @@ function detectGitRef(cwd: string): string {
   } catch {
     return 'HEAD~1';
   }
+}
+
+function requiredString(args: Record<string, unknown>, name: string): string {
+  const value = args[name];
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`Missing required string argument: ${name}`);
+  }
+  return value;
+}
+
+function requiredNumber(args: Record<string, unknown>, name: string): number {
+  const value = args[name];
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`Missing required number argument: ${name}`);
+  }
+  return value;
+}
+
+function normalizeButton(value: unknown): 'left' | 'right' | 'middle' {
+  if (value === undefined) return 'left';
+  if (value === 'left' || value === 'right' || value === 'middle') return value;
+  throw new Error(`Unknown mouse button: ${String(value)}`);
 }
 
 function listFilesRecursive(dir: string, maxFiles: number): string[] {

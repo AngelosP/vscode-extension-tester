@@ -23,6 +23,10 @@ cd your-extension/
 vscode-ext-test init                     # scaffolds configs + installs controller
 ```
 
+Rerun `vscode-ext-test init` after upgrading the CLI to refresh the generated
+`.github/skills/e2e-test-extension/SKILL.md` instructions. Project-specific
+notes in `repo-knowledge.md` are preserved.
+
 ## Writing Tests Manually
 
 Tests use standard Gherkin syntax:

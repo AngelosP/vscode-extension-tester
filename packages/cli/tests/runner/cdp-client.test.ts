@@ -1,0 +1,165 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+const { mockCdpFactoryRef, mockClientRef } = vi.hoisted(() => ({
+  mockCdpFactoryRef: { current: vi.fn() },
+  mockClientRef: { current: null as any },
+}));
+
+vi.mock('chrome-remote-interface', () => ({
+  default: mockCdpFactoryRef.current,
+}));
+
+const { CdpClient } = await import('../../src/runner/cdp-client.js');
+
+function createMockClient() {
+  return {
+    Runtime: {
+      enable: vi.fn().mockResolvedValue(undefined),
+      evaluate: vi.fn(),
+    },
+    Input: {
+      dispatchMouseEvent: vi.fn().mockResolvedValue(undefined),
+      dispatchKeyEvent: vi.fn().mockResolvedValue(undefined),
+      insertText: vi.fn().mockResolvedValue(undefined),
+    },
+    close: vi.fn(),
+  };
+}
+
+describe('CdpClient', () => {
+  let client: InstanceType<typeof CdpClient>;
+
+  beforeEach(() => {
+    mockClientRef.current = createMockClient();
+    mockCdpFactoryRef.current.mockReset();
+    mockCdpFactoryRef.current.mockResolvedValue(mockClientRef.current);
+    client = new CdpClient(9333);
+  });
+
+  afterEach(() => {
+    client.disconnect();
+  });
+
+  it('connects on the configured port and enables Runtime', async () => {
+    await client.connect();
+
+    expect(mockCdpFactoryRef.current).toHaveBeenCalledWith({ port: 9333 });
+    expect(mockClientRef.current.Runtime.enable).toHaveBeenCalled();
+  });
+
+  it('moves the mouse with CDP pointer coordinates', async () => {
+    await client.connect();
+
+    await client.moveMouse(10, 20);
+
+    expect(mockClientRef.current.Input.dispatchMouseEvent).toHaveBeenCalledWith({
+      type: 'mouseMoved',
+      x: 10,
+      y: 20,
+      button: 'none',
+    });
+  });
+
+  it('clicks with button and click count payloads', async () => {
+    await client.connect();
+
+    await client.clickAt(30, 40, { button: 'right', clickCount: 2 });
+
+    expect(mockClientRef.current.Input.dispatchMouseEvent).toHaveBeenNthCalledWith(1, {
+      type: 'mouseMoved',
+      x: 30,
+      y: 40,
+      button: 'none',
+    });
+    expect(mockClientRef.current.Input.dispatchMouseEvent).toHaveBeenNthCalledWith(2, {
+      type: 'mousePressed',
+      x: 30,
+      y: 40,
+      button: 'right',
+      buttons: 2,
+      clickCount: 1,
+    });
+    expect(mockClientRef.current.Input.dispatchMouseEvent).toHaveBeenNthCalledWith(3, {
+      type: 'mouseReleased',
+      x: 30,
+      y: 40,
+      button: 'right',
+      buttons: 0,
+      clickCount: 1,
+    });
+    expect(mockClientRef.current.Input.dispatchMouseEvent).toHaveBeenNthCalledWith(4, {
+      type: 'mousePressed',
+      x: 30,
+      y: 40,
+      button: 'right',
+      buttons: 2,
+      clickCount: 2,
+    });
+    expect(mockClientRef.current.Input.dispatchMouseEvent).toHaveBeenNthCalledWith(5, {
+      type: 'mouseReleased',
+      x: 30,
+      y: 40,
+      button: 'right',
+      buttons: 0,
+      clickCount: 2,
+    });
+  });
+
+  it('uses real pointer events for main-document selector clicks', async () => {
+    mockClientRef.current.Runtime.evaluate.mockResolvedValue({
+      result: { value: { x: 50, y: 60 } },
+    });
+    await client.connect();
+
+    await client.clickSelector('#run');
+
+    expect(mockClientRef.current.Runtime.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      expression: expect.stringContaining("document.querySelector('#run')"),
+      returnByValue: true,
+    }));
+    expect(mockClientRef.current.Input.dispatchMouseEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'mousePressed',
+      x: 50,
+      y: 60,
+      button: 'left',
+      buttons: 1,
+    }));
+  });
+
+  it('maps punctuation keyboard chords to valid CDP codes', async () => {
+    await client.connect();
+
+    await client.pressKey('Ctrl+/');
+    await client.pressKey('Ctrl+[');
+    await client.pressKey('Ctrl+]');
+    await client.pressKey('Ctrl+=');
+    await client.pressKey('Ctrl+-');
+    await client.pressKey('Ctrl+`');
+
+    expect(mockClientRef.current.Input.dispatchKeyEvent).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      type: 'keyDown', key: '/', code: 'Slash', windowsVirtualKeyCode: 191, modifiers: 2,
+    }));
+    expect(mockClientRef.current.Input.dispatchKeyEvent).toHaveBeenNthCalledWith(3, expect.objectContaining({
+      type: 'keyDown', key: '[', code: 'BracketLeft', windowsVirtualKeyCode: 219, modifiers: 2,
+    }));
+    expect(mockClientRef.current.Input.dispatchKeyEvent).toHaveBeenNthCalledWith(5, expect.objectContaining({
+      type: 'keyDown', key: ']', code: 'BracketRight', windowsVirtualKeyCode: 221, modifiers: 2,
+    }));
+    expect(mockClientRef.current.Input.dispatchKeyEvent).toHaveBeenNthCalledWith(7, expect.objectContaining({
+      type: 'keyDown', key: '=', code: 'Equal', windowsVirtualKeyCode: 187, modifiers: 2,
+    }));
+    expect(mockClientRef.current.Input.dispatchKeyEvent).toHaveBeenNthCalledWith(9, expect.objectContaining({
+      type: 'keyDown', key: '-', code: 'Minus', windowsVirtualKeyCode: 189, modifiers: 2,
+    }));
+    expect(mockClientRef.current.Input.dispatchKeyEvent).toHaveBeenNthCalledWith(11, expect.objectContaining({
+      type: 'keyDown', key: '`', code: 'Backquote', windowsVirtualKeyCode: 192, modifiers: 2,
+    }));
+  });
+
+  it('throws for unsupported key specs before dispatching events', async () => {
+    await client.connect();
+
+    await expect(client.pressKey('Ctrl+DefinitelyNotAKey')).rejects.toThrow('Unsupported key spec');
+    expect(mockClientRef.current.Input.dispatchKeyEvent).not.toHaveBeenCalled();
+  });
+});

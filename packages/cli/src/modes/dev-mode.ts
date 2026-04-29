@@ -96,7 +96,7 @@ export async function attachMode(options: RunOptions, artifactsDir?: string): Pr
     }
 
     // 4. Parse and run features
-    return await runFeatures(client, options, startTime, artifactsDir);
+    return await runFeatures(client, options, startTime, artifactsDir, undefined, options.cdpPort, devHost.pid);
   } finally {
     client.disconnect();
   }

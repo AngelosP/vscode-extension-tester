@@ -11,7 +11,12 @@ import * as readline from 'node:readline';
 export class NativeUIClient {
   private process?: cp.ChildProcess;
   private rl?: readline.Interface;
-  private pending?: { resolve: (v: unknown) => void; reject: (e: Error) => void };
+  private readonly pending = new Map<number, PendingNativeCall>();
+  private readonly pendingOrder: number[] = [];
+  private nextRequestId = 0;
+  private callQueue: Promise<unknown> = Promise.resolve();
+  private exited = false;
+  private stderrBuffer = '';
 
   /**
    * When set, `findDevHostWindow` will only match windows whose process is a
@@ -21,38 +26,53 @@ export class NativeUIClient {
   targetPid?: number;
 
   async start(): Promise<void> {
+    if (this.isRunning) return;
+
     const bridge = resolveBridgeCommand();
+
+    this.exited = false;
+    this.stderrBuffer = '';
 
     this.process = cp.spawn(bridge.command, bridge.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    this.rl = readline.createInterface({ input: this.process.stdout! });
-    this.rl.on('line', (line) => {
-      if (this.pending) {
-        try {
-          const parsed = JSON.parse(line);
-          if (parsed.error) {
-            this.pending.reject(new Error(parsed.error));
-          } else {
-            this.pending.resolve(parsed.result);
-          }
-        } catch {
-          this.pending.reject(new Error(`Invalid response: ${line}`));
-        }
-        this.pending = undefined;
+    this.process.stderr?.on('data', (chunk) => {
+      this.stderrBuffer += chunk.toString();
+      if (this.stderrBuffer.length > 8000) {
+        this.stderrBuffer = this.stderrBuffer.slice(-8000);
       }
     });
+
+    this.process.on('error', (err) => {
+      this.exited = true;
+      this.failAllPending(new Error(`FlaUI bridge failed: ${err.message}`));
+    });
+
+    this.process.on('exit', (code, signal) => {
+      this.exited = true;
+      const detail = signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`;
+      const stderr = this.stderrBuffer.trim();
+      this.failAllPending(
+        new Error(`FlaUI bridge exited with ${detail}${stderr ? `: ${stderr}` : ''}`),
+      );
+      this.process = undefined;
+    });
+
+    this.rl = readline.createInterface({ input: this.process.stdout! });
+    this.rl.on('line', (line) => this.handleLine(line));
   }
 
   stop(): void {
+    this.failAllPending(new Error('FlaUI bridge stopped'));
     this.rl?.close();
     this.process?.kill();
     this.process = undefined;
+    this.exited = true;
   }
 
   get isRunning(): boolean {
-    return this.process !== undefined && !this.process.killed;
+    return this.process !== undefined && !this.process.killed && !this.exited;
   }
 
   /** Find a window by title substring. */
@@ -66,8 +86,18 @@ export class NativeUIClient {
   }
 
   /** Click an element. */
-  async clickElement(elementId: string): Promise<void> {
-    await this.call('clickElement', { elementId });
+  async clickElement(elementId: string, options?: NativeClickOptions): Promise<void> {
+    await this.call('clickElement', withClickOptions({ elementId }, options));
+  }
+
+  /** Move the OS mouse cursor to screen coordinates. */
+  async moveMouse(x: number, y: number): Promise<void> {
+    await this.call('moveMouse', { x, y });
+  }
+
+  /** Click at screen coordinates, or at the current cursor position when x/y are omitted. */
+  async clickMouse(x?: number, y?: number, options?: NativeClickOptions): Promise<void> {
+    await this.call('clickMouse', withClickOptions({ x, y }, options));
   }
 
   /** Set text in a text field. */
@@ -178,13 +208,13 @@ export class NativeUIClient {
    * Searches the entire UI tree - works for webview elements too since
    * Windows UI Automation sees through Chromium's accessibility layer.
    */
-  async clickInDevHost(elementName: string, controlType?: string): Promise<void> {
+  async clickInDevHost(elementName: string, controlType?: string, options?: NativeClickOptions): Promise<void> {
     const win = await this.findDevHostWindow();
     const el = await this.findElement(win.id, elementName, controlType);
     if (!el) {
       throw new Error(`Element "${elementName}" not found in Dev Host window`);
     }
-    await this.clickElement(el.id);
+    await this.clickElement(el.id, options);
   }
 
   /**
@@ -336,17 +366,129 @@ export class NativeUIClient {
 
   // ─── Internal ───────────────────────────────────────────────────
 
-  private call(method: string, params: Record<string, unknown>): Promise<unknown> {
+  private call(method: string, params: Record<string, unknown>, timeoutMs = 30_000): Promise<unknown> {
+    const task = this.callQueue.then(
+      () => this.send(method, params, timeoutMs),
+      () => this.send(method, params, timeoutMs),
+    );
+    this.callQueue = task.catch(() => undefined);
+    return task;
+  }
+
+  private send(method: string, params: Record<string, unknown>, timeoutMs: number): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.process || this.process.killed) {
         reject(new Error('FlaUI bridge not running'));
         return;
       }
-      this.pending = { resolve, reject };
-      const line = JSON.stringify({ method, params }) + '\n';
-      this.process.stdin!.write(line);
+
+      const id = ++this.nextRequestId;
+      const timer = setTimeout(() => {
+        this.removePending(id);
+        reject(new Error(`Native UI request "${method}" timed out after ${timeoutMs}ms`));
+        this.restartAfterProtocolFailure();
+      }, timeoutMs);
+
+      this.pending.set(id, { method, resolve, reject, timer });
+      this.pendingOrder.push(id);
+
+      try {
+        const line = JSON.stringify({ id, method, params }) + '\n';
+        this.process.stdin!.write(line);
+      } catch (err) {
+        clearTimeout(timer);
+        this.removePending(id);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   }
+
+  private handleLine(line: string): void {
+    let parsed: NativeBridgeResponse;
+    try {
+      parsed = JSON.parse(line) as NativeBridgeResponse;
+    } catch {
+      this.failNextPending(new Error(`Invalid response: ${line}`));
+      return;
+    }
+
+    const id = typeof parsed.id === 'number' ? parsed.id : this.pendingOrder[0];
+    if (id === undefined) return;
+
+    const pending = this.pending.get(id);
+    if (!pending) return;
+
+    this.removePending(id);
+    clearTimeout(pending.timer);
+
+    if (parsed.error) {
+      pending.reject(new Error(parsed.error));
+    } else {
+      pending.resolve(parsed.result);
+    }
+  }
+
+  private failNextPending(error: Error): void {
+    const id = this.pendingOrder[0];
+    if (id === undefined) return;
+    const pending = this.pending.get(id);
+    if (!pending) return;
+    this.removePending(id);
+    clearTimeout(pending.timer);
+    pending.reject(error);
+  }
+
+  private failAllPending(error: Error): void {
+    for (const [id, pending] of this.pending) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+      this.pending.delete(id);
+    }
+    this.pendingOrder.length = 0;
+  }
+
+  private removePending(id: number): void {
+    this.pending.delete(id);
+    const index = this.pendingOrder.indexOf(id);
+    if (index >= 0) this.pendingOrder.splice(index, 1);
+  }
+
+  private restartAfterProtocolFailure(): void {
+    this.rl?.close();
+    this.process?.kill();
+    this.process = undefined;
+    this.exited = true;
+  }
+}
+
+interface PendingNativeCall {
+  method: string;
+  resolve: (v: unknown) => void;
+  reject: (e: Error) => void;
+  timer: NodeJS.Timeout;
+}
+
+interface NativeBridgeResponse {
+  id?: number;
+  result?: unknown;
+  error?: string;
+}
+
+export type NativeMouseButton = 'left' | 'right' | 'middle';
+
+export interface NativeClickOptions {
+  button?: NativeMouseButton;
+  clickCount?: number;
+}
+
+function withClickOptions(
+  params: Record<string, unknown>,
+  options?: NativeClickOptions,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...params };
+  if (options?.button) result['button'] = options.button;
+  if (options?.clickCount !== undefined) result['clickCount'] = options.clickCount;
+  return result;
 }
 
 function resolveBridgeCommand(): { command: string; args: string[] } {

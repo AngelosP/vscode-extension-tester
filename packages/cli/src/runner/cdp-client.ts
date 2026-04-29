@@ -33,6 +33,13 @@ export const DEEP_QS = `function(sel) {
   return walk(document);
 }`;
 
+export type CdpMouseButton = 'left' | 'right' | 'middle';
+
+export interface CdpClickOptions {
+  button?: CdpMouseButton;
+  clickCount?: number;
+}
+
 /**
  * Chrome DevTools Protocol client for sending real input events to VS Code.
  * Works with any focused element - regular editors, webview Monaco, dialogs, etc.
@@ -125,6 +132,23 @@ export class CdpClient {
     });
   }
 
+  /** Move the mouse within the active CDP target viewport. */
+  async moveMouse(x: number, y: number): Promise<void> {
+    if (!this.client) throw new Error('CDP not connected');
+    await this.client.Input.dispatchMouseEvent({
+      type: 'mouseMoved',
+      x,
+      y,
+      button: 'none',
+    } as any);
+  }
+
+  /** Click at active CDP target viewport coordinates. */
+  async clickAt(x: number, y: number, options: CdpClickOptions = {}): Promise<void> {
+    if (!this.client) throw new Error('CDP not connected');
+    await this.dispatchClick(this.client, x, y, options);
+  }
+
   /**
    * Click an element by CSS selector.
    * Searches the main VS Code window first, then all webview targets.
@@ -141,13 +165,18 @@ export class CdpClient {
       expression: `(() => {
         const el = document.querySelector('${safeSelector}');
         if (!el) return null;
-        el.focus();
-        el.click();
-        return true;
+        el.scrollIntoView({ block: 'center', inline: 'center' });
+        if (typeof el.focus === 'function') el.focus();
+        const rect = el.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
       })()`,
       returnByValue: true,
     });
-    if (mainResult.result.value) return;
+    const point = mainResult.result.value as { x: number; y: number } | undefined;
+    if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
+      await this.clickAt(point.x, point.y);
+      return;
+    }
 
     // 2. Search webview targets
     const clicked = await this.clickInWebview(safeSelector);
@@ -540,17 +569,16 @@ export class CdpClient {
    * provided, the search is restricted to webviews whose title matches.
    * Throws if the element is not found in any matching webview.
    */
-  async clickInWebviewBySelector(selector: string, webviewTitle?: string): Promise<void> {
+  async clickInWebviewBySelector(
+    selector: string,
+    webviewTitle?: string,
+    options: CdpClickOptions = {},
+  ): Promise<void> {
     const safe = escapeSelector(selector);
-    const expr = `(() => {
-      const el = (${DEEP_QS})('${safe}');
-      if (!el) return null;
-      el.scrollIntoView({ block: 'center', inline: 'center' });
-      if (typeof el.focus === 'function') el.focus();
-      el.click();
-      return true;
-    })()`;
-    const found = await this.tryInWebviews(expr, webviewTitle);
+    const clicked = await this.clickInWebviewWithMouse(safe, webviewTitle, options);
+    if (clicked) return;
+
+    const found = await this.tryInWebviews(syntheticClickExpression(safe, options), webviewTitle);
     if (!found) throw new Error(`Element not found in webview: ${selector}`);
   }
 
@@ -987,15 +1015,76 @@ export class CdpClient {
    * Try to click an element in any webview target. Returns true if found.
    */
   private async clickInWebview(safeSelector: string): Promise<boolean> {
-    const expr = `(() => {
-      const el = (${DEEP_QS})('${safeSelector}');
-      if (!el) return null;
-      el.scrollIntoView({ block: 'center' });
-      if (typeof el.focus === 'function') el.focus();
-      el.click();
-      return true;
-    })()`;
-    return this.tryInWebviews(expr);
+    const clicked = await this.clickInWebviewWithMouse(safeSelector, undefined, {});
+    if (clicked) return true;
+    return this.tryInWebviews(syntheticClickExpression(safeSelector, {}));
+  }
+
+  private async clickInWebviewWithMouse(
+    safeSelector: string,
+    webviewTitle: string | undefined,
+    options: CdpClickOptions,
+  ): Promise<boolean> {
+    const targets = await this.getWebviewTargets(webviewTitle, 5_000);
+    for (const target of targets) {
+      try {
+        const clicked = await this.withWebviewClient(target.id, async (wv) => {
+          const contextIds = await this.discoverFrameContextIds(wv);
+          for (const contextId of contextIds) {
+            const result = await wv.Runtime.evaluate({
+              expression: elementPointExpression(safeSelector),
+              returnByValue: true,
+              awaitPromise: true,
+              contextId,
+            });
+            const point = result.result.value as { x: number; y: number; unreliable?: boolean } | undefined;
+            if (!point || point.unreliable || !Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+            await this.dispatchClick(wv, point.x, point.y, options);
+            return true;
+          }
+          return false;
+        });
+        if (clicked) return true;
+      } catch { /* fall through to the DOM-event fallback */ }
+    }
+    return false;
+  }
+
+  private async dispatchClick(
+    client: CDP.Client,
+    x: number,
+    y: number,
+    options: CdpClickOptions,
+  ): Promise<void> {
+    const button = options.button ?? 'left';
+    const clickCount = options.clickCount ?? 1;
+    const buttons = buttonMask(button);
+
+    await client.Input.dispatchMouseEvent({
+      type: 'mouseMoved',
+      x,
+      y,
+      button: 'none',
+    } as any);
+
+    for (let count = 1; count <= clickCount; count++) {
+      await client.Input.dispatchMouseEvent({
+        type: 'mousePressed',
+        x,
+        y,
+        button,
+        buttons,
+        clickCount: count,
+      } as any);
+      await client.Input.dispatchMouseEvent({
+        type: 'mouseReleased',
+        x,
+        y,
+        button,
+        buttons: 0,
+        clickCount: count,
+      } as any);
+    }
   }
 
   /**
@@ -1094,6 +1183,69 @@ function escapeSelector(selector: string): string {
   return selector.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
+function elementPointExpression(safeSelector: string): string {
+  return `(() => {
+    const el = (${DEEP_QS})('${safeSelector}');
+    if (!el) return null;
+    el.scrollIntoView({ block: 'center', inline: 'center' });
+    if (typeof el.focus === 'function') el.focus();
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    let x = rect.left + rect.width / 2;
+    let y = rect.top + rect.height / 2;
+    try {
+      let current = window;
+      while (current.frameElement) {
+        const frameRect = current.frameElement.getBoundingClientRect();
+        x += frameRect.left;
+        y += frameRect.top;
+        current = current.parent;
+      }
+    } catch {
+      return { x, y, unreliable: true };
+    }
+    return { x, y, unreliable: false };
+  })()`;
+}
+
+function syntheticClickExpression(safeSelector: string, options: CdpClickOptions): string {
+  const button = options.button ?? 'left';
+  const buttonNumber = button === 'left' ? 0 : button === 'middle' ? 1 : 2;
+  const buttons = buttonMask(button);
+  const clickCount = options.clickCount ?? 1;
+  return `(() => {
+    const el = (${DEEP_QS})('${safeSelector}');
+    if (!el) return null;
+    el.scrollIntoView({ block: 'center', inline: 'center' });
+    if (typeof el.focus === 'function') el.focus();
+    const rect = el.getBoundingClientRect();
+    const clientX = rect.left + rect.width / 2;
+    const clientY = rect.top + rect.height / 2;
+    const base = { bubbles: true, cancelable: true, composed: true, clientX, clientY, button: ${buttonNumber}, buttons: ${buttons} };
+    for (let i = 0; i < ${clickCount}; i++) {
+      if (typeof PointerEvent === 'function') el.dispatchEvent(new PointerEvent('pointerdown', base));
+      el.dispatchEvent(new MouseEvent('mousedown', base));
+      if (${buttonNumber} === 2) {
+        el.dispatchEvent(new MouseEvent('contextmenu', base));
+      }
+      if (typeof PointerEvent === 'function') el.dispatchEvent(new PointerEvent('pointerup', { ...base, buttons: 0 }));
+      el.dispatchEvent(new MouseEvent('mouseup', { ...base, buttons: 0 }));
+      if (${buttonNumber} !== 2) {
+        el.dispatchEvent(new MouseEvent('click', { ...base, buttons: 0, detail: i + 1 }));
+      }
+    }
+    return true;
+  })()`;
+}
+
+function buttonMask(button: CdpMouseButton): number {
+  switch (button) {
+    case 'left': return 1;
+    case 'right': return 2;
+    case 'middle': return 4;
+  }
+}
+
 /**
  * Use the CDP Page domain to count the total number of frames (including
  * child iframes) inside a target.  Returns -1 if the Page domain is not
@@ -1185,10 +1337,35 @@ const KEY_MAP: Record<string, { key: string; code: string; keyCode: number }> = 
   'f10':       { key: 'F10',       code: 'F10',        keyCode: 121 },
   'f11':       { key: 'F11',       code: 'F11',        keyCode: 122 },
   'f12':       { key: 'F12',       code: 'F12',        keyCode: 123 },
+  '/':         { key: '/',         code: 'Slash',      keyCode: 191 },
+  '?':         { key: '?',         code: 'Slash',      keyCode: 191 },
+  '[':         { key: '[',         code: 'BracketLeft', keyCode: 219 },
+  '{':         { key: '{',         code: 'BracketLeft', keyCode: 219 },
+  ']':         { key: ']',         code: 'BracketRight', keyCode: 221 },
+  '}':         { key: '}',         code: 'BracketRight', keyCode: 221 },
+  '=':         { key: '=',         code: 'Equal',      keyCode: 187 },
+  '+':         { key: '+',         code: 'Equal',      keyCode: 187 },
+  '-':         { key: '-',         code: 'Minus',      keyCode: 189 },
+  '_':         { key: '_',         code: 'Minus',      keyCode: 189 },
+  '`':         { key: '`',         code: 'Backquote',  keyCode: 192 },
+  '~':         { key: '~',         code: 'Backquote',  keyCode: 192 },
+  '\\':        { key: '\\',        code: 'Backslash',  keyCode: 220 },
+  '|':         { key: '|',         code: 'Backslash',  keyCode: 220 },
+  ',':         { key: ',',         code: 'Comma',      keyCode: 188 },
+  '<':         { key: '<',         code: 'Comma',      keyCode: 188 },
+  '.':         { key: '.',         code: 'Period',     keyCode: 190 },
+  '>':         { key: '>',         code: 'Period',     keyCode: 190 },
+  ';':         { key: ';',         code: 'Semicolon',  keyCode: 186 },
+  ':':         { key: ':',         code: 'Semicolon',  keyCode: 186 },
+  "'":         { key: "'",         code: 'Quote',      keyCode: 222 },
+  '"':         { key: '"',         code: 'Quote',      keyCode: 222 },
 };
 
 function parseKeySpec(spec: string): ParsedKey {
-  const parts = spec.split('+').map((p) => p.trim());
+  const trimmed = spec.trim();
+  const endsWithPlusKey = trimmed.endsWith('+') && trimmed.includes('+');
+  const parts = trimmed.split('+').map((p) => p.trim()).filter(Boolean);
+  if (endsWithPlusKey) parts.push('+');
   let modifiers = 0;
 
   // CDP modifier flags: Alt=1, Ctrl=2, Meta=4, Shift=8
@@ -1206,7 +1383,11 @@ function parseKeySpec(spec: string): ParsedKey {
     }
   }
 
-  const keyName = nonModifierParts[0] ?? '';
+  if (nonModifierParts.length !== 1) {
+    throw new Error(`Unsupported key spec: ${spec}`);
+  }
+
+  const keyName = nonModifierParts[0];
   const mapped = KEY_MAP[keyName.toLowerCase()];
 
   if (mapped) {
@@ -1216,12 +1397,15 @@ function parseKeySpec(spec: string): ParsedKey {
   // Single character key
   if (keyName.length === 1) {
     const upper = keyName.toUpperCase();
-    const code = `Key${upper}`;
-    return { key: keyName, code, keyCode: upper.charCodeAt(0), modifiers };
+    if (upper >= 'A' && upper <= 'Z') {
+      return { key: keyName, code: `Key${upper}`, keyCode: upper.charCodeAt(0), modifiers };
+    }
+    if (keyName >= '0' && keyName <= '9') {
+      return { key: keyName, code: `Digit${keyName}`, keyCode: keyName.charCodeAt(0), modifiers };
+    }
   }
 
-  // Fallback
-  return { key: keyName, code: keyName, keyCode: 0, modifiers };
+  throw new Error(`Unsupported key spec: ${spec}`);
 }
 
 function delay(ms: number): Promise<void> {

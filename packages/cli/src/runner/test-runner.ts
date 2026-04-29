@@ -282,35 +282,64 @@ export class TestRunner {
 
     // ─── Type text (via controller - always available) ───
     match = text.match(/^I type "([^"]+)"$/);
-    if (match) { await this.client.typeText(match[1]); return; }
+    if (match) { await this.typeText(match[1]); return; }
 
     // ─── Press key ───
     match = text.match(/^I press "([^"]+)"$/);
-    if (match) { await this.client.pressKey(match[1]); return; }
+    if (match) { await this.pressKey(match[1]); return; }
+
+    // ─── Raw mouse movement/clicks (screen coordinates via native bridge) ───
+    match = text.match(/^I move the mouse to (-?\d+),?\s*(-?\d+)$/);
+    if (match) {
+      await (await this.requireNativeUI()).moveMouse(parseInt(match[1], 10), parseInt(match[2], 10));
+      return;
+    }
+
+    match = text.match(/^I (?:(left|right|middle) )?(click|double click)(?: at (-?\d+),?\s*(-?\d+))?$/);
+    if (match) {
+      const button = (match[1] ?? 'left') as 'left' | 'right' | 'middle';
+      const clickCount = match[2] === 'double click' ? 2 : 1;
+      const x = match[3] !== undefined ? parseInt(match[3], 10) : undefined;
+      const y = match[4] !== undefined ? parseInt(match[4], 10) : undefined;
+      await (await this.requireNativeUI()).clickMouse(x, y, { button, clickCount });
+      return;
+    }
 
     // ─── Click element by name/text in Dev Host (uses Windows UI Automation) ───
-    match = text.match(/^I click the element "([^"]+)"$/);
-    if (match) { await this.requireNativeUI().clickInDevHost(match[1]); return; }
+    match = text.match(/^I (?:(left|right|middle) )?(click|double click) the element "([^"]+)"$/);
+    if (match) {
+      await (await this.requireNativeUI()).clickInDevHost(match[3], undefined, {
+        button: (match[1] ?? 'left') as 'left' | 'right' | 'middle',
+        clickCount: match[2] === 'double click' ? 2 : 1,
+      });
+      return;
+    }
 
     // ─── Click element by name/text with control type ───
-    match = text.match(/^I click the "([^"]+)" (\w+)$/);
-    if (match) { await this.requireNativeUI().clickInDevHost(match[1], match[2]); return; }
+    match = text.match(/^I (?:(left|right|middle) )?(click|double click) the "([^"]+)" (\w+)$/);
+    if (match) {
+      await (await this.requireNativeUI()).clickInDevHost(match[3], match[4], {
+        button: (match[1] ?? 'left') as 'left' | 'right' | 'middle',
+        clickCount: match[2] === 'double click' ? 2 : 1,
+      });
+      return;
+    }
 
     // ─── Native dialog: Save As ───
     match = text.match(/^I save the file as "([^"]+)"$/);
-    if (match) { await this.requireNativeUI().handleSaveAsDialog(match[1]); return; }
+    if (match) { await (await this.requireNativeUI()).handleSaveAsDialog(match[1]); return; }
 
     // ─── Native dialog: Open File ───
     match = text.match(/^I open the file "([^"]+)"$/);
-    if (match) { await this.requireNativeUI().handleOpenDialog(match[1]); return; }
+    if (match) { await (await this.requireNativeUI()).handleOpenDialog(match[1]); return; }
 
     // ─── Native dialog: Click button by dialog title ───
     match = text.match(/^I click "([^"]+)" on the "([^"]+)" dialog$/);
-    if (match) { await this.requireNativeUI().clickDialogButton(match[2], match[1]); return; }
+    if (match) { await (await this.requireNativeUI()).clickDialogButton(match[2], match[1]); return; }
 
     // ─── Native dialog: Dismiss Save As ───
     if (/^I cancel the (?:Save As|Save|Open|Open File) dialog$/.test(text)) {
-      const ui = this.requireNativeUI();
+      const ui = await this.requireNativeUI();
       try { await ui.clickDialogButton('Save', 'Cancel'); } catch {
         await ui.clickDialogButton('Open', 'Cancel');
       }
@@ -323,7 +352,7 @@ export class TestRunner {
       const label = match[1];
       // Strategy 1: FlaUI (OS-level, works when popup steals focus from webview)
       try {
-        await this.requireNativeUI().selectFromDevHostPopup(label, 3000);
+        await (await this.requireNativeUI()).selectFromDevHostPopup(label, 3000);
         return;
       } catch { /* fall through to CDP */ }
       // Strategy 2: CDP DOM click (works for monaco-list overlays)
@@ -335,7 +364,7 @@ export class TestRunner {
     // ─── Popup menu: list items (diagnostic) ───
     if (/^I list the popup menu items$/.test(text)) {
       try {
-        const items = await this.requireNativeUI().getDevHostPopupItems();
+        const items = await (await this.requireNativeUI()).getDevHostPopupItems();
         return items.map((i) => i.name).join(', ');
       } catch {
         const cdp = await this.requireCdp();
@@ -347,14 +376,14 @@ export class TestRunner {
     // ─── Native: resize window ───
     match = text.match(/^I resize the (?:window|Dev Host) to (\d+)(?:x|\s+by\s+)(\d+)$/);
     if (match) {
-      await this.requireNativeUI().resizeDevHost(parseInt(match[1], 10), parseInt(match[2], 10));
+      await (await this.requireNativeUI()).resizeDevHost(parseInt(match[1], 10), parseInt(match[2], 10));
       return;
     }
 
     // ─── Native: move window ───
     match = text.match(/^I move the (?:window|Dev Host) to (-?\d+),?\s*(-?\d+)$/);
     if (match) {
-      await this.requireNativeUI().moveDevHost(parseInt(match[1], 10), parseInt(match[2], 10));
+      await (await this.requireNativeUI()).moveDevHost(parseInt(match[1], 10), parseInt(match[2], 10));
       return;
     }
 
@@ -405,9 +434,12 @@ export class TestRunner {
     }
 
     // ─── Webview: click by selector ───
-    match = text.match(/^I click "([^"]+)" in the webview(?: "([^"]+)")?$/);
+    match = text.match(/^I (?:(left|right|middle) )?(click|double click) "([^"]+)" in the webview(?: "([^"]+)")?$/);
     if (match) {
-      await (await this.requireCdp()).clickInWebviewBySelector(match[1], match[2]);
+      await (await this.requireCdp()).clickInWebviewBySelector(match[3], match[4], {
+        button: (match[1] ?? 'left') as 'left' | 'right' | 'middle',
+        clickCount: match[2] === 'double click' ? 2 : 1,
+      });
       return;
     }
 
@@ -728,14 +760,36 @@ export class TestRunner {
   }
 
   /** Lazily start the FlaUI bridge for native dialog automation. */
-  private requireNativeUI(): NativeUIClient {
+  private async requireNativeUI(): Promise<NativeUIClient> {
     if (!this.nativeUI) {
       this.nativeUI = new NativeUIClient();
       this.nativeUI.targetPid = this.targetPid;
-      // Start synchronously - first call will await
-      this.nativeUI.start().catch(() => { /* logged by individual calls */ });
     }
+    if (!this.nativeUI.isRunning) await this.nativeUI.start();
     return this.nativeUI;
+  }
+
+  private async typeText(text: string): Promise<void> {
+    try {
+      const cdp = await this.requireCdp();
+      await cdp.insertText(text);
+    } catch {
+      await this.client.typeText(text);
+    }
+  }
+
+  private async pressKey(key: string): Promise<void> {
+    if (key.includes(' ')) {
+      await this.client.pressKey(key);
+      return;
+    }
+
+    try {
+      const cdp = await this.requireCdp();
+      await cdp.pressKey(key);
+    } catch {
+      await this.client.pressKey(key);
+    }
   }
 
   /** Lazily connect a CDP client for webview interactions. */

@@ -77,6 +77,26 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 | `When I select "<label>" from the QuickPick` | Choose an item from the QuickPick |
 | `When I type "<text>" into the InputBox` | Type into the InputBox |
 | `When I click "<button>" on the dialog` | Click a dialog button |
+| `When I type "<text>"` | Type text into the focused editor/input using real input with fallback |
+| `When I press "<key>"` | Press a key or combo such as Enter, Escape, Ctrl+S, Shift+Tab |
+| `When I click the element "<name>"` | Click an element by accessible name/text |
+| `When I right click the element "<name>"` | Right-click an element by accessible name/text |
+| `When I middle click the element "<name>"` | Middle-click an element by accessible name/text |
+| `When I double click the element "<name>"` | Double-click an element by accessible name/text |
+| `When I click "<sel>" in the webview` | Click a webview element by CSS selector |
+| `When I right click "<sel>" in the webview` | Right-click a webview element by CSS selector |
+| `When I middle click "<sel>" in the webview` | Middle-click a webview element by CSS selector |
+| `When I double click "<sel>" in the webview` | Double-click a webview element by CSS selector |
+| `When I move the mouse to <x>, <y>` | Move the OS cursor to absolute screen coordinates |
+| `When I click` | Click at the current mouse position |
+| `When I right click` | Right-click at the current mouse position |
+| `When I middle click` | Middle-click at the current mouse position |
+| `When I double click` | Double-click at the current mouse position |
+| `When I click at <x>, <y>` | Click absolute screen coordinates |
+| `When I right click at <x>, <y>` | Right-click absolute screen coordinates |
+| `When I middle click at <x>, <y>` | Middle-click absolute screen coordinates |
+| `When I double click at <x>, <y>` | Double-click absolute screen coordinates |
+| `When I select "<label>" from the popup menu` | Select from an already-open context/dropdown menu |
 | `When I sign in with Microsoft as "<user>"` | Handle full Microsoft auth flow |
 | `When I open file "<path>"` | Open a file in the editor |
 | `When I run "<command>" in the terminal` | Run a terminal command |
@@ -86,6 +106,18 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 | `When I set setting "<key>" to "<value>"` | Set any VS Code or extension setting. Values are JSON-parsed: `"true"` → boolean, `"42"` → number, `"null"` → reset to default. Defaults to user/global scope. |
 | `When I resize the (window\|Dev Host) to <width>x<height>` | Resize the Dev Host window (also accepts `<width> by <height>`) |
 | `When I move the (window\|Dev Host) to <x>, <y>` | Move the Dev Host window (negative coords OK) |
+
+### Input Targeting Guidance
+
+Prefer commands and dedicated UI responders first, webview CSS selectors next,
+and accessible-name clicks for workbench/native UI. Use raw mouse coordinates
+only when no command, selector, or accessible name can target the UI; stabilize
+the Dev Host window with resize/move steps first. To use a context menu,
+right-click to open it, then select the item with the popup menu step.
+
+`vscode-ext-test init` also installs these instructions into downstream repos
+as `.github/skills/e2e-test-extension/SKILL.md`. Rerun init after upgrading the
+CLI to refresh that generated skill file; `repo-knowledge.md` is preserved.
 
 ### Assertions (Then)
 

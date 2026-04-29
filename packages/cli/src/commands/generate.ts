@@ -236,15 +236,38 @@ AVAILABLE STEP DEFINITIONS (you MUST only use these exact patterns):
 
 When steps (actions):
   When I execute command "<commandId>"
+  When I start command "<commandId>"
   When I select "<label>" from the QuickPick
   When I select "<label>" from the popup menu
   When I type "<value>" into the InputBox
+  When I type "<text>"
+  When I press "<key>"
   When I click "<button>" on the dialog
+  When I click the element "<accessible name>"
+  When I right click the element "<accessible name>"
+  When I middle click the element "<accessible name>"
+  When I double click the element "<accessible name>"
+  When I click "<css selector>" in the webview
+  When I right click "<css selector>" in the webview
+  When I middle click "<css selector>" in the webview
+  When I double click "<css selector>" in the webview
+  When I move the mouse to <x>, <y>
+  When I click
+  When I right click
+  When I middle click
+  When I double click
+  When I click at <x>, <y>
+  When I right click at <x>, <y>
+  When I middle click at <x>, <y>
+  When I double click at <x>, <y>
 
 Then steps (assertions):
   Then I should see notification "<text>"
+  Then I should not see notification "<text>"
   Then the editor should contain "<text>"
   Then the output channel "<name>" should contain "<text>"
+  Then the webview should contain "<text>"
+  Then element "<css selector>" should exist
   Then I wait <N> seconds
 
 RULES:
@@ -258,6 +281,8 @@ RULES:
 - Keep scenarios focused - test one behavior per scenario.
 - Include at least one assertion per scenario (notification, editor content, or output channel).
 - If a command opens a QuickPick or InputBox, handle it with the appropriate step.
+- Prefer commands and stable webview selectors/data-testid values; use accessible-name clicks next; use raw coordinates only as a last resort.
+- Use right-click steps to open context menus before selecting items from popup menus.
 `;
 
   const commandList = ctx.commands.map((c) => {
