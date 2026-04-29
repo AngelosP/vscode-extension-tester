@@ -67,6 +67,18 @@ MYPC,22222,"Code.exe" --extensionDevelopmentPath=C:\\my-extension
       expect(result!.pid).toBe(22222);
       expect(result!.extensionPath).toBe('C:\\my-extension');
     });
+
+    it('should parse user data dir and CDP port from process args', async () => {
+      const output = `user 54321 code --extensionDevelopmentPath /home/user/my-ext --user-data-dir "/tmp/dev host" --remote-debugging-port=9333`;
+      (cp.execSync as any).mockReturnValue(output);
+
+      const result = await detectDevHost();
+
+      expect(result).not.toBeNull();
+      expect(result!.pid).toBe(54321);
+      expect(result!.userDataDir).toBe('/tmp/dev host');
+      expect(result!.cdpPort).toBe(9333);
+    });
   });
 
   describe('waitForDevHost()', () => {

@@ -163,6 +163,14 @@ describe('ControllerClient', () => {
       const result = await client.executeCommand('test.command') as { executed: boolean };
       expect(result.executed).toBe(true);
     });
+
+    it('should honor custom request timeouts', async () => {
+      const shortClient = new ControllerClient(port, 20);
+      await shortClient.connect();
+
+      await expect((shortClient as any).send('neverResponds')).rejects.toThrow('timed out');
+      shortClient.disconnect();
+    });
   });
 
   describe('getState()', () => {

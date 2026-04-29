@@ -1,9 +1,11 @@
 import * as cp from 'node:child_process';
 import * as path from 'node:path';
 
-interface DevHostInfo {
+export interface DevHostInfo {
   pid: number;
   extensionPath: string;
+  userDataDir?: string;
+  cdpPort?: number;
 }
 
 /**
@@ -78,13 +80,16 @@ function parseProcessOutput(output: string, extensionPath?: string): DevHostInfo
   const hosts: DevHostInfo[] = [];
   const lines = output.split('\n');
   for (const line of lines) {
-    const devPathMatch = line.match(/--extensionDevelopmentPath(?:=|\s+)(?:"([^"]+)"|'([^']+)'|([^\s,"']+))/);
-    if (devPathMatch) {
-      const pidMatch = line.match(/(\d{2,})/);
+    const extensionDevelopmentPath = extractArg(line, '--extensionDevelopmentPath');
+    if (extensionDevelopmentPath) {
+      const pidMatch = findProcessId(line);
       if (pidMatch) {
+        const cdpPortRaw = extractArg(line, '--remote-debugging-port');
         hosts.push({
-          pid: parseInt(pidMatch[1], 10),
-          extensionPath: devPathMatch[1] ?? devPathMatch[2] ?? devPathMatch[3],
+          pid: pidMatch,
+          extensionPath: extensionDevelopmentPath,
+          userDataDir: extractArg(line, '--user-data-dir'),
+          cdpPort: cdpPortRaw ? parseInt(cdpPortRaw, 10) : undefined,
         });
       }
     }
@@ -95,6 +100,23 @@ function parseProcessOutput(output: string, extensionPath?: string): DevHostInfo
 
 function normalizePath(value: string): string {
   return path.resolve(value).toLowerCase().replace(/\\/g, '/').replace(/\/+$/g, '');
+}
+
+function extractArg(line: string, flag: string): string | undefined {
+  const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = line.match(new RegExp(`${escaped}(?:=|\\s+)(?:"([^"]+)"|'([^']+)'|([^\\s,"']+))`));
+  return match?.[1] ?? match?.[2] ?? match?.[3];
+}
+
+function findProcessId(line: string): number | undefined {
+  const csvParts = line.split(',').map((part) => part.trim().replace(/^"|"$/g, ''));
+  for (let i = csvParts.length - 1; i >= 0; i--) {
+    if (/^\d{2,}$/.test(csvParts[i])) {
+      return parseInt(csvParts[i], 10);
+    }
+  }
+  const pidMatch = line.match(/(?:^|[,\s])(\d{2,})(?:[,\s]|$)/);
+  return pidMatch ? parseInt(pidMatch[1], 10) : undefined;
 }
 
 function delay(ms: number): Promise<void> {

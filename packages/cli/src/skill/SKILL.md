@@ -19,7 +19,7 @@ knowledge belongs in `repo-knowledge.md`, which init preserves.
 
 ## Execution Modes
 
-The framework has two execution modes:
+The framework has three execution modes:
 
 1. **Default (launch mode):** The CLI downloads and launches a fresh, isolated
    VS Code instance automatically. No F5, no Dev Host, no prerequisites.
@@ -29,6 +29,14 @@ The framework has two execution modes:
    Extension Development Host. Use this when you need to debug the extension
    under test or when you have manually prepared the environment (e.g.
    authenticated, installed additional extensions).
+
+3. **Live stepping (`vscode-ext-test live` or `tests add --live-mode`):**
+  Start or attach once, then run Gherkin steps/scripts incrementally. Each
+  response includes pass/fail, screenshots, output/log artifact paths, and
+  current VS Code state. Use this while discovering the right steps before
+  writing the final `.feature` file. Ending a launched live session captures
+  a final screenshot before shutting VS Code down; ending an attached session
+  only disconnects.
 
 ## Build Lifecycle
 
@@ -190,6 +198,21 @@ enough detail that an agent can open the vscode-extension-tester repo, read
 the prompt, and implement the fix without further clarification.
 
 ## Test Workflow
+
+### Live authoring workflow
+
+When you are exploring an unfamiliar UI or fixing a flaky scenario, prefer
+live stepping before editing the final feature file:
+
+1. Start a live session with `start_live_session` when one is not already active.
+2. Run candidate steps with `run_gherkin_step` or short blocks with `run_gherkin_script`.
+3. Inspect the returned screenshots/log artifact paths after each failure or surprising state.
+4. Once the steps are stable, write the `.feature` file and verify it with `run_test`.
+5. End the session with `end_live_session` so the final screenshot is captured.
+
+`vscode-ext-test tests add` starts this live session automatically by default
+when exploration is enabled. Use `--live-mode off` only when you want code-only
+test drafting.
 
 ### Default (launch mode - recommended)
 

@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { runCommand } from './commands/run.js';
+import { liveCommand } from './commands/live.js';
 import { installCommand } from './commands/install.js';
 import { updateCommand } from './commands/update.js';
 import { uninstallCommand } from './commands/uninstall.js';
@@ -40,6 +41,23 @@ program
   .action(runCommand);
 
 program
+  .command('live')
+  .description('Start or attach to VS Code and execute Gherkin steps over JSONL stdin/stdout')
+  .option('--mode <mode>', 'Session mode: auto, launch, attach', 'auto')
+  .option('--extension-path <dir>', 'Path to extension project', '.')
+  .option('--features <dir>', 'Root profile-aware e2e directory', 'tests/vscode-extension-tester/e2e')
+  .option('--vscode-version <version>', 'VS Code version to download for isolated launch', 'stable')
+  .option('--controller-port <number>', 'Controller WebSocket port', '9788')
+  .option('--cdp-port <number>', 'Chrome DevTools Protocol port', '9222')
+  .option('--timeout <ms>', 'Per-step timeout in ms', '30000')
+  .option('--xvfb', 'Use xvfb for headless Linux', false)
+  .option('--no-build', 'Skip building the extension before starting')
+  .option('--screenshot-policy <policy>', 'Screenshot policy: always, onFailure, never', 'always')
+  .option('--no-final-screenshot', 'Skip final screenshot before shutdown')
+  .option('--artifacts-dir <dir>', 'Directory for live artifacts')
+  .action(liveCommand);
+
+program
   .command('install')
   .description('Install the controller extension into VS Code')
   .action(installCommand);
@@ -75,6 +93,7 @@ testsCmd
   .option('--model <name>', 'LLM model to use')
   .option('--port <number>', 'Controller WebSocket port', '9788')
   .option('--cdp-port <number>', 'Chrome DevTools Protocol port', '9222')
+  .option('--live-mode <mode>', 'Live exploration mode: auto, launch, attach, off', 'auto')
   .action(testsAddCommand);
 
 // ─── Profile management ──────────────────────────────────────────────────────

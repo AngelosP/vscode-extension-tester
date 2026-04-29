@@ -18,9 +18,9 @@ import { WS_CONNECT_TIMEOUT_MS } from '../types.js';
 export class ControllerClient {
   private ws?: WebSocket;
   private requestId = 0;
-  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
 
-  constructor(private readonly port: number) {}
+  constructor(private readonly port: number, private readonly requestTimeoutMs: number = 30_000) {}
 
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -33,7 +33,10 @@ export class ControllerClient {
       this.ws.on('error', (err) => { clearTimeout(timeout); reject(err); });
       this.ws.on('message', (data) => this.handleMessage(data.toString()));
       this.ws.on('close', () => {
-        for (const [, p] of this.pending) p.reject(new Error('Connection closed'));
+        for (const [, p] of this.pending) {
+          clearTimeout(p.timer);
+          p.reject(new Error('Connection closed'));
+        }
         this.pending.clear();
       });
     });
@@ -216,13 +219,12 @@ export class ControllerClient {
       }
       const id = ++this.requestId;
       const request: ControllerRequest = { jsonrpc: '2.0', id, method, params };
-      this.pending.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify(request));
-
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         const p = this.pending.get(id);
         if (p) { this.pending.delete(id); p.reject(new Error(`Request ${method} timed out`)); }
-      }, 30_000);
+      }, this.requestTimeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      this.ws.send(JSON.stringify(request));
     });
   }
 
@@ -233,6 +235,7 @@ export class ControllerClient {
         const p = this.pending.get(response.id);
         if (p) {
           this.pending.delete(response.id);
+          clearTimeout(p.timer);
           if (response.error) p.reject(new Error(response.error.message));
           else p.resolve(response.result);
         }

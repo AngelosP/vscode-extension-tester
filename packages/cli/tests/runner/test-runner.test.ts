@@ -279,6 +279,52 @@ describe('TestRunner', () => {
     });
   });
 
+  describe('runSingleStep()', () => {
+    it('should return live artifacts, state, and a screenshot for a passing step', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-live-'));
+      const liveRunner = new TestRunner(client, {}, artifactsDir);
+
+      try {
+        const result = await liveRunner.runSingleStep(makeStep('When ', 'I execute command "test.command"'), {
+          stepIndex: 1,
+          screenshotPolicy: 'always',
+        });
+
+        expect(result.status).toBe('passed');
+        expect(result.stepIndex).toBe(1);
+        expect(result.state?.terminals).toEqual([]);
+        expect(result.artifacts.screenshots[0].kind).toBe('screenshot');
+        expect(fs.existsSync(path.join(artifactsDir, 'live-steps'))).toBe(true);
+        expect(result.artifacts.logs.some((artifact) => artifact.kind === 'log-manifest')).toBe(true);
+        expect(getMockNativeUI().captureDevHostScreenshot).toHaveBeenCalled();
+      } finally {
+        liveRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should preserve original failure when screenshot capture fails', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-live-'));
+      const liveRunner = new TestRunner(client, {}, artifactsDir);
+      (client.executeCommand as any).mockRejectedValueOnce(new Error('Command failed'));
+      getMockNativeUI().captureDevHostScreenshot.mockRejectedValueOnce(new Error('Screenshot failed'));
+
+      try {
+        const result = await liveRunner.runSingleStep(makeStep('When ', 'I execute command "test.command"'), {
+          stepIndex: 1,
+          screenshotPolicy: 'always',
+        });
+
+        expect(result.status).toBe('failed');
+        expect(result.error?.message).toBe('Command failed');
+        expect(result.artifacts.warnings.join('\n')).toContain('Screenshot failed');
+      } finally {
+        liveRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('step dispatch', () => {
     it('should handle "the VS Code is in a clean state"', async () => {
       const feature = makeFeature('Test', [

@@ -34,6 +34,8 @@ export interface StepResult {
   readonly durationMs: number;
   readonly error?: StepError;
   readonly outputLog?: string;
+  readonly artifacts?: LiveStepArtifacts;
+  readonly state?: VSCodeState;
 }
 
 export interface StepError {
@@ -68,6 +70,79 @@ export interface TestRunResult {
   readonly totalFailed: number;
   readonly totalSkipped: number;
   readonly durationMs: number;
+}
+
+export type ScreenshotPolicy = 'always' | 'onFailure' | 'never';
+
+export type StepArtifactKind =
+  | 'screenshot'
+  | 'failure-screenshot'
+  | 'final-screenshot'
+  | 'output-log'
+  | 'log-manifest'
+  | 'host-log'
+  | 'warning';
+
+export interface StepArtifact {
+  readonly kind: StepArtifactKind;
+  readonly path?: string;
+  readonly label?: string;
+  readonly message?: string;
+}
+
+export interface LiveStepArtifacts {
+  readonly screenshots: StepArtifact[];
+  readonly logs: StepArtifact[];
+  readonly warnings: string[];
+  readonly manifestPath?: string;
+}
+
+export interface LiveStepResult extends StepResult {
+  readonly stepIndex: number;
+  readonly artifacts: LiveStepArtifacts;
+  readonly state?: VSCodeState;
+}
+
+export interface LiveScriptResult {
+  readonly steps: LiveStepResult[];
+  readonly totalPassed: number;
+  readonly totalFailed: number;
+  readonly stoppedOnFailure: boolean;
+  readonly durationMs: number;
+}
+
+export interface RunSingleStepOptions {
+  readonly stepIndex?: number;
+  readonly label?: string;
+  readonly screenshotPolicy?: ScreenshotPolicy;
+  readonly includeState?: boolean;
+  readonly captureLogs?: boolean;
+}
+
+export interface LiveSessionOptions {
+  readonly mode: 'auto' | 'launch' | 'attach';
+  readonly runOptions: RunOptions;
+  readonly artifactsDir?: string;
+  readonly screenshotPolicy?: ScreenshotPolicy;
+  readonly finalScreenshot?: boolean;
+  readonly build?: boolean;
+  readonly logger?: (message: string) => void;
+}
+
+export interface LiveSessionSummary {
+  readonly sessionId: string;
+  readonly mode: 'launch' | 'attach';
+  readonly startedAt: string;
+  readonly endedAt?: string;
+  readonly artifactsDir: string;
+  readonly controllerPort: number;
+  readonly cdpPort: number;
+  readonly userDataDir?: string;
+  readonly targetPid?: number;
+  readonly stepsRun: number;
+  readonly failedSteps: number;
+  readonly finalScreenshot?: StepArtifact;
+  readonly closed: boolean;
 }
 
 /** JSON-RPC request to the controller extension. */

@@ -10,6 +10,16 @@ import { getVsixPath } from '../commands/install.js';
 import { getProfileDir, getProfileUserDataDir, getProfileExtensionsDir } from '../profile.js';
 import { isPortInUse, findFreePort } from '../utils/port.js';
 
+export interface LaunchDevHostSession {
+  mode: 'launch';
+  client: ControllerClient;
+  controllerPort: number;
+  cdpPort: number;
+  userDataDir: string;
+  targetPid?: number;
+  close: () => Promise<void>;
+}
+
 /**
  * Launch mode (default): download/launch an isolated VS Code instance, install
  * extensions, run tests, shut down. No Dev Host or F5 session needed.
@@ -20,6 +30,27 @@ import { isPortInUse, findFreePort } from '../utils/port.js';
 export async function launchMode(options: RunOptions, artifactsDir?: string): Promise<TestRunResult> {
   const startTime = Date.now();
 
+  const session = await createLaunchDevHostSession(options);
+  try {
+    // If paused, wait for the user to press Enter before running tests.
+    if (options.paused) {
+      console.log('Environment ready. VS Code is running with the latest build.');
+      console.log('Press Enter to run tests, or Ctrl+C to exit...\n');
+      await waitForEnter();
+    }
+
+    const runOptions: RunOptions = {
+      ...options,
+      controllerPort: session.controllerPort,
+      cdpPort: session.cdpPort,
+    };
+    return await runFeatures(session.client, runOptions, startTime, artifactsDir, session.userDataDir, session.cdpPort, session.targetPid);
+  } finally {
+    await session.close();
+  }
+}
+
+export async function createLaunchDevHostSession(options: RunOptions): Promise<LaunchDevHostSession> {
   // 1. Download VS Code
   console.log(`Downloading VS Code (${options.vscodeVersion})...`);
   const { download } = await import('@vscode/test-electron');
@@ -38,6 +69,7 @@ export async function launchMode(options: RunOptions, artifactsDir?: string): Pr
     const profileDir = getProfileDir(profileName);
     userDataDir = getProfileUserDataDir(profileDir);
     extensionsDir = getProfileExtensionsDir(profileDir);
+    clearWindowRestoreState(userDataDir);
     console.log(`Using named profile "${profileName}"`);
   } else {
     userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-'));
@@ -94,11 +126,16 @@ export async function launchMode(options: RunOptions, artifactsDir?: string): Pr
     '--disable-telemetry',
     '--skip-welcome',
     '--skip-release-notes',
+    '--disable-restore-windows',
     '--disable-workspace-trust',
     // The extension under test is loaded via extensionDevelopmentPath —
     // same as F5 / profile open.
     `--extensionDevelopmentPath=${extensionPath}`,
   ];
+
+  if (process.env.VSCODE_EXT_TEST_WORKSPACE) {
+    args.push(path.resolve(process.env.VSCODE_EXT_TEST_WORKSPACE));
+  }
 
   // 5. Launch VS Code (with xvfb on Linux if needed)
   console.log('Launching VS Code...');
@@ -116,39 +153,47 @@ export async function launchMode(options: RunOptions, artifactsDir?: string): Pr
     });
   }
 
+  // 6. Wait for controller to be ready
+  console.log('Waiting for controller extension...');
+  const client = new ControllerClient(controllerPort, options.timeout);
   try {
-    // 6. Wait for controller to be ready
-    console.log('Waiting for controller extension...');
-    const client = new ControllerClient(controllerPort);
     await waitForController(client, VSCODE_LAUNCH_TIMEOUT_MS);
     console.log('Connected to controller extension.\n');
+  } catch (err) {
+    await closeLaunchedProcess(vscProcess, isEphemeral, userDataDir);
+    throw err;
+  }
 
-    // 5b. If paused, wait for the user to press Enter before running tests.
-    if (options.paused) {
-      console.log('Environment ready. VS Code is running with the latest build.');
-      console.log('Press Enter to run tests, or Ctrl+C to exit...\n');
-      await waitForEnter();
-    }
+  let closed = false;
+  return {
+    mode: 'launch',
+    client,
+    controllerPort,
+    cdpPort,
+    userDataDir,
+    targetPid: vscProcess.pid,
+    close: async () => {
+      if (closed) return;
+      closed = true;
+      client.disconnect();
+      await closeLaunchedProcess(vscProcess, isEphemeral, userDataDir);
+    },
+  };
+}
 
-    // 6. Run tests
-    const result = await runFeatures(client, options, startTime, artifactsDir, userDataDir, cdpPort, vscProcess.pid);
-    client.disconnect();
-    return result;
-  } finally {
-    // 7. Clean up - shut down VS Code, only delete ephemeral temp dirs
-    vscProcess.kill('SIGTERM');
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => { vscProcess.kill('SIGKILL'); resolve(); }, 5000);
-      vscProcess.on('exit', () => { clearTimeout(timer); resolve(); });
-    });
+async function closeLaunchedProcess(vscProcess: cp.ChildProcess, isEphemeral: boolean, userDataDir: string): Promise<void> {
+  vscProcess.kill('SIGTERM');
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => { vscProcess.kill('SIGKILL'); resolve(); }, 5000);
+    vscProcess.on('exit', () => { clearTimeout(timer); resolve(); });
+  });
 
-    if (isEphemeral) {
-      try {
-        if (userDataDir.includes('vscode-ext-test-')) {
-          fs.rmSync(userDataDir, { recursive: true, force: true });
-        }
-      } catch { /* best-effort cleanup */ }
-    }
+  if (isEphemeral) {
+    try {
+      if (userDataDir.includes('vscode-ext-test-')) {
+        fs.rmSync(userDataDir, { recursive: true, force: true });
+      }
+    } catch { /* best-effort cleanup */ }
   }
 }
 
@@ -181,6 +226,21 @@ function waitForEnter(): Promise<void> {
     process.stdin.once('data', () => resolve());
     process.stdin.resume();
   });
+}
+
+function clearWindowRestoreState(userDataDir: string): void {
+  const storagePath = path.join(userDataDir, 'User', 'globalStorage', 'storage.json');
+  try {
+    if (!fs.existsSync(storagePath)) return;
+    const storage = JSON.parse(fs.readFileSync(storagePath, 'utf-8')) as Record<string, unknown>;
+    storage.windowsState = { openedWindows: [] };
+    storage.backupWorkspaces = { workspaces: [], folders: [], emptyWindows: [] };
+    fs.writeFileSync(storagePath, JSON.stringify(storage, null, 4));
+    fs.rmSync(path.join(userDataDir, 'Workspaces'), { recursive: true, force: true });
+    console.log('Cleared named profile window restore state.');
+  } catch (error) {
+    console.warn(`Failed to clear named profile window restore state: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /**

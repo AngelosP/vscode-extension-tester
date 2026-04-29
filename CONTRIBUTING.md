@@ -85,6 +85,20 @@ vscode-ext-test tests add "describe what to test"
 
 Requires a GitHub token with Models access. Authenticate with `gh auth login`.
 
+By default, `tests add` uses a live Gherkin session while exploring. It attaches
+to an existing Dev Host when possible and otherwise launches one. Use
+`--live-mode attach`, `--live-mode launch`, or `--live-mode off` to make that
+choice explicit.
+
+### Live JSONL Stepping
+
+```bash
+node packages/cli/bin/vscode-ext-test.js live --mode auto
+```
+
+The `live` command writes only JSONL protocol messages to stdout and routes logs
+to stderr. Keep that boundary intact when changing launch/session code.
+
 ## Code Style
 
 - **TypeScript** with strict mode (`tsconfig.base.json`).
@@ -102,6 +116,7 @@ Requires a GitHub token with Models access. Authenticate with `gh auth login`.
 1. Add the tool's JSON schema definition to the `TOOL_DEFINITIONS` array in `packages/cli/src/agent/tools.ts`.
 2. Add the executor case in `executeToolCall()` in the same file.
 3. If the tool requires controller-side support, add a handler method in the appropriate controller module (`command-executor.ts`, `state-reader.ts`, etc.) and wire it in `ws-server.ts`.
+4. For live Gherkin tools, prefer reusing `LiveTestSession` and `TestRunner.runSingleStep()` rather than adding controller-side Gherkin logic.
 
 ## Adding a Controller RPC Method
 

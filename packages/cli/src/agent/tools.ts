@@ -3,17 +3,19 @@ import * as path from 'node:path';
 import * as cp from 'node:child_process';
 import type { ControllerClient } from '../runner/controller-client.js';
 import type { ToolDefinition } from './llm.js';
-import { CDP_PORT } from '../types.js';
+import { CDP_PORT, CONTROLLER_WS_PORT, DEFAULT_FEATURES_DIR, STEP_TIMEOUT_MS } from '../types.js';
 import { readMemory, writeMemory, appendMemory } from './memory.js';
 import { GherkinParser } from '../runner/gherkin-parser.js';
 import { TestRunner } from '../runner/test-runner.js';
 import { CdpClient } from '../runner/cdp-client.js';
+import { LiveTestSession } from '../runner/live-session.js';
 
 // ─── Tool Context ───────────────────────────────────────────────────────────────
 
 export interface ToolContext {
   cwd: string;
   controllerClient?: ControllerClient;
+  liveSession?: LiveTestSession;
   env: Record<string, string>;
   cdpPort?: number;
   targetPid?: number;
@@ -395,6 +397,70 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'start_live_session',
+      description: 'Start or attach to one VS Code session for iterative Gherkin probing. Returns session ports, mode, and artifacts directory. Use before run_gherkin_step when no live session is active.',
+      parameters: {
+        type: 'object',
+        properties: {
+          mode: { type: 'string', enum: ['auto', 'launch', 'attach'], description: 'How to acquire VS Code. auto attaches when possible, otherwise launches.' },
+          screenshotPolicy: { type: 'string', enum: ['always', 'onFailure', 'never'], description: 'When to capture screenshots for live steps.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'run_gherkin_step',
+      description: 'Run one Gherkin step in the active live VS Code session. Returns pass/fail, screenshot paths, log artifacts, and current VS Code state.',
+      parameters: {
+        type: 'object',
+        properties: {
+          step: { type: 'string', description: 'One Gherkin step, for example: When I execute command "my.command"' },
+        },
+        required: ['step'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'run_gherkin_script',
+      description: 'Run multiple Gherkin steps in the active live VS Code session. Stops at the first failure by default and returns per-step artifacts.',
+      parameters: {
+        type: 'object',
+        properties: {
+          script: { type: 'string', description: 'Gherkin step block or feature/scenario fragment to run.' },
+          stopOnFailure: { type: 'boolean', description: 'Whether to stop at the first failed step. Defaults to true.' },
+        },
+        required: ['script'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'reset_live_session',
+      description: 'Reset the active live session using controller state reset or a VS Code window reload.',
+      parameters: {
+        type: 'object',
+        properties: {
+          mode: { type: 'string', enum: ['cleanState', 'reload'], description: 'Reset strategy. Defaults to cleanState.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'end_live_session',
+      description: 'Capture the final screenshot and close the live session. Attach mode only disconnects; launch mode shuts down the launched VS Code.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'set_log_level',
       description: 'Change the controller extension log level for more detailed diagnostics.',
       parameters: {
@@ -518,6 +584,16 @@ export async function executeToolCall(
         return toolWriteFeatureFile(ctx, args);
       case 'run_test':
         return await toolRunTest(ctx, args);
+      case 'start_live_session':
+        return await toolStartLiveSession(ctx, args);
+      case 'run_gherkin_step':
+        return await toolRunGherkinStep(ctx, args);
+      case 'run_gherkin_script':
+        return await toolRunGherkinScript(ctx, args);
+      case 'reset_live_session':
+        return await toolResetLiveSession(ctx, args);
+      case 'end_live_session':
+        return await toolEndLiveSession(ctx);
       case 'set_log_level':
         return await toolSetLogLevel(ctx, args);
       case 'git_diff':
@@ -538,14 +614,22 @@ export async function executeToolCall(
 // ─── Controller Tools (require Dev Host connection) ─────────────────────────────
 
 function requireClient(ctx: ToolContext): ControllerClient {
+  if (ctx.liveSession) return ctx.liveSession.client;
   if (!ctx.controllerClient) {
     throw new Error('Dev Host not connected. Start the Extension Development Host (F5) first, or use --no-explore.');
   }
   return ctx.controllerClient;
 }
 
+function requireLiveSession(ctx: ToolContext): LiveTestSession {
+  if (!ctx.liveSession) {
+    throw new Error('No live session is active. Call start_live_session first, or run tests add with --live-mode auto/launch/attach.');
+  }
+  return ctx.liveSession;
+}
+
 async function withCdp<T>(ctx: ToolContext, fn: (cdp: CdpClient) => Promise<T>): Promise<T> {
-  const cdp = new CdpClient(ctx.cdpPort ?? CDP_PORT);
+  const cdp = new CdpClient(ctx.liveSession?.getSummary().cdpPort ?? ctx.cdpPort ?? CDP_PORT);
   await cdp.connect();
   try {
     return await fn(cdp);
@@ -887,19 +971,88 @@ function toolWriteFeatureFile(ctx: ToolContext, args: Record<string, unknown>): 
 }
 
 async function toolRunTest(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
-  const client = requireClient(ctx);
   const featurePath = path.resolve(ctx.cwd, args['featurePath'] as string);
 
   if (!fs.existsSync(featurePath)) {
     return `Error: Feature file not found: ${args['featurePath']}`;
   }
 
+  if (ctx.liveSession) {
+    const result = await ctx.liveSession.runFeatureFile(featurePath);
+    return JSON.stringify(result, null, 2);
+  }
+
+  const client = requireClient(ctx);
   const parser = new GherkinParser();
   const runner = new TestRunner(client, ctx.env, undefined, undefined, ctx.cdpPort, ctx.targetPid);
   const feature = await parser.parseFile(featurePath);
   const result = await runner.runFeature(feature);
 
   return JSON.stringify(result, null, 2);
+}
+
+async function toolStartLiveSession(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  if (!ctx.liveSession) {
+    const mode = normalizeLiveMode(args['mode']);
+    const screenshotPolicy = normalizeScreenshotPolicy(args['screenshotPolicy']);
+    const session = await LiveTestSession.start({
+      mode,
+      runOptions: {
+        attachDevhost: mode === 'attach',
+        extensionPath: ctx.cwd,
+        features: DEFAULT_FEATURES_DIR,
+        vscodeVersion: 'stable',
+        xvfb: false,
+        controllerPort: CONTROLLER_WS_PORT,
+        cdpPort: ctx.cdpPort ?? CDP_PORT,
+        record: false,
+        recordOnFailure: false,
+        reporter: 'json',
+        timeout: STEP_TIMEOUT_MS,
+        autoReset: false,
+        parallel: false,
+        build: false,
+        paused: false,
+      },
+      screenshotPolicy,
+      finalScreenshot: true,
+      logger: (message) => console.error(message),
+    });
+    ctx.liveSession = session;
+    ctx.controllerClient = session.client;
+    ctx.cdpPort = session.getSummary().cdpPort;
+    ctx.targetPid = session.getSummary().targetPid;
+  }
+  return JSON.stringify(ctx.liveSession.getSummary(), null, 2);
+}
+
+async function toolRunGherkinStep(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const session = requireLiveSession(ctx);
+  const result = await session.runStep(requiredString(args, 'step'));
+  ctx.cdpPort = session.getSummary().cdpPort;
+  ctx.targetPid = session.getSummary().targetPid;
+  return JSON.stringify(result, null, 2);
+}
+
+async function toolRunGherkinScript(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const session = requireLiveSession(ctx);
+  const result = await session.runScript(requiredString(args, 'script'), args['stopOnFailure'] !== false);
+  ctx.cdpPort = session.getSummary().cdpPort;
+  ctx.targetPid = session.getSummary().targetPid;
+  return JSON.stringify(result, null, 2);
+}
+
+async function toolResetLiveSession(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const session = requireLiveSession(ctx);
+  await session.reset(args['mode'] === 'reload' ? 'reload' : 'cleanState');
+  return JSON.stringify(session.getSummary(), null, 2);
+}
+
+async function toolEndLiveSession(ctx: ToolContext): Promise<string> {
+  const session = requireLiveSession(ctx);
+  const summary = await session.close();
+  ctx.liveSession = undefined;
+  return JSON.stringify(summary, null, 2);
 }
 
 function toolGitDiff(ctx: ToolContext, args: Record<string, unknown>): string {
@@ -986,6 +1139,18 @@ function normalizeButton(value: unknown): 'left' | 'right' | 'middle' {
   if (value === undefined) return 'left';
   if (value === 'left' || value === 'right' || value === 'middle') return value;
   throw new Error(`Unknown mouse button: ${String(value)}`);
+}
+
+function normalizeLiveMode(value: unknown): 'auto' | 'launch' | 'attach' {
+  if (value === undefined) return 'auto';
+  if (value === 'auto' || value === 'launch' || value === 'attach') return value;
+  throw new Error(`Unknown live session mode: ${String(value)}`);
+}
+
+function normalizeScreenshotPolicy(value: unknown): 'always' | 'onFailure' | 'never' {
+  if (value === undefined) return 'always';
+  if (value === 'always' || value === 'onFailure' || value === 'never') return value;
+  throw new Error(`Unknown screenshot policy: ${String(value)}`);
 }
 
 function listFilesRecursive(dir: string, maxFiles: number): string[] {

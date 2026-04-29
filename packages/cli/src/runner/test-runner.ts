@@ -1,6 +1,17 @@
 import type { ControllerClient } from './controller-client.js';
 import type { ParsedFeature, ParsedScenario, ParsedStep } from './gherkin-parser.js';
-import type { FeatureResult, NotificationInfo, ProgressInfo, QuickInputState, ScenarioResult, StepResult } from '../types.js';
+import type {
+  FeatureResult,
+  LiveStepArtifacts,
+  LiveStepResult,
+  NotificationInfo,
+  ProgressInfo,
+  QuickInputState,
+  RunSingleStepOptions,
+  ScenarioResult,
+  StepArtifact,
+  StepResult,
+} from '../types.js';
 import { CDP_PORT } from '../types.js';
 import { NativeUIClient } from './native-ui-client.js';
 import { CdpClient } from './cdp-client.js';
@@ -17,6 +28,7 @@ export class TestRunner {
   private cdp?: CdpClient;
   private screenshotCounter = 0;
   private currentScenarioName: string | undefined;
+  private dispatchArtifacts: StepArtifact[] = [];
   /** Per-channel byte offsets recorded before each scenario starts. */
   private scenarioStartOffsets = new Map<string, number>();
 
@@ -85,10 +97,93 @@ export class TestRunner {
     };
   }
 
-  private async runStep(step: ParsedStep): Promise<StepResult> {
+  async runSingleStep(step: ParsedStep, options: RunSingleStepOptions = {}): Promise<LiveStepResult> {
+    const stepIndex = options.stepIndex ?? 1;
+    const label = options.label ?? `${step.keyword}${step.text}`;
+    const stepDir = this.artifactsDir
+      ? path.join(this.artifactsDir, 'live-steps', `${String(stepIndex).padStart(3, '0')}-${sanitizeFilename(label, 80)}`)
+      : undefined;
+    if (stepDir) fs.mkdirSync(stepDir, { recursive: true });
+
+    await this.recordChannelOffsets();
+    this.currentScenarioName = 'Live step';
+    const result = await this.runStep(step, { captureFailureScreenshot: false });
+    const artifacts = cloneArtifacts(result.artifacts);
+
+    if (stepDir && result.outputLog) {
+      const outputPath = path.join(stepDir, 'output.log');
+      fs.writeFileSync(outputPath, result.outputLog, 'utf-8');
+      artifacts.logs.push({ kind: 'output-log', path: outputPath, label: 'Step output delta' });
+    }
+
+    if (this.artifactsDir && options.captureLogs !== false) {
+      const channelLabel = `live-step-${String(stepIndex).padStart(3, '0')}-${sanitizeFilename(step.text, 60)}`;
+      try {
+        await this.dumpCapturedChannels(channelLabel);
+        const manifestPath = path.join(this.artifactsDir, 'output-channels', sanitizeFilename(channelLabel), '_capture-manifest.json');
+        if (fs.existsSync(manifestPath)) {
+          artifacts.logs.push({ kind: 'log-manifest', path: manifestPath, label: 'Captured output channels' });
+          artifacts.manifestPath = manifestPath;
+        }
+      } catch (err) {
+        artifacts.warnings.push(`Could not write step log artifacts: ${errorMessage(err)}`);
+      }
+
+      if (stepDir) {
+        this.copyVsCodeHostLogs(stepDir);
+        for (const logName of ['exthost.log', 'renderer.log']) {
+          const logPath = path.join(stepDir, logName);
+          if (fs.existsSync(logPath)) {
+            artifacts.logs.push({ kind: 'host-log', path: logPath, label: logName });
+          }
+        }
+      }
+    }
+
+    const policy = options.screenshotPolicy ?? 'always';
+    if (policy === 'always' || (policy === 'onFailure' && result.status === 'failed')) {
+      if (stepDir) {
+        try {
+          const screenshot = await this.captureArtifactScreenshot(
+            result.status === 'failed' ? `failure-${sanitizeFilename(step.text, 60)}` : `after-${sanitizeFilename(step.text, 60)}`,
+            result.status === 'failed' ? 'failure-screenshot' : 'screenshot',
+            stepDir,
+          );
+          artifacts.screenshots.push(screenshot);
+        } catch (err) {
+          artifacts.warnings.push(`Could not capture step screenshot: ${errorMessage(err)}`);
+        }
+      } else {
+        artifacts.warnings.push('Screenshot capture skipped because this step has no artifacts directory.');
+      }
+    }
+
+    let state: LiveStepResult['state'];
+    if (options.includeState !== false) {
+      try {
+        state = await this.client.getState();
+      } catch (err) {
+        artifacts.warnings.push(`Could not capture VS Code state: ${errorMessage(err)}`);
+      }
+    }
+
+    const liveResult: LiveStepResult = { ...result, stepIndex, artifacts, state };
+    if (stepDir) {
+      const manifestPath = path.join(stepDir, 'step-result.json');
+      fs.writeFileSync(manifestPath, JSON.stringify(liveResult, null, 2), 'utf-8');
+      if (!liveResult.artifacts.manifestPath) {
+        liveResult.artifacts.logs.push({ kind: 'log-manifest', path: manifestPath, label: 'Step result manifest' });
+      }
+    }
+
+    return liveResult;
+  }
+
+  private async runStep(step: ParsedStep, options: { captureFailureScreenshot?: boolean } = {}): Promise<StepResult> {
     const startTime = Date.now();
     const resolvedText = this.resolveEnvVars(step.text);
     const docString = step.docString ? this.resolveEnvVars(step.docString) : undefined;
+    this.dispatchArtifacts = [];
 
     // Snapshot output channels before the step
     let outputBefore = '';
@@ -110,7 +205,8 @@ export class TestRunner {
         outputLog = outputLog ? `${outputLog}\n${dispatchLog}` : dispatchLog;
       }
 
-      return { keyword: step.keyword, text: step.text, status: 'passed', durationMs: Date.now() - startTime, outputLog };
+      const artifacts = this.buildArtifacts(this.dispatchArtifacts);
+      return { keyword: step.keyword, text: step.text, status: 'passed', durationMs: Date.now() - startTime, outputLog, artifacts };
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
 
@@ -121,7 +217,20 @@ export class TestRunner {
         if (newOutput) outputLog = newOutput;
       } catch { /* best effort */ }
 
-      return { keyword: step.keyword, text: step.text, status: 'failed', durationMs: Date.now() - startTime, error: { message: error.message, stack: error.stack }, outputLog };
+      const warnings: string[] = [];
+      const screenshots = [...this.dispatchArtifacts];
+      if (options.captureFailureScreenshot !== false && this.artifactsDir) {
+        try {
+          screenshots.push(await this.captureArtifactScreenshot(
+            `failure-${sanitizeFilename(this.currentScenarioName ?? 'scenario', 40)}-${sanitizeFilename(step.text, 60)}`,
+            'failure-screenshot',
+          ));
+        } catch (screenshotError) {
+          warnings.push(`Could not capture failure screenshot: ${errorMessage(screenshotError)}`);
+        }
+      }
+      const artifacts = this.buildArtifacts(screenshots, [], warnings);
+      return { keyword: step.keyword, text: step.text, status: 'failed', durationMs: Date.now() - startTime, error: { message: error.message, stack: error.stack }, outputLog, artifacts };
     }
   }
 
@@ -175,6 +284,20 @@ export class TestRunner {
       const folderPath = this.resolveFilePath(match[1]);
       try {
         await this.client.addWorkspaceFolder(folderPath);
+        this.client.disconnect();
+        await delay(3000);
+        for (let attempt = 0; attempt < 30; attempt++) {
+          try {
+            await this.client.connect();
+            await this.client.ping();
+            return;
+          } catch {
+            await delay(1000);
+          }
+        }
+        throw new Error(
+          `Extension Host did not come back after adding workspace folder "${folderPath}" within 30s.`
+        );
       } catch {
         // Extension Host likely restarted (first folder added) — reconnect.
         this.client.disconnect();
@@ -218,6 +341,12 @@ export class TestRunner {
     }
 
     // ─── Commands ───
+    match = text.match(/^I wait for command "([^"]+)"(?: for (\d+) seconds?)?$/);
+    if (match) { await this.waitForCommand(match[1], match[2]); return; }
+
+    match = text.match(/^command "([^"]+)" should be available$/);
+    if (match) { await this.assertCommandAvailable(match[1]); return; }
+
     match = text.match(/^I execute command "([^"]+)"$/);
     if (match) { await this.client.executeCommand(match[1]); return; }
 
@@ -283,8 +412,8 @@ export class TestRunner {
     if (match) { await this.client.handleAuth('microsoft', { username: match[1] }); return; }
 
     // ─── Notification assertion ───
-    match = text.match(/^I should see notification "([^"]+)"$/);
-    if (match) { await this.assertNotification(match[1]); return; }
+    match = text.match(/^I should see notification "([^"]+)"(?: for (\d+) seconds?)?$/);
+    if (match) { await this.assertNotification(match[1], match[2]); return; }
 
     match = text.match(/^I click "([^"]+)" on notification "([^"]+)"$/);
     if (match) { await this.clickNotificationAction(match[2], match[1]); return; }
@@ -305,6 +434,9 @@ export class TestRunner {
     if (match) { await this.assertEditorContent(match[1]); return; }
 
     // ─── Output channel assertion ───
+    match = text.match(/^I wait for output channel "([^"]+)" to contain "([^"]+)"(?: for (\d+) seconds?)?$/);
+    if (match) { await this.waitForOutputContains(match[1], match[2], match[3]); return; }
+
     match = text.match(/^the output channel "([^"]+)" should contain "([^"]+)"$/);
     if (match) { await this.assertOutputContains(match[1], match[2]); return; }
 
@@ -689,6 +821,25 @@ export class TestRunner {
     throw new Error(`QuickInput ${description} not found within ${timeoutMs}ms. Last state: ${JSON.stringify(lastState)}`);
   }
 
+  private async waitForCommand(commandId: string, timeoutSeconds?: string): Promise<void> {
+    const timeoutMs = timeoutSeconds ? parseInt(timeoutSeconds, 10) * 1000 : 10_000;
+    const deadline = Date.now() + timeoutMs;
+    let lastMatches: string[] = [];
+    while (Date.now() < deadline) {
+      lastMatches = await this.client.listCommands(commandId);
+      if (lastMatches.includes(commandId)) return;
+      await delay(500);
+    }
+    throw new Error(`Command "${commandId}" was not available within ${timeoutMs}ms. Last matches: ${JSON.stringify(lastMatches)}`);
+  }
+
+  private async assertCommandAvailable(commandId: string): Promise<void> {
+    const matches = await this.client.listCommands(commandId);
+    if (!matches.includes(commandId)) {
+      throw new Error(`Command "${commandId}" is not available. Matches: ${JSON.stringify(matches)}`);
+    }
+  }
+
   private quickInputHasItem(state: QuickInputState, labelOrId: string): boolean {
     const target = normalizeQuickInputText(labelOrId);
     return Boolean(state.items?.some((item) =>
@@ -726,14 +877,20 @@ export class TestRunner {
     const timeoutMs = timeoutSeconds ? parseInt(timeoutSeconds, 10) * 1000 : 30_000;
     const deadline = Date.now() + timeoutMs;
     let lastProgress: ProgressInfo[] = [];
+    let lastNotifications: NotificationInfo[] = [];
     while (Date.now() < deadline) {
       const state = await this.client.getProgressState();
       lastProgress = [...state.active, ...state.history];
       const match = findProgressByTitle(lastProgress, title, status);
       if (match) return match;
+      lastNotifications = await this.client.getNotifications();
+      const errorNotification = lastNotifications.find((notification) => notification.severity === 'error' && notification.active !== false);
+      if (errorNotification) {
+        throw new Error(`Progress "${title}" was interrupted by error notification: "${errorNotification.message}"`);
+      }
       await delay(200);
     }
-    throw new Error(`Progress "${title}" did not become ${status} within ${timeoutMs}ms. Seen: ${lastProgress.map((item) => `${item.title ?? '(untitled)'}:${item.status}`).join(', ')}`);
+    throw new Error(`Progress "${title}" did not become ${status} within ${timeoutMs}ms. Seen progress: ${lastProgress.map((item) => `${item.title ?? '(untitled)'}:${item.status}`).join(', ')}. Seen notifications: ${formatNotifications(lastNotifications)}`);
   }
 
   private async assertProgress(title: string, status: ProgressInfo['status']): Promise<void> {
@@ -744,13 +901,16 @@ export class TestRunner {
     }
   }
 
-  private async assertNotification(expectedText: string): Promise<void> {
-    for (let i = 0; i < 10; i++) {
-      const notifications = await this.client.getNotifications();
-      if (notifications.some((n) => n.message.includes(expectedText))) return;
+  private async assertNotification(expectedText: string, timeoutSeconds?: string): Promise<void> {
+    const timeoutMs = timeoutSeconds ? parseInt(timeoutSeconds, 10) * 1000 : 5_000;
+    const deadline = Date.now() + timeoutMs;
+    let lastNotifications: NotificationInfo[] = [];
+    while (Date.now() < deadline) {
+      lastNotifications = await this.client.getNotifications();
+      if (lastNotifications.some((n) => n.message.includes(expectedText))) return;
       await delay(500);
     }
-    throw new Error(`Notification containing "${expectedText}" not found after 5s`);
+    throw new Error(`Notification containing "${expectedText}" not found after ${timeoutMs}ms. Seen: ${formatNotifications(lastNotifications)}`);
   }
 
   private async clickNotificationAction(message: string, action: string): Promise<void> {
@@ -807,6 +967,19 @@ export class TestRunner {
     }
   }
 
+  private async waitForOutputContains(channelName: string, expectedText: string, timeoutSeconds?: string): Promise<void> {
+    const timeoutMs = timeoutSeconds ? parseInt(timeoutSeconds, 10) * 1000 : 10_000;
+    const deadline = Date.now() + timeoutMs;
+    let lastContent: string | undefined;
+    while (Date.now() < deadline) {
+      lastContent = await this.tryReadOutputViaCdp(channelName);
+      if (lastContent?.includes(expectedText)) return;
+      await delay(500);
+    }
+    const preview = lastContent ? lastContent.slice(-1000) : '<not found>';
+    throw new Error(`Output channel "${channelName}" did not contain "${expectedText}" within ${timeoutMs}ms. Last content tail: ${preview}`);
+  }
+
   private async assertOutputNotContains(channelName: string, text: string): Promise<void> {
     const content = await this.tryReadOutputViaCdp(channelName);
     if (content !== undefined) {
@@ -848,20 +1021,62 @@ export class TestRunner {
     if (!this.userDataDir) return undefined;
 
     const outputDir = this.findLatestOutputLoggingDir();
-    if (!outputDir) return undefined;
+    if (outputDir) {
+      try {
+        const lower = channelName.toLowerCase();
+        const logFiles = fs.readdirSync(outputDir).filter(f => f.endsWith('.log'));
+        for (const file of logFiles) {
+          const match = file.match(/^\d+-(.+)\.log$/);
+          if (match && match[1].toLowerCase() === lower) {
+            return fs.readFileSync(path.join(outputDir, file), 'utf-8');
+          }
+        }
+      } catch { /* scan failed */ }
+    }
+
+    return this.readLatestNamedLogFile(channelName);
+  }
+
+  private readLatestNamedLogFile(channelName: string): string | undefined {
+    if (!this.userDataDir) return undefined;
+    const logsRoot = path.join(this.userDataDir, 'logs');
+    if (!fs.existsSync(logsRoot)) return undefined;
 
     try {
-      const lower = channelName.toLowerCase();
-      const logFiles = fs.readdirSync(outputDir).filter(f => f.endsWith('.log'));
-      for (const file of logFiles) {
-        const match = file.match(/^\d+-(.+)\.log$/);
-        if (match && match[1].toLowerCase() === lower) {
-          return fs.readFileSync(path.join(outputDir, file), 'utf-8');
+      const sessions = fs.readdirSync(logsRoot, { withFileTypes: true })
+        .filter(e => e.isDirectory())
+        .map(e => path.join(logsRoot, e.name))
+        .sort()
+        .reverse();
+      for (const sessionDir of sessions) {
+        const candidates = this.findNamedLogFilesRecursive(sessionDir, channelName, 6)
+          .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+        if (candidates.length > 0) {
+          return fs.readFileSync(candidates[0], 'utf-8');
         }
       }
     } catch { /* scan failed */ }
 
     return undefined;
+  }
+
+  private findNamedLogFilesRecursive(dir: string, channelName: string, maxDepth: number): string[] {
+    if (maxDepth <= 0) return [];
+    const target = channelName.toLowerCase();
+    const results: string[] = [];
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const entryPath = path.join(dir, entry.name);
+        if (entry.isFile() && entry.name.endsWith('.log')) {
+          const label = entry.name.replace(/^\d+-/, '').replace(/\.log$/, '').toLowerCase();
+          if (label === target) results.push(entryPath);
+        } else if (entry.isDirectory()) {
+          results.push(...this.findNamedLogFilesRecursive(entryPath, channelName, maxDepth - 1));
+        }
+      }
+    } catch { /* scan failed */ }
+    return results;
   }
 
   /**
@@ -1191,18 +1406,29 @@ export class TestRunner {
   }
 
   /** Take a screenshot and save it to the artifacts directory. */
-  private async takeScreenshot(label?: string): Promise<void> {
-    if (!this.artifactsDir) {
+  async captureArtifactScreenshot(label?: string, kind: StepArtifact['kind'] = 'screenshot', targetDir = this.artifactsDir): Promise<StepArtifact> {
+    if (!targetDir) {
       throw new Error('Screenshot capture is unavailable because this run has no artifacts directory');
     }
     this.screenshotCounter++;
     const name = label
-      ? `${this.screenshotCounter}-${label.replace(/[^a-zA-Z0-9_-]/g, '_')}.png`
+      ? `${this.screenshotCounter}-${sanitizeFilename(label)}.png`
       : `${this.screenshotCounter}-screenshot.png`;
-    const filePath = path.join(this.artifactsDir, name);
-    fs.mkdirSync(this.artifactsDir, { recursive: true });
+    const filePath = path.join(targetDir, name);
+    fs.mkdirSync(targetDir, { recursive: true });
 
     await (await this.requireNativeUI()).captureDevHostScreenshot(filePath);
+    return { kind, path: filePath, label: label ?? 'screenshot' };
+  }
+
+  private async takeScreenshot(label?: string): Promise<void> {
+    const artifact = await this.captureArtifactScreenshot(label);
+    this.dispatchArtifacts.push(artifact);
+  }
+
+  private buildArtifacts(screenshots: StepArtifact[] = [], logs: StepArtifact[] = [], warnings: string[] = []): LiveStepArtifacts | undefined {
+    if (screenshots.length === 0 && logs.length === 0 && warnings.length === 0) return undefined;
+    return { screenshots, logs, warnings };
   }
 
   // ─── File utility helpers ───────────────────────────────────────
@@ -1247,8 +1473,29 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function sanitizeFilename(name: string): string {
-  return name.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'unnamed';
+function cloneArtifacts(artifacts: LiveStepArtifacts | undefined): MutableLiveStepArtifacts {
+  return {
+    screenshots: [...(artifacts?.screenshots ?? [])],
+    logs: [...(artifacts?.logs ?? [])],
+    warnings: [...(artifacts?.warnings ?? [])],
+    manifestPath: artifacts?.manifestPath,
+  };
+}
+
+interface MutableLiveStepArtifacts extends LiveStepArtifacts {
+  screenshots: StepArtifact[];
+  logs: StepArtifact[];
+  warnings: string[];
+  manifestPath?: string;
+}
+
+function sanitizeFilename(name: string, maxLength = 120): string {
+  const sanitized = name.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'unnamed';
+  return sanitized.slice(0, maxLength) || 'unnamed';
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function normalizeQuickInputText(text: string): string {
@@ -1264,4 +1511,10 @@ function findProgressByTitle(items: ProgressInfo[], title: string, status: Progr
   return [...items].reverse().find((item) =>
     (item.title ?? '').toLowerCase().includes(needle) && item.status === status
   );
+}
+
+function formatNotifications(notifications: NotificationInfo[]): string {
+  return notifications
+    .map((notification) => `${notification.severity}:${notification.active === false ? 'inactive' : 'active'}:"${notification.message}"`)
+    .join('; ');
 }

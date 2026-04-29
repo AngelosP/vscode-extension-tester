@@ -19,6 +19,9 @@ import type {
   VSCodeState,
   NotificationInfo,
   RunOptions,
+  LiveStepResult,
+  LiveScriptResult,
+  LiveSessionSummary,
 } from '../src/types.js';
 
 describe('Types and Constants', () => {
@@ -173,6 +176,46 @@ describe('Types and Constants', () => {
         },
       };
       expect(state.progress?.active[0].title).toBe('Deploy');
+    });
+
+    it('should accept live step and script result shapes', () => {
+      const step: LiveStepResult = {
+        keyword: 'When ',
+        text: 'I execute command "test.command"',
+        status: 'passed',
+        durationMs: 10,
+        stepIndex: 1,
+        artifacts: {
+          screenshots: [{ kind: 'screenshot', path: 'after.png' }],
+          logs: [{ kind: 'output-log', path: 'output.log' }],
+          warnings: [],
+        },
+      };
+
+      const script: LiveScriptResult = {
+        steps: [step],
+        totalPassed: 1,
+        totalFailed: 0,
+        stoppedOnFailure: false,
+        durationMs: 10,
+      };
+
+      expect(script.steps[0].artifacts.screenshots[0].kind).toBe('screenshot');
+    });
+
+    it('should accept live session summary shape', () => {
+      const summary: LiveSessionSummary = {
+        sessionId: 'session-1',
+        mode: 'launch',
+        startedAt: '2025-01-01T00:00:00.000Z',
+        artifactsDir: '.vscode-ext-test/live/session-1',
+        controllerPort: 9788,
+        cdpPort: 9222,
+        stepsRun: 0,
+        failedSteps: 0,
+        closed: false,
+      };
+      expect(summary.mode).toBe('launch');
     });
   });
 });

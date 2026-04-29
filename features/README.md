@@ -25,9 +25,16 @@ tests/vscode-extension-tester/
         20260419-213200/
           report.md
           results.json
+  .vscode-ext-test/
+    live/                       # Live step artifacts from vscode-ext-test live/tests add
+      2026-04-19T21-32-00-000Z/
+        live-steps/
+        final/
 ```
 
 The reserved folder name `default` is used when no `--reuse-named-profile`, `--reuse-or-create-named-profile`, or `--clone-named-profile` flag is passed.
+
+Live authoring sessions keep one VS Code window open and write per-step screenshots, output-channel deltas, copied host logs, and `step-result.json` manifests under `.vscode-ext-test/live/<timestamp>/`. This is what `vscode-ext-test live` and `vscode-ext-test tests add --live-mode auto` use while probing steps before committing a full `.feature` file.
 
 ## Running Tests
 

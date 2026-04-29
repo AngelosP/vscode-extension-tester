@@ -1,11 +1,12 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ControllerClient } from '../runner/controller-client.js';
-import { CDP_PORT, CONTROLLER_WS_PORT, DEFAULT_FEATURES_DIR } from '../types.js';
+import { CDP_PORT, CONTROLLER_WS_PORT, DEFAULT_FEATURES_DIR, STEP_TIMEOUT_MS } from '../types.js';
 import { loadEnv, getAgentConfig, getUserDataSummary } from '../agent/env.js';
 import { loadMemories, appendMemory } from '../agent/memory.js';
 import { runAgentLoop } from '../agent/agent-loop.js';
 import { TOOL_DEFINITIONS, type ToolContext } from '../agent/tools.js';
+import { LiveTestSession } from '../runner/live-session.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -17,6 +18,7 @@ interface TestsAddOptions {
   model?: string;
   port?: string;
   cdpPort?: string;
+  liveMode?: string;
 }
 
 interface ResumeMarker {
@@ -113,7 +115,7 @@ YOUR WORKFLOW:
 2. Read source files to understand command implementations and expected behavior
 3. Read existing .feature files to understand current test coverage
 4. Read memory files for knowledge from previous sessions
-5. If you have Dev Host access, explore commands to observe real behavior
+5. If you have Dev Host access, use run_gherkin_step or run_gherkin_script to probe behavior in the live session, then inspect screenshots/log artifacts from the result
 6. Draft new .feature files or updates to existing ones
 7. Write the .feature files using write_feature_file
 8. If you have Dev Host access, run the tests using run_test to verify they pass
@@ -139,7 +141,7 @@ You have access to the same tools as before. The tests you wrote in a previous s
 YOUR WORKFLOW:
 1. Read the failing test files and understand the failures
 2. Read source code to verify expected behavior
-3. If you have Dev Host access, try the failing commands manually to observe actual behavior
+3. If you have Dev Host access, use run_gherkin_step or run_gherkin_script to observe actual behavior, screenshots, and logs
 4. Optionally escalate log level with set_log_level for more diagnostics
 5. Fix the .feature files based on what you observe
 6. Run the tests again with run_test to verify the fix
@@ -168,13 +170,14 @@ export async function testsAddCommand(
   const maxIterations = parseInt(opts.maxIterations ?? String(agentConfig.maxIterations), 10);
   const shouldExplore = opts.explore !== false;
   const shouldRun = opts.run !== false;
+  const liveMode = normalizeTestsAddLiveMode(opts.liveMode);
   const userContext = context.join(' ').trim() || null;
 
   // Check for resume marker
   const resumePath = path.join(cwd, RESUME_DIR, RESUME_FILE);
   if (fs.existsSync(resumePath)) {
     console.log('Found resume marker from previous run. Resuming...\n');
-    await resumeFlow(cwd, resumePath, env, memories, userData, agentConfig, port, cdpPort, maxIterations, opts.model, shouldExplore);
+    await resumeFlow(cwd, resumePath, env, memories, userData, agentConfig, port, cdpPort, maxIterations, opts.model, shouldExplore, liveMode);
     return;
   }
 
@@ -205,72 +208,91 @@ export async function testsAddCommand(
 
   // ─── Stage 2: Connect to Dev Host if available ────────────────────────────
   let client: ControllerClient | undefined;
-  if (shouldExplore) {
-    client = await tryConnect(port);
-    if (client) {
-      console.log('Connected to Dev Host - live exploration enabled.\n');
-    } else {
-      console.log('Dev Host not available - generating tests from code analysis only.');
-      console.log('Start a debug session (F5) for live validation.\n');
+  let liveSession: LiveTestSession | undefined;
+  try {
+    if (shouldExplore) {
+      if (liveMode !== 'off') {
+        try {
+          liveSession = await startTestsAddLiveSession(cwd, liveMode, port, cdpPort);
+          client = liveSession.client;
+          console.log(`Live ${liveSession.mode} session ready - iterative Gherkin probing enabled.`);
+          console.log(`Artifacts: ${path.relative(cwd, liveSession.artifactsDir)}\n`);
+        } catch (err) {
+          console.log(`Live session unavailable: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      if (!client) {
+        client = await tryConnect(port);
+        if (client) {
+          console.log('Connected to Dev Host - live exploration enabled.\n');
+        } else {
+          console.log('Dev Host not available - generating tests from code analysis only.');
+          console.log('Start a debug session (F5) or use --live-mode launch for live validation.\n');
+        }
+      }
     }
-  }
 
-  // ─── Stage 3: Run the agent ───────────────────────────────────────────────
-  const toolContext: ToolContext = {
-    cwd,
-    controllerClient: client,
-    env,
-    cdpPort,
-  };
-
-  console.log('Agent is working...\n');
-
-  const result = await runAgentLoop({
-    systemPrompt: ADD_SYSTEM_PROMPT,
-    initialUserMessage: initialMessage,
-    tools: TOOL_DEFINITIONS,
-    toolContext,
-    maxIterations,
-    model: opts.model ?? agentConfig.model,
-    onIteration: (i, action) => {
-      process.stdout.write(`  [${i}] ${action}\n`);
-    },
-  });
-
-  console.log(`\n--- Agent Complete ---`);
-  console.log(`Summary: ${result.summary}`);
-
-  if (result.filesWritten.length > 0) {
-    console.log(`Feature files: ${result.filesWritten.join(', ')}`);
-  }
-
-  // ─── Stage 4: Run tests if requested ──────────────────────────────────────
-  if (shouldRun && result.filesWritten.length > 0 && client) {
-    console.log('\nRunning generated tests...\n');
-
-    // Write resume marker
-    const marker: ResumeMarker = {
-      featureFiles: result.filesWritten,
-      iteration: 0,
-      maxIterations: 5,
-      timestamp: Date.now(),
-      userContext: userContext ?? undefined,
+    // ─── Stage 3: Run the agent ───────────────────────────────────────────────
+    const summary = liveSession?.getSummary();
+    const toolContext: ToolContext = {
+      cwd,
+      controllerClient: client,
+      liveSession,
+      env,
+      cdpPort: summary?.cdpPort ?? cdpPort,
+      targetPid: summary?.targetPid,
     };
-    fs.mkdirSync(path.dirname(resumePath), { recursive: true });
-    fs.writeFileSync(resumePath, JSON.stringify(marker, null, 2));
 
-    // Run tests via the agent's run_test tool results (already done in the loop)
-    // The resume marker ensures we can pick up if there are failures
-    console.log('Tests completed. If any failed, run `vscode-ext-test tests add` again to auto-fix.');
+    console.log('Agent is working...\n');
 
-    // Clean up resume marker if all passed (agent would have reported)
-    if (result.completed && result.summary.toLowerCase().includes('pass')) {
-      fs.unlinkSync(resumePath);
-      console.log('All tests passed! Resume marker cleaned up.');
+    const result = await runAgentLoop({
+      systemPrompt: ADD_SYSTEM_PROMPT,
+      initialUserMessage: initialMessage,
+      tools: TOOL_DEFINITIONS,
+      toolContext,
+      maxIterations,
+      model: opts.model ?? agentConfig.model,
+      onIteration: (i, action) => {
+        process.stdout.write(`  [${i}] ${action}\n`);
+      },
+    });
+
+    console.log(`\n--- Agent Complete ---`);
+    console.log(`Summary: ${result.summary}`);
+
+    if (result.filesWritten.length > 0) {
+      console.log(`Feature files: ${result.filesWritten.join(', ')}`);
     }
-  }
 
-  client?.disconnect();
+    // ─── Stage 4: Run tests if requested ──────────────────────────────────────
+    if (shouldRun && result.filesWritten.length > 0 && client) {
+      console.log('\nRunning generated tests...\n');
+
+      // Write resume marker
+      const marker: ResumeMarker = {
+        featureFiles: result.filesWritten,
+        iteration: 0,
+        maxIterations: 5,
+        timestamp: Date.now(),
+        userContext: userContext ?? undefined,
+      };
+      fs.mkdirSync(path.dirname(resumePath), { recursive: true });
+      fs.writeFileSync(resumePath, JSON.stringify(marker, null, 2));
+
+      // Run tests via the agent's run_test tool results (already done in the loop)
+      // The resume marker ensures we can pick up if there are failures
+      console.log('Tests completed. If any failed, run `vscode-ext-test tests add` again to auto-fix.');
+
+      // Clean up resume marker if all passed (agent would have reported)
+      if (result.completed && result.summary.toLowerCase().includes('pass')) {
+        fs.unlinkSync(resumePath);
+        console.log('All tests passed! Resume marker cleaned up.');
+      }
+    }
+  } finally {
+    if (liveSession) await liveSession.close();
+    else client?.disconnect();
+  }
 }
 
 // ─── Resume Flow ────────────────────────────────────────────────────────────────
@@ -287,6 +309,7 @@ async function resumeFlow(
   maxIterations: number,
   modelOverride?: string,
   shouldExplore?: boolean,
+  liveMode: 'auto' | 'launch' | 'attach' | 'off' = 'auto',
 ): Promise<void> {
   const marker: ResumeMarker = JSON.parse(fs.readFileSync(resumePath, 'utf-8'));
 
@@ -300,15 +323,28 @@ async function resumeFlow(
 
   // Connect to Dev Host
   let client: ControllerClient | undefined;
-  if (shouldExplore !== false) {
-    client = await tryConnect(port);
-    if (client) {
-      console.log('Connected to Dev Host.\n');
+  let liveSession: LiveTestSession | undefined;
+  try {
+    if (shouldExplore !== false) {
+      if (liveMode !== 'off') {
+        try {
+          liveSession = await startTestsAddLiveSession(cwd, liveMode, port, cdpPort);
+          client = liveSession.client;
+          console.log(`Live ${liveSession.mode} session ready.\n`);
+        } catch (err) {
+          console.log(`Live session unavailable: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      if (!client) {
+        client = await tryConnect(port);
+        if (client) {
+          console.log('Connected to Dev Host.\n');
+        }
+      }
     }
-  }
 
-  // Build resume context
-  let initialMessage = `You are fixing failing tests from a previous run (attempt ${marker.iteration + 1}/${marker.maxIterations}).`;
+    // Build resume context
+    let initialMessage = `You are fixing failing tests from a previous run (attempt ${marker.iteration + 1}/${marker.maxIterations}).`;
 
   if (marker.failures && marker.failures.length > 0) {
     initialMessage += '\n\nFailing scenarios:\n';
@@ -332,43 +368,48 @@ async function resumeFlow(
     initialMessage += `\n\nAdditional instructions: ${agentConfig.instructions}`;
   }
 
-  const toolContext: ToolContext = {
-    cwd,
-    controllerClient: client,
-    env,
-    cdpPort,
-  };
+    const summary = liveSession?.getSummary();
+    const toolContext: ToolContext = {
+      cwd,
+      controllerClient: client,
+      liveSession,
+      env,
+      cdpPort: summary?.cdpPort ?? cdpPort,
+      targetPid: summary?.targetPid,
+    };
 
-  console.log('Agent is fixing tests...\n');
+    console.log('Agent is fixing tests...\n');
 
-  const result = await runAgentLoop({
-    systemPrompt: RESUME_SYSTEM_PROMPT,
-    initialUserMessage: initialMessage,
-    tools: TOOL_DEFINITIONS,
-    toolContext,
-    maxIterations,
-    model: modelOverride ?? agentConfig.model,
-    onIteration: (i, action) => {
-      process.stdout.write(`  [${i}] ${action}\n`);
-    },
-  });
+    const result = await runAgentLoop({
+      systemPrompt: RESUME_SYSTEM_PROMPT,
+      initialUserMessage: initialMessage,
+      tools: TOOL_DEFINITIONS,
+      toolContext,
+      maxIterations,
+      model: modelOverride ?? agentConfig.model,
+      onIteration: (i, action) => {
+        process.stdout.write(`  [${i}] ${action}\n`);
+      },
+    });
 
-  console.log(`\n--- Fix Attempt Complete ---`);
-  console.log(`Summary: ${result.summary}`);
+    console.log(`\n--- Fix Attempt Complete ---`);
+    console.log(`Summary: ${result.summary}`);
 
-  // Update marker
-  marker.iteration += 1;
-  if (result.completed && result.summary.toLowerCase().includes('pass')) {
-    // Tests fixed!
-    fs.unlinkSync(resumePath);
-    console.log('\nAll tests passing! Resume marker cleaned up.');
-    appendMemory(cwd, 'test-patterns.md', `Fixed failing tests: ${result.summary}`);
-  } else {
-    fs.writeFileSync(resumePath, JSON.stringify(marker, null, 2));
-    console.log(`\nSome tests may still be failing. Run \`vscode-ext-test tests add\` again (attempt ${marker.iteration}/${marker.maxIterations}).`);
+    // Update marker
+    marker.iteration += 1;
+    if (result.completed && result.summary.toLowerCase().includes('pass')) {
+      // Tests fixed!
+      fs.unlinkSync(resumePath);
+      console.log('\nAll tests passing! Resume marker cleaned up.');
+      appendMemory(cwd, 'test-patterns.md', `Fixed failing tests: ${result.summary}`);
+    } else {
+      fs.writeFileSync(resumePath, JSON.stringify(marker, null, 2));
+      console.log(`\nSome tests may still be failing. Run \`vscode-ext-test tests add\` again (attempt ${marker.iteration}/${marker.maxIterations}).`);
+    }
+  } finally {
+    if (liveSession) await liveSession.close();
+    else client?.disconnect();
   }
-
-  client?.disconnect();
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────────
@@ -393,6 +434,44 @@ async function tryConnect(port: number): Promise<ControllerClient | undefined> {
     }
   }
   return undefined;
+}
+
+async function startTestsAddLiveSession(
+  cwd: string,
+  mode: 'auto' | 'launch' | 'attach',
+  port: number,
+  cdpPort: number,
+): Promise<LiveTestSession> {
+  return LiveTestSession.start({
+    mode,
+    runOptions: {
+      attachDevhost: mode === 'attach',
+      extensionPath: cwd,
+      features: DEFAULT_FEATURES_DIR,
+      vscodeVersion: 'stable',
+      xvfb: false,
+      controllerPort: port,
+      cdpPort,
+      record: false,
+      recordOnFailure: false,
+      reporter: 'json',
+      timeout: STEP_TIMEOUT_MS,
+      autoReset: false,
+      parallel: false,
+      build: true,
+      paused: false,
+    },
+    screenshotPolicy: 'always',
+    finalScreenshot: true,
+    build: true,
+    logger: (message) => console.error(message),
+  });
+}
+
+function normalizeTestsAddLiveMode(value: string | undefined): 'auto' | 'launch' | 'attach' | 'off' {
+  if (!value) return 'auto';
+  if (value === 'auto' || value === 'launch' || value === 'attach' || value === 'off') return value;
+  throw new Error(`Unknown --live-mode value: ${value}`);
 }
 
 function delay(ms: number): Promise<void> {

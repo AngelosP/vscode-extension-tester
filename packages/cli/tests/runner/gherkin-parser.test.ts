@@ -237,4 +237,56 @@ Feature: Empty scenario
       expect(result.scenarios[0].steps).toHaveLength(0);
     });
   });
+
+  describe('parseStep() and parseSteps()', () => {
+    it('should parse a single inline step', () => {
+      const step = parser.parseStep('When I execute command "test.command"');
+
+      expect(step.keyword.trim()).toBe('When');
+      expect(step.text).toBe('I execute command "test.command"');
+    });
+
+    it('should default keyword-less single steps to When', () => {
+      const step = parser.parseStep('I execute command "test.command"');
+
+      expect(step.keyword.trim()).toBe('When');
+      expect(step.text).toBe('I execute command "test.command"');
+    });
+
+    it('should preserve doc strings and data tables in inline scripts', () => {
+      const steps = parser.parseSteps(`
+Given a file "config.json" exists with content:
+  """
+  { "enabled": true }
+  """
+Then the following files exist:
+  | path      | content |
+  | test.txt  | hello   |
+`);
+
+      expect(steps).toHaveLength(2);
+      expect(steps[0].docString).toContain('enabled');
+      expect(steps[1].dataTable?.[1]).toEqual(['test.txt', 'hello']);
+    });
+
+    it('should accept scenario fragments', () => {
+      const steps = parser.parseSteps(`
+Scenario: Inline
+  Given the VS Code is in a clean state
+  Then I wait 1 second
+`);
+
+      expect(steps.map((step) => step.keyword.trim())).toEqual(['Given', 'Then']);
+    });
+
+    it('should reject multi-scenario inline fragments', () => {
+      expect(() => parser.parseSteps(`
+Feature: Multiple
+  Scenario: One
+    Given the VS Code is in a clean state
+  Scenario: Two
+    Then I wait 1 second
+`)).toThrow('must contain exactly one scenario');
+    });
+  });
 });

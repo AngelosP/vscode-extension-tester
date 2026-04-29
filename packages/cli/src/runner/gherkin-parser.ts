@@ -47,6 +47,46 @@ export class GherkinParser {
     return this.parse(content, filePath);
   }
 
+  parseStep(content: string, uri: string = '<inline-step>'): ParsedStep {
+    const steps = this.parseSteps(content, uri);
+    if (steps.length !== 1) {
+      throw new Error(`Expected exactly one Gherkin step in ${uri}, found ${steps.length}`);
+    }
+    return steps[0];
+  }
+
+  parseSteps(content: string, uri: string = '<inline-steps>'): ParsedStep[] {
+    const trimmed = content.trim();
+    if (!trimmed) {
+      throw new Error(`No Gherkin steps found in ${uri}`);
+    }
+
+    if (/^\s*Feature:/m.test(trimmed)) {
+      return this.extractInlineScenarioSteps(this.parse(trimmed, uri), uri);
+    }
+
+    if (/^\s*Scenario(?: Outline)?:/m.test(trimmed)) {
+      return this.extractInlineScenarioSteps(this.parse(`Feature: Inline\n${trimmed}`, uri), uri);
+    }
+
+    const lines = trimmed.split(/\r?\n/);
+    const firstStepLine = lines.findIndex((line) => line.trim().length > 0);
+    if (firstStepLine < 0) {
+      throw new Error(`No Gherkin steps found in ${uri}`);
+    }
+
+    const first = lines[firstStepLine].trim();
+    const hasKeyword = /^(?:Given|When|Then|And|But)\b/.test(first);
+    const stepLines = [...lines];
+    if (!hasKeyword) {
+      stepLines[firstStepLine] = `When ${first}`;
+    }
+
+    const indented = stepLines.map((line) => line.trim() ? `    ${line}` : '').join('\n');
+    const feature = this.parse(`Feature: Inline\n  Scenario: Live\n${indented}\n`, uri);
+    return this.extractInlineScenarioSteps(feature, uri);
+  }
+
   parse(content: string, uri: string = '<inline>'): ParsedFeature {
     const gherkinDoc = this.parser.parse(content);
     if (!gherkinDoc.feature) {
@@ -80,6 +120,17 @@ export class GherkinParser {
     }
 
     return { name: feature.name ?? '', description: feature.description?.trim() ?? '', tags, backgroundSteps, scenarios, uri };
+  }
+
+  private extractInlineScenarioSteps(feature: ParsedFeature, uri: string): ParsedStep[] {
+    if (feature.scenarios.length > 1) {
+      throw new Error(`Inline Gherkin scripts must contain exactly one scenario in ${uri}; found ${feature.scenarios.length}`);
+    }
+    const scenario = feature.scenarios[0];
+    if (!scenario) {
+      throw new Error(`No scenario found in ${uri}`);
+    }
+    return [...feature.backgroundSteps, ...scenario.steps];
   }
 
   private expandScenarioOutline(scenario: messages.Scenario): ParsedScenario[] {

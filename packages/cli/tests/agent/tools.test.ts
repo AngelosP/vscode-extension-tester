@@ -48,6 +48,15 @@ describe('tools', () => {
       expect(names).toContain('run_test');
     });
 
+    it('should include live Gherkin tools', () => {
+      const names = TOOL_DEFINITIONS.map((t) => t.function.name);
+      expect(names).toContain('start_live_session');
+      expect(names).toContain('run_gherkin_step');
+      expect(names).toContain('run_gherkin_script');
+      expect(names).toContain('reset_live_session');
+      expect(names).toContain('end_live_session');
+    });
+
     it('should include memory tools', () => {
       const names = TOOL_DEFINITIONS.map((t) => t.function.name);
       expect(names).toContain('read_memory');
@@ -99,6 +108,12 @@ describe('tools', () => {
 
       const clickNotification = TOOL_DEFINITIONS.find((t) => t.function.name === 'click_notification_action')!;
       expect(clickNotification.function.parameters['required']).toEqual(['message', 'action']);
+
+      const runGherkinStep = TOOL_DEFINITIONS.find((t) => t.function.name === 'run_gherkin_step')!;
+      expect(runGherkinStep.function.parameters['required']).toEqual(['step']);
+
+      const runGherkinScript = TOOL_DEFINITIONS.find((t) => t.function.name === 'run_gherkin_script')!;
+      expect(runGherkinScript.function.parameters['required']).toEqual(['script']);
     });
   });
 });

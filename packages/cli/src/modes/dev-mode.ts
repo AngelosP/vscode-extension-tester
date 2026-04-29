@@ -6,6 +6,17 @@ import { ControllerClient } from '../runner/controller-client.js';
 import { GherkinParser } from '../runner/gherkin-parser.js';
 import { TestRunner } from '../runner/test-runner.js';
 
+export interface AttachDevHostSession {
+  mode: 'attach';
+  client: ControllerClient;
+  controllerPort: number;
+  cdpPort: number;
+  userDataDir?: string;
+  targetPid?: number;
+  close: () => Promise<void>;
+  reload: () => Promise<void>;
+}
+
 /**
  * Attach mode: connect to an already-running Extension Development Host and
  * run tests. The user must have launched the Dev Host themselves (e.g. via F5).
@@ -13,6 +24,27 @@ import { TestRunner } from '../runner/test-runner.js';
 export async function attachMode(options: RunOptions, artifactsDir?: string): Promise<TestRunResult> {
   const startTime = Date.now();
 
+  const session = await attachDevHostSession(options);
+  try {
+    // If paused, wait for the user to press Enter before running tests.
+    if (options.paused) {
+      console.log('Environment ready. VS Code is running with the latest build.');
+      console.log('Press Enter to run tests, or Ctrl+C to exit...\n');
+      await waitForEnter();
+    }
+
+    const runOptions: RunOptions = {
+      ...options,
+      controllerPort: session.controllerPort,
+      cdpPort: session.cdpPort,
+    };
+    return await runFeatures(session.client, runOptions, startTime, artifactsDir, session.userDataDir, session.cdpPort, session.targetPid);
+  } finally {
+    await session.close();
+  }
+}
+
+export async function attachDevHostSession(options: RunOptions): Promise<AttachDevHostSession> {
   // 1. Fast-fail: verify a Dev Host process exists before polling the WebSocket
   const devHost = await detectDevHost(options.extensionPath);
   if (!devHost) {
@@ -25,7 +57,7 @@ export async function attachMode(options: RunOptions, artifactsDir?: string): Pr
   console.log(`Found Extension Development Host (PID: ${devHost.pid})`);
 
   // 2. Connect to the controller extension WebSocket
-  const client = new ControllerClient(options.controllerPort);
+  const client = new ControllerClient(options.controllerPort, options.timeout);
   console.log(`Connecting to controller on port ${options.controllerPort}...`);
   let connected = false;
 
@@ -48,58 +80,61 @@ export async function attachMode(options: RunOptions, artifactsDir?: string): Pr
 
   console.log('Connected to controller extension.\n');
 
-  try {
-    // 3. Verify connection
-    await client.ping();
+  // 3. Verify connection
+  await client.ping();
 
-    // 3b. If we built the extension, reload the Dev Host window so it loads
-    //     the latest compiled code — same effect as pressing the restart
-    //     button in the debug toolbar.
-    if (options.build) {
-      console.log('Reloading Dev Host to pick up latest build...');
-      try {
-        await client.executeCommand('workbench.action.reloadWindow');
-      } catch {
-        // Window may close before the response arrives — that's expected.
-      }
-      client.disconnect();
-
-      // Give VS Code a moment to begin reloading before we start polling.
-      await delay(3000);
-
-      // Reconnect — the controller extension will re-activate after reload.
-      let reconnected = false;
-      for (let attempt = 0; attempt < 60; attempt++) {
-        try {
-          await client.connect();
-          await client.ping();
-          reconnected = true;
-          break;
-        } catch {
-          await delay(1000);
-        }
-      }
-      if (!reconnected) {
-        throw new Error(
-          'Dev Host did not come back after reload within 60s.\n' +
-          'Try reloading manually (Ctrl+Shift+P → "Reload Window") and re-running tests.'
-        );
-      }
-      console.log('Dev Host reloaded — running with latest code.\n');
+  const reload = async () => {
+    console.log('Reloading Dev Host to pick up latest build...');
+    try {
+      await client.executeCommand('workbench.action.reloadWindow');
+    } catch {
+      // Window may close before the response arrives — that's expected.
     }
-
-    // 3c. If paused, wait for the user to press Enter before running tests.
-    if (options.paused) {
-      console.log('Environment ready. VS Code is running with the latest build.');
-      console.log('Press Enter to run tests, or Ctrl+C to exit...\n');
-      await waitForEnter();
-    }
-
-    // 4. Parse and run features
-    return await runFeatures(client, options, startTime, artifactsDir, undefined, options.cdpPort, devHost.pid);
-  } finally {
     client.disconnect();
+
+    // Give VS Code a moment to begin reloading before we start polling.
+    await delay(3000);
+
+    // Reconnect — the controller extension will re-activate after reload.
+    let reconnected = false;
+    for (let attempt = 0; attempt < 60; attempt++) {
+      try {
+        await client.connect();
+        await client.ping();
+        reconnected = true;
+        break;
+      } catch {
+        await delay(1000);
+      }
+    }
+    if (!reconnected) {
+      throw new Error(
+        'Dev Host did not come back after reload within 60s.\n' +
+        'Try reloading manually (Ctrl+Shift+P → "Reload Window") and re-running tests.'
+      );
+    }
+    console.log('Dev Host reloaded — running with latest code.\n');
+  };
+
+  if (options.build) {
+    await reload();
   }
+
+  let closed = false;
+  return {
+    mode: 'attach',
+    client,
+    controllerPort: options.controllerPort,
+    cdpPort: devHost.cdpPort ?? options.cdpPort,
+    userDataDir: devHost.userDataDir,
+    targetPid: devHost.pid,
+    close: async () => {
+      if (closed) return;
+      closed = true;
+      client.disconnect();
+    },
+    reload,
+  };
 }
 
 /**

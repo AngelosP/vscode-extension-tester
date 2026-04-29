@@ -104,6 +104,7 @@ vscode-ext-test run --features tests/vscode-extension-tester/e2e
 | ------- | ----------- |
 | `init` | Install controller extension, scaffold `.feature` file, `launch.json`, and `tasks.json` |
 | `run` | Execute `.feature` tests (dev mode or CI mode) |
+| `live` | Start or attach to VS Code once and execute Gherkin steps over JSONL stdin/stdout |
 | `tests add [context...]` | AI agent analyzes codebase, writes tests, explores the live extension, self-heals failures |
 | `install` | Install the controller extension + check prerequisites (`gh`, `git`, `code`) |
 | `uninstall` | Remove the controller extension |
@@ -126,6 +127,26 @@ vscode-ext-test run --features tests/vscode-extension-tester/e2e
 | `--no-build` | - | Skip building the extension before running |
 | `--paused` | `false` | Set up the environment but pause before running tests |
 | `--parallel` | `false` | Run reset-boundary groups in parallel |
+
+### Live Gherkin stepping
+
+Use `live` when an agent or script needs to keep VS Code open while trying Gherkin steps one at a time:
+
+```bash
+vscode-ext-test live --mode auto
+```
+
+The command emits JSONL on stdout and reads JSONL requests from stdin. All operational logs are routed to stderr so stdout stays machine-readable.
+
+```jsonl
+{"id":1,"method":"runStep","params":{"step":"When I execute command \"workbench.action.showCommands\""}}
+{"id":2,"method":"runScript","params":{"script":"Then I wait 1 second\nWhen I press \"Escape\""}}
+{"id":3,"method":"end"}
+```
+
+Live mode supports `auto`, `launch`, and `attach`. Each step returns pass/fail status, output/log artifact paths, current VS Code state, and screenshots according to `--screenshot-policy` (`always`, `onFailure`, or `never`). A final screenshot is captured before shutdown unless `--no-final-screenshot` is set. In attach mode, ending a session only disconnects from the existing Dev Host.
+
+`tests add` uses live probing by default when exploration is enabled. Control it with `--live-mode auto|launch|attach|off`.
 
 ### Pausing before test execution
 
