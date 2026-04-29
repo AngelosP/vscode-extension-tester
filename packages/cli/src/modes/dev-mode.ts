@@ -4,7 +4,7 @@ import type { RunOptions, TestRunResult, FeatureResult } from '../types.js';
 import { detectDevHost } from '../utils/dev-host-detector.js';
 import { ControllerClient } from '../runner/controller-client.js';
 import { GherkinParser } from '../runner/gherkin-parser.js';
-import { TestRunner } from '../runner/test-runner.js';
+import { TestRunner, type TestRunnerOptions } from '../runner/test-runner.js';
 
 export interface AttachDevHostSession {
   mode: 'attach';
@@ -148,9 +148,10 @@ export async function runFeatures(
   userDataDir?: string,
   cdpPort?: number,
   targetPid?: number,
+  runnerOptions?: TestRunnerOptions,
 ): Promise<TestRunResult> {
   const parser = new GherkinParser();
-  const runner = new TestRunner(client, {}, artifactsDir, userDataDir, cdpPort, targetPid);
+  const runner = new TestRunner(client, {}, artifactsDir, userDataDir, cdpPort, targetPid, runnerOptions);
 
   // Find all .feature files
   const featuresDir = path.resolve(options.extensionPath, options.features);

@@ -98,6 +98,7 @@ export class LiveTestSession {
       lifecycle.userDataDir,
       lifecycle.cdpPort,
       lifecycle.targetPid,
+      { coordinateOrigin: 'devHostWindow' },
     );
     return this.getSummary();
   }
@@ -151,6 +152,7 @@ export class LiveTestSession {
         this.lifecycle.userDataDir,
         this.lifecycle.cdpPort,
         this.lifecycle.targetPid,
+        { coordinateOrigin: 'devHostWindow' },
       );
     });
   }
@@ -176,6 +178,7 @@ export class LiveTestSession {
         this.lifecycle.userDataDir,
         this.lifecycle.cdpPort,
         this.lifecycle.targetPid,
+        { coordinateOrigin: 'devHostWindow' },
       );
     });
   }

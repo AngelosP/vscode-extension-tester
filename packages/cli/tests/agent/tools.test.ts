@@ -1,7 +1,50 @@
-import { describe, it, expect } from 'vitest';
-import { TOOL_DEFINITIONS } from '../../src/agent/tools.js';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const nativeMocks = vi.hoisted(() => ({
+  instances: [] as Array<{
+    targetPid?: number;
+    start: ReturnType<typeof vi.fn>;
+    stop: ReturnType<typeof vi.fn>;
+    moveMouse: ReturnType<typeof vi.fn>;
+    moveMouseInDevHost: ReturnType<typeof vi.fn>;
+    clickMouse: ReturnType<typeof vi.fn>;
+    clickInDevHostAt: ReturnType<typeof vi.fn>;
+  }>,
+}));
+
+vi.mock('../../src/runner/native-ui-client.js', () => ({
+  NativeUIClient: class MockNativeUIClient {
+    targetPid?: number;
+    start = vi.fn().mockResolvedValue(undefined);
+    stop = vi.fn();
+    moveMouse = vi.fn().mockResolvedValue(undefined);
+    moveMouseInDevHost = vi.fn().mockResolvedValue(undefined);
+    clickMouse = vi.fn().mockResolvedValue(undefined);
+    clickInDevHostAt = vi.fn().mockResolvedValue(undefined);
+
+    constructor() {
+      nativeMocks.instances.push(this);
+    }
+  },
+}));
+
+import { TOOL_DEFINITIONS, executeToolCall, type ToolContext } from '../../src/agent/tools.js';
+
+function makeContext(live = false, liveTargetPid: number | null = 9999): ToolContext {
+  return {
+    cwd: process.cwd(),
+    env: {},
+    targetPid: 4242,
+    liveSession: live ? ({ getSummary: () => ({ cdpPort: 9333, targetPid: liveTargetPid ?? undefined }) } as never) : undefined,
+  };
+}
 
 describe('tools', () => {
+  beforeEach(() => {
+    nativeMocks.instances.length = 0;
+    vi.clearAllMocks();
+  });
+
   describe('TOOL_DEFINITIONS', () => {
     it('should have at least 10 tool definitions', () => {
       expect(TOOL_DEFINITIONS.length).toBeGreaterThanOrEqual(10);
@@ -114,6 +157,81 @@ describe('tools', () => {
 
       const runGherkinScript = TOOL_DEFINITIONS.find((t) => t.function.name === 'run_gherkin_script')!;
       expect(runGherkinScript.function.parameters['required']).toEqual(['script']);
+    });
+  });
+
+  describe('executeToolCall coordinate tools', () => {
+    it('should keep move_mouse as absolute screen coordinates without a live session', async () => {
+      const result = await executeToolCall('move_mouse', JSON.stringify({ x: 10, y: 20 }), makeContext());
+
+      expect(result).toBe('Mouse moved to 10, 20');
+      expect(nativeMocks.instances).toHaveLength(1);
+      expect(nativeMocks.instances[0].targetPid).toBe(4242);
+      expect(nativeMocks.instances[0].moveMouse).toHaveBeenCalledWith(10, 20);
+      expect(nativeMocks.instances[0].moveMouseInDevHost).not.toHaveBeenCalled();
+      expect(nativeMocks.instances[0].stop).toHaveBeenCalled();
+    });
+
+    it('should route move_mouse through the live Dev Host window when a live session exists', async () => {
+      const result = await executeToolCall('move_mouse', JSON.stringify({ x: 10, y: 20 }), makeContext(true));
+
+      expect(result).toBe('Mouse moved to 10, 20');
+      expect(nativeMocks.instances).toHaveLength(1);
+      expect(nativeMocks.instances[0].targetPid).toBe(9999);
+      expect(nativeMocks.instances[0].moveMouseInDevHost).toHaveBeenCalledWith(10, 20);
+      expect(nativeMocks.instances[0].moveMouse).not.toHaveBeenCalled();
+    });
+
+    it('should fail closed for live move_mouse when the live session has no target PID', async () => {
+      const result = await executeToolCall('move_mouse', JSON.stringify({ x: 10, y: 20 }), makeContext(true, null));
+
+      expect(result).toContain('Live session target PID is unavailable');
+      expect(nativeMocks.instances).toHaveLength(1);
+      expect(nativeMocks.instances[0].start).not.toHaveBeenCalled();
+    });
+
+    it('should keep coordinate clicks as absolute screen coordinates without a live session', async () => {
+      const result = await executeToolCall('click', JSON.stringify({
+        target: 'coordinates',
+        x: 30,
+        y: 40,
+        button: 'right',
+        reason: 'semantic target unavailable',
+      }), makeContext());
+
+      expect(result).toBe('right click sent to 30, 40');
+      expect(nativeMocks.instances).toHaveLength(1);
+      expect(nativeMocks.instances[0].clickMouse).toHaveBeenCalledWith(30, 40, { button: 'right', clickCount: 1 });
+      expect(nativeMocks.instances[0].clickInDevHostAt).not.toHaveBeenCalled();
+    });
+
+    it('should route coordinate clicks through the live Dev Host window when a live session exists', async () => {
+      const result = await executeToolCall('click', JSON.stringify({
+        target: 'coordinates',
+        x: 30,
+        y: 40,
+        clickCount: 2,
+        reason: 'semantic target unavailable',
+      }), makeContext(true));
+
+      expect(result).toBe('left click sent to 30, 40');
+      expect(nativeMocks.instances).toHaveLength(1);
+      expect(nativeMocks.instances[0].targetPid).toBe(9999);
+      expect(nativeMocks.instances[0].clickInDevHostAt).toHaveBeenCalledWith(30, 40, { button: 'left', clickCount: 2 });
+      expect(nativeMocks.instances[0].clickMouse).not.toHaveBeenCalled();
+    });
+
+    it('should fail closed for live coordinate clicks when the live session has no target PID', async () => {
+      const result = await executeToolCall('click', JSON.stringify({
+        target: 'coordinates',
+        x: 30,
+        y: 40,
+        reason: 'semantic target unavailable',
+      }), makeContext(true, null));
+
+      expect(result).toContain('Live session target PID is unavailable');
+      expect(nativeMocks.instances).toHaveLength(1);
+      expect(nativeMocks.instances[0].start).not.toHaveBeenCalled();
     });
   });
 });

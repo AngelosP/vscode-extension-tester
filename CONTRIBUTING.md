@@ -4,12 +4,12 @@
 
 > **Note:** This project has only been tested on Windows. It may work on macOS/Linux but that is unverified.
 
-- **Windows 10/11**
-- **Node.js** >= 20
-- **npm** >= 10
-- **VS Code** - latest stable
-- **GitHub CLI** (`gh`) - for LLM authentication (`gh auth login`)
-- **.NET 8 SDK** (optional) - only if working on the FlaUI bridge (Windows-only)
+* **Windows 10/11**
+* **Node.js** \>= 20
+* **npm** \>= 10
+* **VS Code** \- latest stable
+* **GitHub CLI** (`gh`) - for LLM authentication (`gh auth login`)
+* **.NET 8 SDK** (optional) - only if working on the FlaUI bridge (Windows-only)
 
 ## Setup
 
@@ -30,7 +30,7 @@ npx turbo build
 This is an npm workspaces monorepo managed by [Turborepo](https://turbo.build):
 
 | Package | Path | Description |
-|---------|------|-------------|
+| ------- | ---- | ----------- |
 | `vscode-ext-test` | `packages/cli` | CLI tool - agent, test runner, commands |
 | `vscode-extension-tester-controller` | `packages/controller-extension` | VS Code extension - WS server, UI interception |
 | FlaUI Bridge | `dotnet/` | .NET native UI automation (optional) |
@@ -69,12 +69,13 @@ code --install-extension ../cli/assets/controller-extension.vsix --force
 1. Open the target extension project in VS Code.
 2. Press **F5** to launch the Extension Development Host.
 3. In a terminal:
-   ```bash
-   node packages/cli/bin/vscode-ext-test.js run \
-     --attach-devhost \
-     --extension-path packages/controller-extension \
-     --features tests/vscode-extension-tester/e2e
-   ```
+
+    ```bash
+    node packages/cli/bin/vscode-ext-test.js run \
+      --attach-devhost \
+      --extension-path packages/controller-extension \
+      --features tests/vscode-extension-tester/e2e
+    ```
 
 ### AI Test Generation
 
@@ -101,9 +102,9 @@ to stderr. Keep that boundary intact when changing launch/session code.
 
 ## Code Style
 
-- **TypeScript** with strict mode (`tsconfig.base.json`).
-- **ES Modules** - all packages use `"type": "module"` and `.js` extensions in imports.
-- No linter is enforced yet. Keep code consistent with surrounding files.
+* **TypeScript** with strict mode (`tsconfig.base.json`).
+* **ES Modules** \- all packages use `"type": "module"` and `.js` extensions in imports.
+* No linter is enforced yet. Keep code consistent with surrounding files.
 
 ## Adding a New CLI Command
 
@@ -140,6 +141,14 @@ Update model cascade priority list
 
 ## Pull Requests
 
-- Keep PRs focused - one feature or fix per PR.
-- Include a brief description of what changed and why.
-- Make sure `npx turbo build` passes before submitting.
+* Keep PRs focused - one feature or fix per PR.
+* Include a brief description of what changed and why.
+* Make sure `npx turbo build` passes before submitting.
+
+## Critical Knowledge (don't forget!)
+
+* **Windows**: Use `code.cmd` not `code` for CLI commands
+* **Extension ID**: `vscode-extension-tester.vscode-extension-tester-controller` (publisher.name)
+* **Dev Host detection**: Check `VSCODE_EXT_TESTER_PORT` env var, NOT process argv
+* **WebSocket polling**: In `--wait-for-devhost`, poll WS directly instead of scanning processes
+* **preLaunchTask**: `endsPattern` must match BEFORE debug session launches

@@ -291,9 +291,9 @@ vscode-ext-test profile open <profile-name>
 - `When I list the popup menu items` - diagnostic: list all visible items in the current popup menu
 - `When I type "<text>"` - type text into whatever is focused (editors, webview Monaco, inputs)
 - `When I press "<key>"` - press a key or combo (Enter, Escape, Ctrl+S, Ctrl+Space, Shift+Tab, F5, etc.)
-- `When I move the mouse to <x>, <y>` - move the OS cursor to absolute screen coordinates
+- `When I move the mouse to <x>, <y>` - move the OS cursor to coordinates. In live sessions these are relative to the full Dev Host window/screenshot; in normal batch runs they are absolute screen coordinates.
 - `When I click` / `When I right click` / `When I middle click` / `When I double click` - click at the current mouse position
-- `When I click at <x>, <y>` / `When I right click at <x>, <y>` / `When I middle click at <x>, <y>` / `When I double click at <x>, <y>` - click absolute screen coordinates
+- `When I click at <x>, <y>` / `When I right click at <x>, <y>` / `When I middle click at <x>, <y>` / `When I double click at <x>, <y>` - click coordinates. In live sessions these are relative to the full Dev Host window/screenshot, including title bar and borders; in normal batch runs they are absolute screen coordinates.
 - `When I right click the element "<name>"` - open a context menu on an accessible element by name/text
 - `When I sign in with Microsoft as "<user>"` - handle Microsoft auth flow
 - `Then I should see notification "<text>"` - assert a notification contains text
@@ -319,7 +319,7 @@ Use the most semantic target that can reach the UI:
 2. For webviews, prefer stable CSS selectors such as `[data-testid='...']`; selector clicks use CDP pointer events with a DOM-event fallback.
 3. For workbench/native UI, use accessible-name clicks such as `I click the element "Run Query"` or `I right click the element "Explorer"`.
 4. Prefer QuickInput/progress/notification wait steps over fixed sleeps.
-5. Use raw coordinates only as a last resort, and stabilize the window first with `I resize the Dev Host...` / `I move the Dev Host...`.
+5. Use raw coordinates only as a last resort. In live sessions, raw coordinates are full Dev Host window/screenshot-relative; in normal batch runs, they are absolute screen coordinates. Stabilize the window first with `I resize the Dev Host...` / `I move the Dev Host...`.
 
 Right-clicking and popup selection are two separate actions: first use a
 right-click step to open the context menu, then use

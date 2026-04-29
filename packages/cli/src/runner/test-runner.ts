@@ -19,6 +19,10 @@ import { loadEnv } from '../agent/env.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+export interface TestRunnerOptions {
+  readonly coordinateOrigin?: 'screen' | 'devHostWindow';
+}
+
 /**
  * Executes parsed Gherkin features by dispatching steps to the controller.
  */
@@ -39,6 +43,7 @@ export class TestRunner {
     private readonly userDataDir?: string,
     private readonly cdpPort: number = CDP_PORT,
     private readonly targetPid?: number,
+    private readonly options: TestRunnerOptions = {},
   ) {
     // Load .env values for ${VARIABLE} resolution in step text
     this.envData = loadEnv(process.cwd());
@@ -455,7 +460,14 @@ export class TestRunner {
     // ─── Raw mouse movement/clicks (screen coordinates via native bridge) ───
     match = text.match(/^I move the mouse to (-?\d+),?\s*(-?\d+)$/);
     if (match) {
-      await (await this.requireNativeUI()).moveMouse(parseInt(match[1], 10), parseInt(match[2], 10));
+      const x = parseInt(match[1], 10);
+      const y = parseInt(match[2], 10);
+      const nativeUI = await this.requireNativeUI();
+      if (this.options.coordinateOrigin === 'devHostWindow') {
+        await nativeUI.moveMouseInDevHost(x, y);
+      } else {
+        await nativeUI.moveMouse(x, y);
+      }
       return;
     }
 
@@ -465,7 +477,12 @@ export class TestRunner {
       const clickCount = match[2] === 'double click' ? 2 : 1;
       const x = match[3] !== undefined ? parseInt(match[3], 10) : undefined;
       const y = match[4] !== undefined ? parseInt(match[4], 10) : undefined;
-      await (await this.requireNativeUI()).clickMouse(x, y, { button, clickCount });
+      const nativeUI = await this.requireNativeUI();
+      if (this.options.coordinateOrigin === 'devHostWindow' && x !== undefined && y !== undefined) {
+        await nativeUI.clickInDevHostAt(x, y, { button, clickCount });
+      } else {
+        await nativeUI.clickMouse(x, y, { button, clickCount });
+      }
       return;
     }
 

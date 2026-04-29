@@ -216,12 +216,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'move_mouse',
-      description: 'Move the OS mouse cursor to absolute screen coordinates. Prefer stable selectors or accessible names for clicks; use raw coordinates only when no semantic target exists.',
+      description: 'Move the OS mouse cursor. With an active live session, coordinates are relative to the live Dev Host window/screenshot; otherwise they are absolute screen coordinates. Prefer stable selectors or accessible names for clicks; use raw coordinates only when no semantic target exists.',
       parameters: {
         type: 'object',
         properties: {
-          x: { type: 'number', description: 'Absolute screen X coordinate' },
-          y: { type: 'number', description: 'Absolute screen Y coordinate' },
+          x: { type: 'integer', description: 'X coordinate. Relative to the live Dev Host window when a live session is active; otherwise absolute screen X.' },
+          y: { type: 'integer', description: 'Y coordinate. Relative to the live Dev Host window when a live session is active; otherwise absolute screen Y.' },
           reason: { type: 'string', description: 'Why raw coordinates are needed instead of a selector or accessible name' },
         },
         required: ['x', 'y'],
@@ -232,7 +232,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'click',
-      description: 'Click using the most reliable target available: webview selector, accessible name, screen coordinates, or current mouse position. Supports left/right/middle and double-clicks.',
+      description: 'Click using the most reliable target available: webview selector, accessible name, coordinates, or current mouse position. With an active live session, coordinate clicks are relative to the live Dev Host window/screenshot; otherwise they are absolute screen coordinates. Supports left/right/middle and double-clicks.',
       parameters: {
         type: 'object',
         properties: {
@@ -241,8 +241,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           webviewTitle: { type: 'string', description: 'Optional webview title substring to disambiguate' },
           name: { type: 'string', description: 'Accessible name/text when target=accessibleName' },
           controlType: { type: 'string', description: 'Optional accessibility control type, e.g. button, edit, menuitem' },
-          x: { type: 'number', description: 'Absolute screen X coordinate when target=coordinates' },
-          y: { type: 'number', description: 'Absolute screen Y coordinate when target=coordinates' },
+          x: { type: 'integer', description: 'X coordinate when target=coordinates. Relative to the live Dev Host window when a live session is active; otherwise absolute screen X.' },
+          y: { type: 'integer', description: 'Y coordinate when target=coordinates. Relative to the live Dev Host window when a live session is active; otherwise absolute screen Y.' },
           button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Mouse button' },
           clickCount: { type: 'number', description: '1 for click, 2 for double-click' },
           reason: { type: 'string', description: 'Why coordinates/current position are needed when using raw mouse targeting' },
@@ -628,6 +628,21 @@ function requireLiveSession(ctx: ToolContext): LiveTestSession {
   return ctx.liveSession;
 }
 
+function syncLiveSessionTargets(ctx: ToolContext): void {
+  if (!ctx.liveSession) return;
+  const summary = ctx.liveSession.getSummary();
+  ctx.cdpPort = summary.cdpPort;
+  ctx.targetPid = summary.targetPid;
+}
+
+function nativeTargetPid(ctx: ToolContext, requireLiveTarget = false): number | undefined {
+  syncLiveSessionTargets(ctx);
+  if (requireLiveTarget && !ctx.targetPid) {
+    throw new Error('Live session target PID is unavailable; refusing to use raw native coordinates.');
+  }
+  return ctx.targetPid;
+}
+
 async function withCdp<T>(ctx: ToolContext, fn: (cdp: CdpClient) => Promise<T>): Promise<T> {
   const cdp = new CdpClient(ctx.liveSession?.getSummary().cdpPort ?? ctx.cdpPort ?? CDP_PORT);
   await cdp.connect();
@@ -781,10 +796,16 @@ async function toolSelectPopupItem(ctx: ToolContext, args: Record<string, unknow
 async function toolMoveMouse(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
   const { NativeUIClient } = await import('../runner/native-ui-client.js');
   const nativeUI = new NativeUIClient();
-  nativeUI.targetPid = ctx.targetPid;
+  nativeUI.targetPid = nativeTargetPid(ctx, Boolean(ctx.liveSession));
   try {
     await nativeUI.start();
-    await nativeUI.moveMouse(requiredNumber(args, 'x'), requiredNumber(args, 'y'));
+    const x = requiredInteger(args, 'x');
+    const y = requiredInteger(args, 'y');
+    if (ctx.liveSession) {
+      await nativeUI.moveMouseInDevHost(x, y);
+    } else {
+      await nativeUI.moveMouse(x, y);
+    }
     return `Mouse moved to ${args['x']}, ${args['y']}`;
   } finally {
     nativeUI.stop();
@@ -820,7 +841,7 @@ async function toolClick(ctx: ToolContext, args: Record<string, unknown>): Promi
 
   const { NativeUIClient } = await import('../runner/native-ui-client.js');
   const nativeUI = new NativeUIClient();
-  nativeUI.targetPid = ctx.targetPid;
+  nativeUI.targetPid = nativeTargetPid(ctx, Boolean(ctx.liveSession) && target === 'coordinates');
   try {
     await nativeUI.start();
     if (target === 'accessibleName') {
@@ -829,7 +850,13 @@ async function toolClick(ctx: ToolContext, args: Record<string, unknown>): Promi
       return `${button} click sent to accessible element: ${name}`;
     }
     if (target === 'coordinates') {
-      await nativeUI.clickMouse(requiredNumber(args, 'x'), requiredNumber(args, 'y'), { button, clickCount });
+      const x = requiredInteger(args, 'x');
+      const y = requiredInteger(args, 'y');
+      if (ctx.liveSession) {
+        await nativeUI.clickInDevHostAt(x, y, { button, clickCount });
+      } else {
+        await nativeUI.clickMouse(x, y, { button, clickCount });
+      }
       return `${button} click sent to ${args['x']}, ${args['y']}`;
     }
     if (target === 'currentPosition') {
@@ -1045,6 +1072,8 @@ async function toolRunGherkinScript(ctx: ToolContext, args: Record<string, unkno
 async function toolResetLiveSession(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
   const session = requireLiveSession(ctx);
   await session.reset(args['mode'] === 'reload' ? 'reload' : 'cleanState');
+  ctx.cdpPort = session.getSummary().cdpPort;
+  ctx.targetPid = session.getSummary().targetPid;
   return JSON.stringify(session.getSummary(), null, 2);
 }
 
@@ -1131,6 +1160,14 @@ function requiredNumber(args: Record<string, unknown>, name: string): number {
   const value = args[name];
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     throw new Error(`Missing required number argument: ${name}`);
+  }
+  return value;
+}
+
+function requiredInteger(args: Record<string, unknown>, name: string): number {
+  const value = requiredNumber(args, name);
+  if (!Number.isInteger(value)) {
+    throw new Error(`Missing required integer argument: ${name}`);
   }
   return value;
 }

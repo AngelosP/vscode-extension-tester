@@ -100,6 +100,18 @@ export class NativeUIClient {
     await this.call('clickMouse', withClickOptions({ x, y }, options));
   }
 
+  /** Move the OS mouse cursor to coordinates relative to the targeted Dev Host window. */
+  async moveMouseInDevHost(x: number, y: number): Promise<void> {
+    const point = await this.resolveDevHostPoint(x, y);
+    await this.moveMouse(point.x, point.y);
+  }
+
+  /** Click coordinates relative to the targeted Dev Host window. */
+  async clickInDevHostAt(x: number, y: number, options?: NativeClickOptions): Promise<void> {
+    const point = await this.resolveDevHostPoint(x, y);
+    await this.clickMouse(point.x, point.y, options);
+  }
+
   /** Set text in a text field. */
   async setText(elementId: string, text: string): Promise<void> {
     await this.call('setText', { elementId, text });
@@ -363,13 +375,13 @@ export class NativeUIClient {
     );
 
     let win: NativeWindow | undefined;
-    if (allowedPids && candidates.length > 1) {
-      // Pick the window that belongs to the VS Code instance we launched
+    if (allowedPids) {
+      // Pick only the window that belongs to the VS Code instance we launched.
       win = candidates.find(w => allowedPids.has(w.processId));
       if (!win) {
         throw new Error(
-          `Multiple Dev Host windows found, but none match target PID ${this.targetPid}. ` +
-          `Candidates: ${candidates.map(w => `${w.title} (pid ${w.processId})`).join(', ')}`
+          `Dev Host window matching target PID ${this.targetPid} was not found. ` +
+          `Candidates: ${candidates.map(w => `${w.title} (pid ${w.processId})`).join(', ') || '<none>'}`
         );
       }
     }
@@ -379,6 +391,23 @@ export class NativeUIClient {
 
     await this.focusWindow(win.id);
     return win;
+  }
+
+  private async resolveDevHostPoint(x: number, y: number): Promise<{ x: number; y: number }> {
+    if (!Number.isInteger(x) || !Number.isInteger(y)) {
+      throw new Error(`Relative Dev Host coordinates must be integers: ${x}, ${y}`);
+    }
+    const win = await this.findDevHostWindow();
+    if (x < 0 || y < 0 || x >= win.bounds.width || y >= win.bounds.height) {
+      throw new Error(
+        `Relative Dev Host coordinate ${x}, ${y} is outside window bounds ` +
+        `${Math.round(win.bounds.width)}x${Math.round(win.bounds.height)}`
+      );
+    }
+    return {
+      x: Math.round(win.bounds.x + x),
+      y: Math.round(win.bounds.y + y),
+    };
   }
 
   // ─── Internal ───────────────────────────────────────────────────

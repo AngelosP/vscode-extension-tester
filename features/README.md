@@ -99,15 +99,15 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 | `When I right click "<sel>" in the webview` | Right-click a webview element by CSS selector |
 | `When I middle click "<sel>" in the webview` | Middle-click a webview element by CSS selector |
 | `When I double click "<sel>" in the webview` | Double-click a webview element by CSS selector |
-| `When I move the mouse to <x>, <y>` | Move the OS cursor to absolute screen coordinates |
+| `When I move the mouse to <x>, <y>` | Move the OS cursor to coordinates; live sessions use Dev Host window/screenshot-relative coordinates, normal batch runs use absolute screen coordinates |
 | `When I click` | Click at the current mouse position |
 | `When I right click` | Right-click at the current mouse position |
 | `When I middle click` | Middle-click at the current mouse position |
 | `When I double click` | Double-click at the current mouse position |
-| `When I click at <x>, <y>` | Click absolute screen coordinates |
-| `When I right click at <x>, <y>` | Right-click absolute screen coordinates |
-| `When I middle click at <x>, <y>` | Middle-click absolute screen coordinates |
-| `When I double click at <x>, <y>` | Double-click absolute screen coordinates |
+| `When I click at <x>, <y>` | Click coordinates; live sessions use Dev Host window/screenshot-relative coordinates, normal batch runs use absolute screen coordinates |
+| `When I right click at <x>, <y>` | Right-click coordinates; live sessions use Dev Host window/screenshot-relative coordinates, normal batch runs use absolute screen coordinates |
+| `When I middle click at <x>, <y>` | Middle-click coordinates; live sessions use Dev Host window/screenshot-relative coordinates, normal batch runs use absolute screen coordinates |
+| `When I double click at <x>, <y>` | Double-click coordinates; live sessions use Dev Host window/screenshot-relative coordinates, normal batch runs use absolute screen coordinates |
 | `When I select "<label>" from the popup menu` | Select from an already-open context/dropdown menu |
 | `When I sign in with Microsoft as "<user>"` | Handle full Microsoft auth flow |
 | `When I open file "<path>"` | Open a file in the editor |
@@ -123,8 +123,10 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 
 Prefer commands and QuickInput inspection/selection/text steps first; they use captured extension-host state when available and the visible workbench widget as a fallback. Use webview CSS selectors next,
 and accessible-name clicks for workbench/native UI. Use raw mouse coordinates
-only when no command, selector, or accessible name can target the UI; stabilize
-the Dev Host window with resize/move steps first. To use a context menu,
+only when no command, selector, or accessible name can target the UI. In live
+sessions, raw coordinates are relative to the full Dev Host window/screenshot,
+including title bar and borders; in normal batch runs, they are absolute screen
+coordinates. Stabilize the Dev Host window with resize/move steps first. To use a context menu,
 right-click to open it, then select the item with the popup menu step.
 Prefer QuickInput, progress, and notification wait/assertion steps over fixed waits.
 

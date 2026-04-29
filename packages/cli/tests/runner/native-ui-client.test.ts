@@ -106,6 +106,14 @@ const SAMPLE_WINDOW = {
   isVisible: true,
 };
 
+const DEV_HOST_WINDOW = {
+  id: 'devhost_1',
+  title: 'Extension Development Host - Test',
+  processId: 1234,
+  bounds: { x: 50, y: 75, width: 800, height: 600 },
+  isVisible: true,
+};
+
 const SAMPLE_ELEMENT = {
   id: 'elem_1',
   name: 'File name:',
@@ -237,6 +245,55 @@ describe('NativeUIClient', () => {
         method: 'clickMouse',
         params: { x: 100, y: 200, button: 'middle', clickCount: 2 },
       });
+    });
+
+    it('clickInDevHostAt() should translate window-relative coordinates', async () => {
+      respondWith([DEV_HOST_WINDOW]);
+      respondWith({ success: true });
+      respondWith({ success: true });
+
+      await client.clickInDevHostAt(24, 300, { button: 'right', clickCount: 1 });
+
+      const list = JSON.parse(stdinWrites[0]);
+      const focus = JSON.parse(stdinWrites[1]);
+      const click = JSON.parse(stdinWrites[2]);
+      expect(list.method).toBe('listWindows');
+      expect(focus).toMatchObject({ method: 'focusWindow', params: { windowId: 'devhost_1' } });
+      expect(click).toMatchObject({
+        method: 'clickMouse',
+        params: { x: 74, y: 375, button: 'right', clickCount: 1 },
+      });
+    });
+
+    it('moveMouseInDevHost() should translate window-relative coordinates', async () => {
+      respondWith([DEV_HOST_WINDOW]);
+      respondWith({ success: true });
+      respondWith({ success: true });
+
+      await client.moveMouseInDevHost(10, 20);
+
+      const move = JSON.parse(stdinWrites[2]);
+      expect(move).toMatchObject({ method: 'moveMouse', params: { x: 60, y: 95 } });
+    });
+
+    it('clickInDevHostAt() should reject out-of-window coordinates', async () => {
+      respondWith([DEV_HOST_WINDOW]);
+      respondWith({ success: true });
+
+      await expect(client.clickInDevHostAt(800, 300)).rejects.toThrow('outside window bounds');
+    });
+
+    it('clickInDevHostAt() should reject fractional relative coordinates', async () => {
+      await expect(client.clickInDevHostAt(799.9, 300)).rejects.toThrow('must be integers');
+      expect(stdinWrites).toHaveLength(0);
+    });
+
+    it('clickInDevHostAt() should not fall back to another Dev Host when targetPid is set', async () => {
+      client.targetPid = 9999;
+      vi.mocked(cp.execSync).mockReturnValue('ParentProcessId,ProcessId\n9999,1111\n');
+      respondWith([DEV_HOST_WINDOW]);
+
+      await expect(client.clickInDevHostAt(24, 300)).rejects.toThrow('matching target PID 9999 was not found');
     });
 
     it('setText() should send correct JSON', async () => {
@@ -667,12 +724,12 @@ describe('NativeUIClient', () => {
       vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
       vi.spyOn(client, 'resizeWindow').mockResolvedValueOnce(undefined);
 
-      await expect(client.resizeDevHost(800, 600)).rejects.toThrow('none match target PID 9999');
+      await expect(client.resizeDevHost(800, 600)).rejects.toThrow('matching target PID 9999 was not found');
 
       expect(client.focusWindow).not.toHaveBeenCalled();
     });
 
-    it('should not filter by PID when only one Dev Host window exists', async () => {
+    it('should accept a single Dev Host window when it matches targetPid descendants', async () => {
       client.targetPid = 1999;
 
       (cp.execSync as any).mockReturnValue(
@@ -680,7 +737,7 @@ describe('NativeUIClient', () => {
         'PC,1999,2000\n'
       );
 
-      // Only one window — no ambiguity, PID filter is skipped
+      // Only one window, and it still has to match the target process tree.
       vi.spyOn(client, 'listWindows').mockResolvedValueOnce([launchedWindow]);
       vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
       vi.spyOn(client, 'resizeWindow').mockResolvedValueOnce(undefined);

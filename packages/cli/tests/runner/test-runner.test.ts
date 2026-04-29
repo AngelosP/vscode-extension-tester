@@ -49,6 +49,8 @@ function resetMockNativeUI(): void {
     clickElement: vi.fn().mockResolvedValue(undefined),
     moveMouse: vi.fn().mockResolvedValue(undefined),
     clickMouse: vi.fn().mockResolvedValue(undefined),
+    moveMouseInDevHost: vi.fn().mockResolvedValue(undefined),
+    clickInDevHostAt: vi.fn().mockResolvedValue(undefined),
     setText: vi.fn().mockResolvedValue(undefined),
     focusWindow: vi.fn().mockResolvedValue(undefined),
     resizeWindow: vi.fn().mockResolvedValue(undefined),
@@ -2178,6 +2180,28 @@ describe('TestRunner', () => {
         button: 'right',
         clickCount: 1,
       });
+      expect(getMockNativeUI().clickInDevHostAt).not.toHaveBeenCalled();
+    });
+
+    it('should route raw coordinate steps through the Dev Host window when configured', async () => {
+      const windowRelativeRunner = new TestRunner(client, {}, undefined, undefined, undefined, 4242, {
+        coordinateOrigin: 'devHostWindow',
+      });
+      const feature = makeFeature('Test', [
+        makeScenario('Mouse', [
+          makeStep('When ', 'I move the mouse to 100, 200'),
+          makeStep('And ', 'I right click at 110, 210'),
+        ]),
+      ]);
+
+      await windowRelativeRunner.runFeature(feature);
+
+      expect(getMockNativeUI().moveMouseInDevHost).toHaveBeenCalledWith(100, 200);
+      expect(getMockNativeUI().clickInDevHostAt).toHaveBeenCalledWith(110, 210, {
+        button: 'right',
+        clickCount: 1,
+      });
+      expect(getMockNativeUI().clickMouse).not.toHaveBeenCalledWith(110, 210, expect.anything());
     });
 
     it('should handle right-click accessible element steps', async () => {

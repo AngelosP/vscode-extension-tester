@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => {
     runFeature: vi.fn(),
     captureArtifactScreenshot: vi.fn(),
     cleanup: vi.fn(),
+    runnerCtorArgs: [] as unknown[][],
   };
 });
 
@@ -45,6 +46,9 @@ vi.mock('../../src/build.js', () => ({
 
 vi.mock('../../src/runner/test-runner.js', () => ({
   TestRunner: class MockTestRunner {
+    constructor(...args: unknown[]) {
+      mocks.runnerCtorArgs.push(args);
+    }
     runSingleStep = mocks.runSingleStep;
     runFeature = mocks.runFeature;
     captureArtifactScreenshot = mocks.captureArtifactScreenshot;
@@ -78,6 +82,7 @@ describe('LiveTestSession', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.events.length = 0;
+    mocks.runnerCtorArgs.length = 0;
     mocks.detectDevHost.mockResolvedValue(null);
     mocks.createLaunchDevHostSession.mockResolvedValue({
       mode: 'launch',
@@ -159,5 +164,41 @@ describe('LiveTestSession', () => {
     await session.reset('reload');
 
     expect(mocks.cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it('should create live runners with Dev Host-window coordinate origin', async () => {
+    const session = await LiveTestSession.start({ mode: 'launch', runOptions: runOptions(), finalScreenshot: false });
+
+    await session.reset('reload');
+
+    expect(mocks.runnerCtorArgs).toHaveLength(2);
+    expect(mocks.runnerCtorArgs[0][5]).toBe(1234);
+    expect(mocks.runnerCtorArgs[0][6]).toEqual({ coordinateOrigin: 'devHostWindow' });
+    expect(mocks.runnerCtorArgs[1][5]).toBe(1234);
+    expect(mocks.runnerCtorArgs[1][6]).toEqual({ coordinateOrigin: 'devHostWindow' });
+  });
+
+  it('should run live feature files with Dev Host-window coordinate origin', async () => {
+    mocks.runFeatures.mockResolvedValue({
+      features: [],
+      passed: 0,
+      failed: 0,
+      skipped: 0,
+      durationMs: 1,
+    });
+    const session = await LiveTestSession.start({ mode: 'launch', runOptions: runOptions(), finalScreenshot: false });
+
+    await session.runFeatures();
+
+    expect(mocks.runFeatures).toHaveBeenCalledWith(
+      mocks.client,
+      expect.objectContaining({ extensionPath: '.' }),
+      expect.any(Number),
+      expect.any(String),
+      'user-data',
+      19222,
+      1234,
+      { coordinateOrigin: 'devHostWindow' },
+    );
   });
 });

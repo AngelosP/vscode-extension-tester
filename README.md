@@ -78,8 +78,8 @@ npm run package
 
 Release artifacts are built by GitHub Actions on Windows so the packaged CLI includes both required runtime assets:
 
-- `assets/controller-extension.vsix` - bundled controller extension installed by `vscode-ext-test install`
-- `assets/native/win-x64/FlaUIBridge.exe` - self-contained native UI automation bridge for Windows CI agents
+* `assets/controller-extension.vsix` \- bundled controller extension installed by `vscode-ext-test install`
+* `assets/native/win-x64/FlaUIBridge.exe` \- self\-contained native UI automation bridge for Windows CI agents
 
 To create a release, update the package versions, then push a semver tag:
 
@@ -158,10 +158,10 @@ vscode-ext-test run --paused --test-id sql-inline-completions --reuse-named-prof
 
 The CLI will print `Press Enter to run tests, or Ctrl+C to exit...` once everything is ready. This gives you a chance to:
 
-- Visually inspect the VS Code instance to confirm the extension loaded correctly
-- Check that authentication sessions or connections are in place
-- Open Developer Tools or the Output panel to watch logs live
-- Interact with the UI manually before the automated steps begin
+* Visually inspect the VS Code instance to confirm the extension loaded correctly
+* Check that authentication sessions or connections are in place
+* Open Developer Tools or the Output panel to watch logs live
+* Interact with the UI manually before the automated steps begin
 
 Press **Enter** to proceed with test execution, or **Ctrl+C** to tear down without running anything.
 
@@ -233,14 +233,3 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, build instructions
 ## License
 
 MIT
-
-<br>
-```
-# Critical Knowledge (don't forget!)
-
-- **Windows**: Use `code.cmd` not `code` for CLI commands
-- **Extension ID**: `vscode-extension-tester.vscode-extension-tester-controller` (publisher.name)
-- **Dev Host detection**: Check `VSCODE_EXT_TESTER_PORT` env var, NOT process argv
-- **WebSocket polling**: In `--wait-for-devhost`, poll WS directly instead of scanning processes
-- **preLaunchTask**: `endsPattern` must match BEFORE debug session launches
-```

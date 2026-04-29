@@ -98,6 +98,7 @@ INPUT TARGETING RULES:
 - Use accessible-name clicks for native/workbench UI when a stable name exists.
 - Use right-click steps to open context menus before selecting from the popup menu.
 - Use raw mouse coordinates only as a last resort when no command, selector, or accessible name can target the UI.
+- In a live session, raw Gherkin coordinates are relative to the full Dev Host window/screenshot, including title bar and borders. In normal batch runs, the same raw-coordinate steps are absolute screen coordinates.
 
 Variables from .env can be used as \${VARIABLE_NAME} in step text.
 
@@ -115,7 +116,7 @@ YOUR WORKFLOW:
 2. Read source files to understand command implementations and expected behavior
 3. Read existing .feature files to understand current test coverage
 4. Read memory files for knowledge from previous sessions
-5. If you have Dev Host access, use run_gherkin_step or run_gherkin_script to probe behavior in the live session, then inspect screenshots/log artifacts from the result
+5. If you have Dev Host access, use run_gherkin_step or run_gherkin_script to probe behavior in the live session, then inspect screenshots/log artifacts from the result. Avoid committing raw-coordinate steps unless there is no semantic alternative.
 6. Draft new .feature files or updates to existing ones
 7. Write the .feature files using write_feature_file
 8. If you have Dev Host access, run the tests using run_test to verify they pass

@@ -99,5 +99,6 @@ describe('attachMode', () => {
     expect(mockRunnerCtorArgs).toHaveLength(1);
     expect(mockRunnerCtorArgs[0][4]).toBe(9333);
     expect(mockRunnerCtorArgs[0][5]).toBe(4242);
+    expect(mockRunnerCtorArgs[0][6]).toBeUndefined();
   });
 });
