@@ -14,6 +14,7 @@ shipped through the repository's existing GitHub Actions release workflow.
 - It runs on pushed tags matching `v*.*.*` and on manual `workflow_dispatch`.
 - Tag releases must match `packages/cli/package.json`; the workflow strips the
   leading `v` from the tag and fails if it differs from the CLI package version.
+  The bundled controller VSIX version is independent and may differ.
 - A tag-triggered run builds the native bridge, runs tests, builds the TypeScript
   packages and controller VSIX, packages `release-artifacts/*`, uploads the
   workflow artifact, and publishes the GitHub release.
@@ -30,9 +31,9 @@ shipped through the repository's existing GitHub Actions release workflow.
    git tag --list "v$version"
    git ls-remote --tags origin "refs/tags/v$version"
    ```
-2. If the version has not been bumped yet, use the `extension-versioning` skill
-   first. Do not bump again when the package manifests and changelog already show
-   the intended unreleased version.
+2. If the CLI package version has not been bumped yet, bump the CLI/root package
+  version intentionally before tagging. Use the `extension-versioning` skill only
+  when the controller extension VSIX itself also changed.
 3. Verify the tree is clean except for intentional release-prep changes. If a
    skill, changelog, or versioning change was made as part of the shipping task,
    commit and push that change before tagging when the user has asked to ship or

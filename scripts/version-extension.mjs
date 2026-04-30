@@ -3,11 +3,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const packageFiles = [
-  'package.json',
-  'packages/cli/package.json',
-  'packages/controller-extension/package.json',
-];
+const controllerPackageFile = 'packages/controller-extension/package.json';
+const packageFiles = [controllerPackageFile];
 const lockFile = 'package-lock.json';
 const historyFile = 'extension-version-history.json';
 const historyMarkdownFile = 'CHANGELOG.md';
@@ -19,11 +16,11 @@ if (args.help) {
   process.exit(0);
 }
 
-const packages = packageFiles.map((relativePath) => ({
-  relativePath,
-  json: readJson(relativePath),
-}));
-const currentVersion = assertSynchronizedVersions(packages);
+const controllerPackage = {
+  relativePath: controllerPackageFile,
+  json: readJson(controllerPackageFile),
+};
+const currentVersion = controllerPackage.json.version;
 const nextVersion = resolveNextVersion(currentVersion, args.bump);
 const today = args.date ?? new Date().toISOString().slice(0, 10);
 const note = args.note ?? defaultNote(args.bump, currentVersion, nextVersion);
@@ -42,26 +39,25 @@ const entry = {
 };
 
 if (args.dryRun) {
-  console.log(`Would bump extension build version ${currentVersion} -> ${nextVersion}`);
-  console.log(`Would update: ${packageFiles.join(', ')}, ${lockFile}, ${historyFile}, ${historyMarkdownFile}`);
+  console.log(`Would bump controller extension version ${currentVersion} -> ${nextVersion}`);
+  console.log(`Would update: ${controllerPackageFile}, ${lockFile}, ${historyFile}, ${historyMarkdownFile}`);
   console.log(`History note: ${note}`);
   process.exit(0);
 }
 
-for (const pkg of packages) {
-  pkg.json.version = nextVersion;
-  writeJson(pkg.relativePath, pkg.json);
-}
+controllerPackage.json.version = nextVersion;
+writeJson(controllerPackage.relativePath, controllerPackage.json);
 
 updatePackageLock(nextVersion);
 
 history.currentVersion = nextVersion;
 history.updatedAt = today;
+history.packages = packageFiles;
 history.history.push(entry);
 writeJson(historyFile, history);
 writeFileSync(join(root, historyMarkdownFile), renderHistoryMarkdown(history), 'utf-8');
 
-console.log(`Bumped extension build version ${currentVersion} -> ${nextVersion}`);
+console.log(`Bumped controller extension version ${currentVersion} -> ${nextVersion}`);
 console.log(`Recorded ${nextVersion} in ${historyFile} and ${historyMarkdownFile}`);
 
 function parseArgs(argv) {
@@ -126,21 +122,10 @@ function printHelp() {
 
 Examples:
   npm run version:extension -- patch --note "Controller install resolver fix"
-  npm run version:extension -- minor --note "New live testing workflow"
-  npm run version:extension -- 0.2.0 --note "Release candidate baseline"
+  npm run version:extension -- minor --note "New controller automation capability"
+  npm run version:extension -- 4.1.2 --note "Controller VSIX release candidate"
   npm run version:extension -- patch --dry-run
 `);
-}
-
-function assertSynchronizedVersions(packageEntries) {
-  const versions = new Set(packageEntries.map((entry) => entry.json.version));
-  if (versions.size !== 1) {
-    const details = packageEntries
-      .map((entry) => `${entry.relativePath}: ${entry.json.version}`)
-      .join('\n  ');
-    throw new Error(`Package versions are not synchronized:\n  ${details}`);
-  }
-  return packageEntries[0].json.version;
 }
 
 function resolveNextVersion(currentVersion, bump) {
@@ -222,19 +207,15 @@ function baselineEntry(version, today) {
     version,
     date: today,
     kind: 'baseline',
-    notes: 'Baseline before automated extension build versioning.',
+    notes: 'Baseline before automated controller extension versioning.',
   };
 }
 
 function updatePackageLock(nextVersion) {
   if (!existsSync(join(root, lockFile))) return;
   const lock = readJson(lockFile);
-  lock.version = nextVersion;
-  const paths = ['', 'packages/cli', 'packages/controller-extension'];
-  for (const packagePath of paths) {
-    if (lock.packages?.[packagePath]) {
-      lock.packages[packagePath].version = nextVersion;
-    }
+  if (lock.packages?.[controllerPackageFile]) {
+    lock.packages[controllerPackageFile].version = nextVersion;
   }
   writeJson(lockFile, lock);
 }
@@ -247,12 +228,13 @@ function renderHistoryMarkdown(history) {
 
   return `# Changelog
 
-This changelog records versions for the build artifacts produced by this repository:
-the CLI package, the bundled controller extension VSIX, and release artifacts.
+This changelog records versions for the bundled controller extension VSIX.
+The CLI package version is independent and may differ from the VSIX version.
 
 Use \`npm run version:extension -- <patch|minor|major|x.y.z> --note "summary"\`
-to update versions. The command updates package manifests, package-lock metadata,
-\`${historyFile}\`, and this file together.
+to update the controller extension version. The command updates
+\`${controllerPackageFile}\`, package-lock metadata, \`${historyFile}\`, and this
+file together.
 
 | Version | Date | Kind | Notes |
 | ------- | ---- | ---- | ----- |

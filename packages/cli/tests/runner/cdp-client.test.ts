@@ -214,4 +214,20 @@ describe('CdpClient', () => {
       key: 'Enter',
     }));
   });
+
+  it('rejects when Runtime.evaluate never settles', async () => {
+    vi.useFakeTimers();
+    mockClientRef.current.Runtime.evaluate.mockReturnValue(new Promise(() => {}));
+
+    try {
+      await client.connect();
+      const evaluation = client.evaluate('window.__never');
+      const assertion = expect(evaluation).rejects.toThrow('CDP Runtime.evaluate timed out after 5000ms');
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

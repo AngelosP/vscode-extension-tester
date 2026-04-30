@@ -158,6 +158,8 @@ export interface CdpClickOptions {
   clickCount?: number;
 }
 
+const CDP_PROTOCOL_TIMEOUT_MS = 5_000;
+
 /**
  * Chrome DevTools Protocol client for sending real input events to VS Code.
  * Works with any focused element - regular editors, webview Monaco, dialogs, etc.
@@ -178,8 +180,13 @@ export class CdpClient {
   constructor(private readonly port: number) {}
 
   async connect(): Promise<void> {
-    this.client = await CDP({ port: this.port });
-    await this.client.Runtime.enable();
+    try {
+      this.client = await this.withProtocolTimeout(CDP({ port: this.port }), 'CDP connect');
+      await this.withProtocolTimeout(this.client.Runtime.enable(), 'CDP Runtime.enable');
+    } catch (err) {
+      this.disconnect();
+      throw err;
+    }
   }
 
   disconnect(): void {
@@ -199,16 +206,16 @@ export class CdpClient {
     if (!this.client) throw new Error('CDP not connected');
 
     for (const char of text) {
-      await this.client.Input.dispatchKeyEvent({
+      await this.withProtocolTimeout(this.client.Input.dispatchKeyEvent({
         type: 'keyDown',
         text: char,
         key: char,
         unmodifiedText: char,
-      });
-      await this.client.Input.dispatchKeyEvent({
+      }), 'CDP Input.dispatchKeyEvent keyDown');
+      await this.withProtocolTimeout(this.client.Input.dispatchKeyEvent({
         type: 'keyUp',
         key: char,
-      });
+      }), 'CDP Input.dispatchKeyEvent keyUp');
       await delay(20);
     }
   }
@@ -221,7 +228,7 @@ export class CdpClient {
    */
   async insertText(text: string): Promise<void> {
     if (!this.client) throw new Error('CDP not connected');
-    await (this.client as any).Input.insertText({ text });
+    await this.withProtocolTimeout((this.client as any).Input.insertText({ text }), 'CDP Input.insertText');
   }
 
   /**
@@ -232,33 +239,33 @@ export class CdpClient {
 
     const { key, code, keyCode, modifiers } = parseKeySpec(keySpec);
 
-    await this.client.Input.dispatchKeyEvent({
+    await this.withProtocolTimeout(this.client.Input.dispatchKeyEvent({
       type: 'keyDown',
       key,
       code,
       windowsVirtualKeyCode: keyCode,
       nativeVirtualKeyCode: keyCode,
       modifiers,
-    });
-    await this.client.Input.dispatchKeyEvent({
+    }), 'CDP Input.dispatchKeyEvent keyDown');
+    await this.withProtocolTimeout(this.client.Input.dispatchKeyEvent({
       type: 'keyUp',
       key,
       code,
       windowsVirtualKeyCode: keyCode,
       nativeVirtualKeyCode: keyCode,
       modifiers,
-    });
+    }), 'CDP Input.dispatchKeyEvent keyUp');
   }
 
   /** Move the mouse within the active CDP target viewport. */
   async moveMouse(x: number, y: number): Promise<void> {
     if (!this.client) throw new Error('CDP not connected');
-    await this.client.Input.dispatchMouseEvent({
+    await this.withProtocolTimeout(this.client.Input.dispatchMouseEvent({
       type: 'mouseMoved',
       x,
       y,
       button: 'none',
-    } as any);
+    } as any), 'CDP Input.dispatchMouseEvent mouseMoved');
   }
 
   /** Click at active CDP target viewport coordinates. */
@@ -279,7 +286,7 @@ export class CdpClient {
     const safeSelector = escapeSelector(selector);
 
     // 1. Try main document
-    const mainResult = await this.client.Runtime.evaluate({
+    const mainResult = await this.withProtocolTimeout(this.client.Runtime.evaluate({
       expression: `(() => {
         const el = document.querySelector('${safeSelector}');
         if (!el) return null;
@@ -289,7 +296,7 @@ export class CdpClient {
         return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
       })()`,
       returnByValue: true,
-    });
+    }), 'CDP Runtime.evaluate clickSelector');
     const point = mainResult.result.value as { x: number; y: number } | undefined;
     if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
       await this.clickAt(point.x, point.y);
@@ -313,7 +320,7 @@ export class CdpClient {
     const safeSelector = escapeSelector(selector);
 
     // 1. Try main document
-    const mainResult = await this.client.Runtime.evaluate({
+    const mainResult = await this.withProtocolTimeout(this.client.Runtime.evaluate({
       expression: `(() => {
         const el = document.querySelector('${safeSelector}');
         if (!el) return null;
@@ -321,7 +328,7 @@ export class CdpClient {
         return true;
       })()`,
       returnByValue: true,
-    });
+    }), 'CDP Runtime.evaluate focusSelector');
     if (mainResult.result.value) return;
 
     // 2. Search webview targets
@@ -340,7 +347,7 @@ export class CdpClient {
   async getPopupMenuItems(): Promise<string[]> {
     if (!this.client) throw new Error('CDP not connected');
 
-    const result = await this.client.Runtime.evaluate({
+    const result = await this.withProtocolTimeout(this.client.Runtime.evaluate({
       expression: `(() => {
         const items = new Set();
 
@@ -366,7 +373,7 @@ export class CdpClient {
         return [...items];
       })()`,
       returnByValue: true,
-    });
+    }), 'CDP Runtime.evaluate popup menu items');
 
     return (result.result.value as string[]) ?? [];
   }
@@ -375,10 +382,10 @@ export class CdpClient {
   async getWorkbenchQuickInputState(): Promise<QuickInputState> {
     if (!this.client) throw new Error('CDP not connected');
 
-    const result = await this.client.Runtime.evaluate({
+    const result = await this.withProtocolTimeout(this.client.Runtime.evaluate({
       expression: `(${WORKBENCH_QUICK_INPUT_STATE})()`,
       returnByValue: true,
-    });
+    }), 'CDP Runtime.evaluate QuickInput state');
 
     return (result.result.value as QuickInputState | undefined) ?? { active: false };
   }
@@ -388,10 +395,10 @@ export class CdpClient {
     if (!this.client) throw new Error('CDP not connected');
 
     const safeTarget = JSON.stringify(labelOrId);
-    const result = await this.client.Runtime.evaluate({
+    const result = await this.withProtocolTimeout(this.client.Runtime.evaluate({
       expression: `(${WORKBENCH_QUICK_INPUT_ITEM_POINT})(${safeTarget})`,
       returnByValue: true,
-    });
+    }), 'CDP Runtime.evaluate QuickInput item point');
     const value = result.result.value as { label: string; x: number; y: number; error?: string } | undefined;
     if (!value || value.error) {
       throw new Error(value?.error ?? `Workbench QuickInput item "${labelOrId}" not found`);
@@ -405,10 +412,10 @@ export class CdpClient {
   async submitWorkbenchQuickInputText(value: string): Promise<QuickInputTextResult> {
     if (!this.client) throw new Error('CDP not connected');
 
-    const focusResult = await this.client.Runtime.evaluate({
+    const focusResult = await this.withProtocolTimeout(this.client.Runtime.evaluate({
       expression: `(${WORKBENCH_QUICK_INPUT_FOCUS_INPUT})()`,
       returnByValue: true,
-    });
+    }), 'CDP Runtime.evaluate QuickInput focus');
     const focused = focusResult.result.value as { focused?: boolean; error?: string } | undefined;
     if (!focused?.focused) {
       throw new Error(focused?.error ?? 'No visible workbench QuickInput input found');
@@ -431,7 +438,7 @@ export class CdpClient {
 
     const safeText = itemText.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
-    const result = await this.client.Runtime.evaluate({
+    const result = await this.withProtocolTimeout(this.client.Runtime.evaluate({
       expression: `(() => {
         const needle = '${safeText}'.toLowerCase();
 
@@ -468,7 +475,7 @@ export class CdpClient {
         return null;
       })()`,
       returnByValue: true,
-    });
+    }), 'CDP Runtime.evaluate popup menu select');
 
     if (!result.result.value) {
       throw new Error(
@@ -484,11 +491,11 @@ export class CdpClient {
   async evaluate(expression: string): Promise<unknown> {
     if (!this.client) throw new Error('CDP not connected');
 
-    const result = await this.client.Runtime.evaluate({
+    const result = await this.withProtocolTimeout(this.client.Runtime.evaluate({
       expression,
       returnByValue: true,
       awaitPromise: true,
-    });
+    }), 'CDP Runtime.evaluate');
     if (result.exceptionDetails) {
       throw new Error(`JS eval failed: ${result.exceptionDetails.text}`);
     }
@@ -933,8 +940,8 @@ export class CdpClient {
 
     (client as any).on('Runtime.executionContextCreated', handler);
     try {
-      try { await client.Runtime.disable(); } catch { /* may not be enabled yet */ }
-      await client.Runtime.enable();
+      try { await this.withProtocolTimeout(client.Runtime.disable(), 'CDP Runtime.disable'); } catch { /* may not be enabled yet */ }
+      await this.withProtocolTimeout(client.Runtime.enable(), 'CDP Runtime.enable');
       // Allow context-created events to be delivered (they fire asynchronously)
       await delay(150);
 
@@ -966,12 +973,12 @@ export class CdpClient {
 
     for (const contextId of contextIds) {
       try {
-        const r = await client.Runtime.evaluate({
+        const r = await this.withProtocolTimeout(client.Runtime.evaluate({
           expression,
           returnByValue: true,
           awaitPromise: true,
           contextId,
-        });
+        }), `CDP Runtime.evaluate context ${contextId}`);
         if (!r.exceptionDetails && r.result.value !== null && r.result.value !== undefined) {
           return r.result.value;
         }
@@ -995,12 +1002,12 @@ export class CdpClient {
 
     for (const contextId of contextIds) {
       try {
-        const r = await client.Runtime.evaluate({
+        const r = await this.withProtocolTimeout(client.Runtime.evaluate({
           expression,
           returnByValue: true,
           awaitPromise: true,
           contextId,
-        });
+        }), `CDP Runtime.evaluate context ${contextId}`);
         if (!r.exceptionDetails && r.result.value !== null && r.result.value !== undefined) {
           results.push(r.result.value);
         }
@@ -1069,7 +1076,7 @@ export class CdpClient {
     while (true) {
       let targets: Array<{ type: string; url: string; id: string; title: string }>;
       try {
-        targets = await CDP.List({ port: this.port }) as any;
+        targets = await this.withProtocolTimeout(CDP.List({ port: this.port }) as Promise<any>, 'CDP target list') as any;
       } catch {
         // CDP.List() can ECONNREFUSED if called during VS Code startup
         if (!waitMs || Date.now() >= deadline) return [];
@@ -1164,12 +1171,15 @@ export class CdpClient {
     let lastError: Error | undefined;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const wvClient = await CDP({ port: this.port, target: targetId });
+        const wvClient = await this.withProtocolTimeout(
+          CDP({ port: this.port, target: targetId }),
+          `CDP attach to webview target ${targetId}`,
+        );
         try {
-          await wvClient.Runtime.enable();
-          return await fn(wvClient);
+          await this.withProtocolTimeout(wvClient.Runtime.enable(), `CDP Runtime.enable for webview target ${targetId}`);
+          return await this.withProtocolTimeout(fn(wvClient), `CDP webview operation for target ${targetId}`);
         } finally {
-          wvClient.close();
+          try { wvClient.close(); } catch { /* best effort */ }
         }
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
@@ -1199,12 +1209,12 @@ export class CdpClient {
         const clicked = await this.withWebviewClient(target.id, async (wv) => {
           const contextIds = await this.discoverFrameContextIds(wv);
           for (const contextId of contextIds) {
-            const result = await wv.Runtime.evaluate({
+            const result = await this.withProtocolTimeout(wv.Runtime.evaluate({
               expression: elementPointExpression(safeSelector),
               returnByValue: true,
               awaitPromise: true,
               contextId,
-            });
+            }), `CDP Runtime.evaluate element point context ${contextId}`);
             const point = result.result.value as { x: number; y: number; unreliable?: boolean } | undefined;
             if (!point || point.unreliable || !Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
             await this.dispatchClick(wv, point.x, point.y, options);
@@ -1228,31 +1238,39 @@ export class CdpClient {
     const clickCount = options.clickCount ?? 1;
     const buttons = buttonMask(button);
 
-    await client.Input.dispatchMouseEvent({
+    await this.withProtocolTimeout(client.Input.dispatchMouseEvent({
       type: 'mouseMoved',
       x,
       y,
       button: 'none',
-    } as any);
+    } as any), 'CDP Input.dispatchMouseEvent mouseMoved');
 
     for (let count = 1; count <= clickCount; count++) {
-      await client.Input.dispatchMouseEvent({
+      await this.withProtocolTimeout(client.Input.dispatchMouseEvent({
         type: 'mousePressed',
         x,
         y,
         button,
         buttons,
         clickCount: count,
-      } as any);
-      await client.Input.dispatchMouseEvent({
+      } as any), 'CDP Input.dispatchMouseEvent mousePressed');
+      await this.withProtocolTimeout(client.Input.dispatchMouseEvent({
         type: 'mouseReleased',
         x,
         y,
         button,
         buttons: 0,
         clickCount: count,
-      } as any);
+      } as any), 'CDP Input.dispatchMouseEvent mouseReleased');
     }
+  }
+
+  private withProtocolTimeout<T>(
+    operation: Promise<T>,
+    description: string,
+    timeoutMs = CDP_PROTOCOL_TIMEOUT_MS,
+  ): Promise<T> {
+    return withTimeout(operation, timeoutMs, `${description} timed out after ${timeoutMs}ms`);
   }
 
   /**
@@ -1315,8 +1333,8 @@ export class CdpClient {
           };
           (wv as any).on('Runtime.executionContextCreated', handler);
           try {
-            try { await wv.Runtime.disable(); } catch { /* */ }
-            await wv.Runtime.enable();
+            try { await this.withProtocolTimeout(wv.Runtime.disable(), 'CDP Runtime.disable'); } catch { /* */ }
+            await this.withProtocolTimeout(wv.Runtime.enable(), 'CDP Runtime.enable');
             await delay(300);
           } finally {
             (wv as any).removeListener('Runtime.executionContextCreated', handler);
@@ -1325,10 +1343,10 @@ export class CdpClient {
           // Also try Page.getFrameTree
           let frameTree: unknown;
           try {
-            await (wv as any).Page.enable();
-            const result = await (wv as any).Page.getFrameTree();
+            await this.withProtocolTimeout((wv as any).Page.enable(), 'CDP Page.enable');
+            const result = await this.withProtocolTimeout<{ frameTree: unknown }>((wv as any).Page.getFrameTree(), 'CDP Page.getFrameTree');
             frameTree = result.frameTree;
-            try { await (wv as any).Page.disable(); } catch { /* */ }
+            try { await this.withProtocolTimeout((wv as any).Page.disable(), 'CDP Page.disable'); } catch { /* */ }
           } catch { /* Page domain not available */ }
 
           return { contexts, frameTree };
@@ -1425,15 +1443,29 @@ function buttonMask(button: CdpMouseButton): number {
 async function countTargetFrames(client: CDP.Client): Promise<number> {
   let pageEnabled = false;
   try {
-    await (client as any).Page.enable();
+    await withTimeout(
+      (client as any).Page.enable(),
+      CDP_PROTOCOL_TIMEOUT_MS,
+      `CDP Page.enable timed out after ${CDP_PROTOCOL_TIMEOUT_MS}ms`,
+    );
     pageEnabled = true;
-    const { frameTree } = await (client as any).Page.getFrameTree();
+    const { frameTree } = await withTimeout<{ frameTree: any }>(
+      (client as any).Page.getFrameTree(),
+      CDP_PROTOCOL_TIMEOUT_MS,
+      `CDP Page.getFrameTree timed out after ${CDP_PROTOCOL_TIMEOUT_MS}ms`,
+    );
     return countFrameTreeNodes(frameTree);
   } catch {
     return -1;
   } finally {
     if (pageEnabled) {
-      try { await (client as any).Page.disable(); } catch { /* best effort */ }
+      try {
+        await withTimeout(
+          (client as any).Page.disable(),
+          CDP_PROTOCOL_TIMEOUT_MS,
+          `CDP Page.disable timed out after ${CDP_PROTOCOL_TIMEOUT_MS}ms`,
+        );
+      } catch { /* best effort */ }
     }
   }
 }
@@ -1578,4 +1610,22 @@ function parseKeySpec(spec: string): ParsedKey {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new Error(message)), timeoutMs);
+    unrefTimer(timeoutHandle);
+  });
+
+  return Promise.race([operation, timeout]).finally(() => {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  });
+}
+
+function unrefTimer(handle: ReturnType<typeof setTimeout>): void {
+  if (typeof handle === 'object' && 'unref' in handle && typeof handle.unref === 'function') {
+    handle.unref();
+  }
 }

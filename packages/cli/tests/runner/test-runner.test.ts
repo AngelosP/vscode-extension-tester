@@ -879,6 +879,41 @@ describe('TestRunner', () => {
       expect(result.scenarios[0].steps[1].status).toBe('skipped');
       expect(result.scenarios[0].steps[2].status).toBe('skipped');
     });
+
+    it('should fail and skip remaining steps when a step never settles', async () => {
+      vi.useFakeTimers();
+      const timeoutRunner = new TestRunner(
+        client,
+        {},
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { stepTimeoutMs: 100 },
+      );
+      getMockCdp().waitForSelectorInWebview.mockReturnValue(new Promise(() => {}));
+      const feature = makeFeature('Test', [
+        makeScenario('Timeout and Skip', [
+          makeStep('When ', 'I wait for ".ready" in the webview'),
+          makeStep('Then ', 'the VS Code is in a clean state'),
+        ]),
+      ]);
+
+      try {
+        const resultPromise = timeoutRunner.runFeature(feature);
+        await vi.advanceTimersByTimeAsync(100);
+        const result = await resultPromise;
+
+        expect(result.scenarios[0].status).toBe('failed');
+        expect(result.scenarios[0].steps[0].status).toBe('failed');
+        expect(result.scenarios[0].steps[0].error?.message).toContain('Step timed out after 100ms');
+        expect(result.scenarios[0].steps[1].status).toBe('skipped');
+        expect(getMockCdp().disconnect).toHaveBeenCalled();
+      } finally {
+        timeoutRunner.cleanup();
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe('file operations', () => {

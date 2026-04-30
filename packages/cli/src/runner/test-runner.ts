@@ -12,7 +12,7 @@ import type {
   StepArtifact,
   StepResult,
 } from '../types.js';
-import { CDP_PORT } from '../types.js';
+import { CDP_PORT, STEP_TIMEOUT_MS } from '../types.js';
 import { NativeUIClient } from './native-ui-client.js';
 import { CdpClient } from './cdp-client.js';
 import { loadEnv } from '../agent/env.js';
@@ -21,6 +21,7 @@ import * as path from 'node:path';
 
 export interface TestRunnerOptions {
   readonly coordinateOrigin?: 'screen' | 'devHostWindow';
+  readonly stepTimeoutMs?: number;
 }
 
 /**
@@ -195,7 +196,10 @@ export class TestRunner {
     try { outputBefore = await this.client.getAllOutputContent(); } catch { /* best effort */ }
 
     try {
-      const dispatchLog = await this.dispatch(resolvedText, docString);
+      const dispatchLog = await this.withStepTimeout(
+        this.dispatch(resolvedText, docString),
+        resolvedText,
+      );
 
       // Capture output produced during this step
       let outputLog: string | undefined;
@@ -236,6 +240,26 @@ export class TestRunner {
       }
       const artifacts = this.buildArtifacts(screenshots, [], warnings);
       return { keyword: step.keyword, text: step.text, status: 'failed', durationMs: Date.now() - startTime, error: { message: error.message, stack: error.stack }, outputLog, artifacts };
+    }
+  }
+
+  private async withStepTimeout<T>(operation: Promise<T>, stepText: string): Promise<T> {
+    const timeoutMs = this.options.stepTimeoutMs ?? STEP_TIMEOUT_MS;
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return operation;
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        this.cdp?.disconnect();
+        reject(new Error(`Step timed out after ${timeoutMs}ms: "${stepText}"`));
+      }, timeoutMs);
+      unrefTimer(timeoutHandle);
+    });
+
+    try {
+      return await Promise.race([operation, timeout]);
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
     }
   }
 
@@ -1488,6 +1512,12 @@ export class TestRunner {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function unrefTimer(handle: ReturnType<typeof setTimeout>): void {
+  if (typeof handle === 'object' && 'unref' in handle && typeof handle.unref === 'function') {
+    handle.unref();
+  }
 }
 
 function cloneArtifacts(artifacts: LiveStepArtifacts | undefined): MutableLiveStepArtifacts {

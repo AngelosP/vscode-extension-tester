@@ -1,10 +1,11 @@
 # Changelog
 
-This changelog records versions for the build artifacts produced by this repository:
-the CLI package, the bundled controller extension VSIX, and release artifacts.
+This changelog records versions for the bundled controller extension VSIX.
+The CLI package version is independent and may differ from the VSIX version.
 
 Use `npm run version:extension -- <patch|minor|major|x.y.z> --note "summary"`
-to update versions. The command updates package manifests, package-lock metadata,
+to update the controller extension version. The command updates
+`packages/controller-extension/package.json`, package-lock metadata,
 `extension-version-history.json`, and this file together.
 
 | Version | Date | Kind | Notes |

@@ -1,0 +1,92 @@
+---
+name: cli-finalization-build
+description: "Use when: finalizing a fix or feature in vscode-extension-tester, rebuilding CLI dist, rebuilding the bundled controller VSIX, packaging release artifacts, and verifying vscode-ext-test init/update deploy the latest assets to other projects."
+---
+
+# CLI Finalization Build
+
+Use this skill whenever a fix or feature is done and the user needs the local
+`vscode-ext-test` CLI package to be immediately usable from other projects.
+
+## Artifact Contract
+
+The CLI package must ship all three current artifacts:
+
+- `packages/cli/dist/**`: compiled CLI runner code used by `bin/vscode-ext-test.js`
+- `packages/cli/src/skill/SKILL.md`: the skill deployed by `vscode-ext-test init`
+- `packages/cli/assets/controller-extension.vsix`: the controller extension installed by `vscode-ext-test install` and `vscode-ext-test update`
+
+`vscode-ext-test init` overwrites `.github/skills/e2e-test-extension/SKILL.md`
+in the target project from `packages/cli/src/skill/SKILL.md` inside the package.
+
+`vscode-ext-test install` and `vscode-ext-test update` install the bundled VSIX
+from `packages/cli/assets/controller-extension.vsix`.
+
+The controller extension VSIX version is independent from the CLI package
+version. Whenever a functional change touches `packages/controller-extension/**`,
+use the `extension-versioning` skill to bump `packages/controller-extension/package.json`
+before rebuilding the VSIX.
+
+## Required Workflow
+
+1. Run the focused tests for the change, then build the CLI and controller:
+   ```powershell
+   npm run build -w packages/controller-extension
+   npm run build -w packages/cli
+   ```
+2. If `dotnet/` or native UI automation changed, rebuild the native bridge too:
+   ```powershell
+   npm run build:native
+   ```
+3. Repackage the local CLI artifact after all builds finish:
+   ```powershell
+   npm run package:release
+   ```
+4. Verify the built CLI starts from its package bin:
+   ```powershell
+   node packages/cli/bin/vscode-ext-test.js --version
+   ```
+5. Verify the local release tarball exists and includes the expected assets:
+   ```powershell
+   Get-Content release-artifacts/release-manifest.json
+   Get-Content release-artifacts/SHA256SUMS.txt
+   ```
+
+## Smoke Test Contract
+
+When the user asks whether the latest CLI is ready for other projects, verify
+these two behaviors before answering yes:
+
+- `vscode-ext-test init` deploys the exact latest `packages/cli/src/skill/SKILL.md`
+  into `.github/skills/e2e-test-extension/SKILL.md` in the target project.
+- `vscode-ext-test update` installs the exact latest
+  `packages/cli/assets/controller-extension.vsix` into VS Code and every named
+  vscode-extension-tester profile.
+
+For a local package smoke test, install the freshly packed tarball first:
+
+```powershell
+npm install -g .\release-artifacts\vscode-ext-test-0.1.1.tgz
+```
+
+Then run the user-facing commands from a separate test project:
+
+```powershell
+vscode-ext-test init
+vscode-ext-test update
+```
+
+If the version has been bumped, use the tarball name from
+`release-artifacts/release-manifest.json` instead of assuming `0.1.1`.
+
+## Final Answer Checklist
+
+Before telling the user the CLI is ready, report:
+
+- which build commands ran
+- which tests ran
+- whether `release-artifacts/*.tgz` was regenerated
+- whether the init skill and update VSIX smoke contract was verified or not
+
+Do not say other projects will get the latest until the global/package install
+source they use has been refreshed from the regenerated tarball.

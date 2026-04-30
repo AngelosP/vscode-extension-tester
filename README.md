@@ -81,11 +81,11 @@ Release artifacts are built by GitHub Actions on Windows so the packaged CLI inc
 * `assets/controller-extension.vsix` \- bundled controller extension installed by `vscode-ext-test install`
 * `assets/native/win-x64/FlaUIBridge.exe` \- self\-contained native UI automation bridge for Windows CI agents
 
-To create a release, bump the synchronized build version, then push the matching
-semver tag:
+To create a CLI release, bump the CLI package version, then push the matching
+semver tag. The bundled controller extension VSIX has its own independent
+version and does not need to match the CLI version:
 
 ```bash
-npm run version:extension -- patch --note "Release summary"
 git tag v<version>
 git push origin v<version>
 ```
@@ -102,17 +102,18 @@ vscode-ext-test run --features tests/vscode-extension-tester/e2e
 
 ### Versioning Builds
 
-Use the versioning helper to keep the CLI package, bundled controller extension,
-package lock metadata, and version history in sync:
+Use the versioning helper whenever the bundled controller extension VSIX changes.
+This bumps only `packages/controller-extension/package.json` and matching lockfile
+metadata; the CLI package version is independent and may differ:
 
 ```bash
 npm run version:extension -- patch --note "Controller install resolver fix"
 ```
 
 The first positional argument can be `patch`, `minor`, `major`, or an explicit
-version such as `0.2.0`. Use `--dry-run` to preview the next version without
-writing files. Version history is tracked in `extension-version-history.json`
-and `CHANGELOG.md`.
+version such as `4.1.2`. Use `--dry-run` to preview the next VSIX version without
+writing files. Controller extension version history is tracked in
+`extension-version-history.json` and `CHANGELOG.md`.
 
 ## Commands
 
