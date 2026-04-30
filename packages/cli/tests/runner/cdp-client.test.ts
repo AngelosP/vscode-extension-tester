@@ -29,6 +29,20 @@ function createMockClient() {
   };
 }
 
+function setupSingleWebviewContext(contextId = 1): void {
+  let contextHandler: ((params: { context: { id: number } }) => void) | undefined;
+  mockClientRef.current.on.mockImplementation((event: string, handler: typeof contextHandler) => {
+    if (event === 'Runtime.executionContextCreated') contextHandler = handler;
+  });
+  mockClientRef.current.Runtime.enable.mockImplementation(() => {
+    contextHandler?.({ context: { id: contextId } });
+    return Promise.resolve(undefined);
+  });
+  (mockCdpFactoryRef.current as any).List = vi.fn().mockResolvedValue([
+    { type: 'page', url: 'vscode-webview://kusto', id: 'target-1', title: 'Kusto Workbench' },
+  ]);
+}
+
 describe('CdpClient', () => {
   let client: InstanceType<typeof CdpClient>;
 
@@ -288,18 +302,8 @@ describe('CdpClient', () => {
   });
 
   it('uses DOM events before mouse dispatch for explicit webview selector clicks', async () => {
-    let contextHandler: ((params: { context: { id: number } }) => void) | undefined;
-    mockClientRef.current.on.mockImplementation((event: string, handler: typeof contextHandler) => {
-      if (event === 'Runtime.executionContextCreated') contextHandler = handler;
-    });
-    mockClientRef.current.Runtime.enable.mockImplementation(() => {
-      contextHandler?.({ context: { id: 1 } });
-      return Promise.resolve(undefined);
-    });
+    setupSingleWebviewContext();
     mockClientRef.current.Runtime.evaluate.mockResolvedValue({ result: { value: true } });
-    (mockCdpFactoryRef.current as any).List = vi.fn().mockResolvedValue([
-      { type: 'page', url: 'vscode-webview://kusto', id: 'target-1', title: 'Kusto Workbench' },
-    ]);
 
     await client.clickInWebviewBySelector("button[data-add-kind='query']");
 
@@ -307,5 +311,80 @@ describe('CdpClient', () => {
     expect(firstEvaluation).toContain("button[data-add-kind=\\'query\\']");
     expect(firstEvaluation).toContain('PointerEvent');
     expect(mockClientRef.current.Input.dispatchMouseEvent).not.toHaveBeenCalled();
+  });
+
+  it('clicks a webview element by accessible text using a marked candidate', async () => {
+    setupSingleWebviewContext();
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      if (expression.includes('actionableSelector')) {
+        return Promise.resolve({
+          result: {
+            value: {
+              exact: [{ marker: 'marker-1', name: 'Try In Playground', tag: 'button' }],
+              fuzzy: [],
+              candidates: [{ marker: 'marker-1', name: 'Try In Playground', tag: 'button' }],
+            },
+          },
+        });
+      }
+      if (expression.includes('marker-1')) return Promise.resolve({ result: { value: true } });
+      return Promise.resolve({ result: { value: undefined } });
+    });
+
+    await client.clickInWebviewByAccessibleText('Try In Playground');
+
+    const candidateExpression = mockClientRef.current.Runtime.evaluate.mock.calls[0][0].expression;
+    const clickExpression = mockClientRef.current.Runtime.evaluate.mock.calls[1][0].expression;
+    expect(candidateExpression).toContain('aria-label');
+    expect(candidateExpression).toContain('title');
+    expect(clickExpression).toContain('data-vscode-ext-test-text-click');
+    expect(clickExpression).toContain('PointerEvent');
+  });
+
+  it('throws a diagnostic error when webview text matches multiple elements', async () => {
+    setupSingleWebviewContext();
+    mockClientRef.current.Runtime.evaluate.mockResolvedValue({
+      result: {
+        value: {
+          exact: [
+            { marker: 'marker-1', name: 'Run', tag: 'button' },
+            { marker: 'marker-2', name: 'Run', tag: 'button' },
+          ],
+          fuzzy: [],
+          candidates: [],
+        },
+      },
+    });
+
+    await expect(client.clickInWebviewByAccessibleText('Run')).rejects.toMatchObject({
+      message: expect.stringContaining('matched multiple actionable elements'),
+      diagnostic: expect.objectContaining({
+        kind: 'webview-click',
+        subject: 'Run',
+        candidates: expect.arrayContaining([expect.objectContaining({ marker: 'marker-1' })]),
+      }),
+    });
+  });
+
+  it('throws a diagnostic error with candidate names when webview text is not found', async () => {
+    setupSingleWebviewContext();
+    mockClientRef.current.Runtime.evaluate.mockResolvedValue({
+      result: {
+        value: {
+          exact: [],
+          fuzzy: [],
+          candidates: [{ name: 'Try In Playground', tag: 'button' }],
+        },
+      },
+    });
+
+    await expect(client.clickInWebviewByAccessibleText('Missing')).rejects.toMatchObject({
+      message: expect.stringContaining('Webview element with text "Missing" not found'),
+      diagnostic: expect.objectContaining({
+        kind: 'webview-click',
+        subject: 'Missing',
+        candidates: expect.arrayContaining([expect.objectContaining({ name: 'Try In Playground' })]),
+      }),
+    });
   });
 });

@@ -12,6 +12,10 @@ const nativeMocks = vi.hoisted(() => ({
   }>,
 }));
 
+const liveMocks = vi.hoisted(() => ({
+  start: vi.fn(),
+}));
+
 vi.mock('../../src/runner/native-ui-client.js', () => ({
   NativeUIClient: class MockNativeUIClient {
     targetPid?: number;
@@ -25,6 +29,12 @@ vi.mock('../../src/runner/native-ui-client.js', () => ({
     constructor() {
       nativeMocks.instances.push(this);
     }
+  },
+}));
+
+vi.mock('../../src/runner/live-session.js', () => ({
+  LiveTestSession: {
+    start: liveMocks.start,
   },
 }));
 
@@ -51,6 +61,11 @@ function makeContextWith(overrides: Partial<ToolContext>): ToolContext {
 describe('tools', () => {
   beforeEach(() => {
     nativeMocks.instances.length = 0;
+    liveMocks.start.mockReset();
+    liveMocks.start.mockResolvedValue({
+      client: {},
+      getSummary: () => ({ cdpPort: 9333, targetPid: 9999, mode: 'launch' }),
+    });
     vi.clearAllMocks();
   });
 
@@ -182,6 +197,37 @@ describe('tools', () => {
   });
 
   describe('executeToolCall coordinate tools', () => {
+    it('should reject missing reuseNamedProfile before starting a live session', async () => {
+      const result = await executeToolCall('start_live_session', JSON.stringify({
+        mode: 'auto',
+        reuseNamedProfile: 'missing-profile',
+      }), makeContextWith({ cwd: process.cwd() }));
+
+      expect(result).toContain('Profile "missing-profile" not found');
+      expect(liveMocks.start).not.toHaveBeenCalled();
+    });
+
+    it('should reject conflicting profile options before starting a live session', async () => {
+      const result = await executeToolCall('start_live_session', JSON.stringify({
+        mode: 'auto',
+        reuseNamedProfile: 'one',
+        reuseOrCreateNamedProfile: 'two',
+      }), makeContextWith({ cwd: process.cwd() }));
+
+      expect(result).toContain('Only one profile strategy can be used at a time');
+      expect(liveMocks.start).not.toHaveBeenCalled();
+    });
+
+    it('should reject profile flags with attach live sessions', async () => {
+      const result = await executeToolCall('start_live_session', JSON.stringify({
+        mode: 'attach',
+        reuseOrCreateNamedProfile: 'profile',
+      }), makeContextWith({ cwd: process.cwd() }));
+
+      expect(result).toContain('Profile flags are not compatible with --attach-devhost');
+      expect(liveMocks.start).not.toHaveBeenCalled();
+    });
+
     it('should keep move_mouse as absolute screen coordinates without a live session', async () => {
       const result = await executeToolCall('move_mouse', JSON.stringify({ x: 10, y: 20 }), makeContext());
 

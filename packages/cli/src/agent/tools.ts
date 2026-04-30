@@ -9,6 +9,7 @@ import { GherkinParser } from '../runner/gherkin-parser.js';
 import { TestRunner } from '../runner/test-runner.js';
 import { CdpClient } from '../runner/cdp-client.js';
 import { LiveTestSession } from '../runner/live-session.js';
+import { validateProfileOptions } from '../profile.js';
 
 // ─── Tool Context ───────────────────────────────────────────────────────────────
 
@@ -1046,27 +1047,29 @@ async function toolStartLiveSession(ctx: ToolContext, args: Record<string, unkno
   if (!ctx.liveSession) {
     const mode = normalizeLiveMode(args['mode']);
     const screenshotPolicy = normalizeScreenshotPolicy(args['screenshotPolicy']);
+    const runOptions = {
+      attachDevhost: mode === 'attach',
+      extensionPath: ctx.cwd,
+      features: DEFAULT_FEATURES_DIR,
+      vscodeVersion: 'stable',
+      xvfb: false,
+      controllerPort: CONTROLLER_WS_PORT,
+      cdpPort: ctx.cdpPort ?? CDP_PORT,
+      record: false,
+      recordOnFailure: false,
+      reporter: 'json' as const,
+      timeout: STEP_TIMEOUT_MS,
+      autoReset: false,
+      parallel: false,
+      build: false,
+      paused: false,
+      reuseNamedProfile: optionalString(args, 'reuseNamedProfile'),
+      reuseOrCreateNamedProfile: optionalString(args, 'reuseOrCreateNamedProfile'),
+    };
+    validateProfileOptions(runOptions, { cwd: path.resolve(runOptions.extensionPath), log: (message) => console.error(message) });
     const session = await LiveTestSession.start({
       mode,
-      runOptions: {
-        attachDevhost: mode === 'attach',
-        extensionPath: ctx.cwd,
-        features: DEFAULT_FEATURES_DIR,
-        vscodeVersion: 'stable',
-        xvfb: false,
-        controllerPort: CONTROLLER_WS_PORT,
-        cdpPort: ctx.cdpPort ?? CDP_PORT,
-        record: false,
-        recordOnFailure: false,
-        reporter: 'json',
-        timeout: STEP_TIMEOUT_MS,
-        autoReset: false,
-        parallel: false,
-        build: false,
-        paused: false,
-        reuseNamedProfile: optionalString(args, 'reuseNamedProfile'),
-        reuseOrCreateNamedProfile: optionalString(args, 'reuseOrCreateNamedProfile'),
-      },
+      runOptions,
       screenshotPolicy,
       finalScreenshot: true,
       logger: (message) => console.error(message),
