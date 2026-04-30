@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getVsixPath } from './install.js';
-import { listProfiles, getProfileDir, getProfileExtensionsDir } from '../profile.js';
+import { listProfiles, getProfileDir, getProfileExtensionsDir, getProfileUserDataDir } from '../profile.js';
 import { CONTROLLER_EXTENSION_ID } from '../types.js';
 import { execVSCodeCliSync, formatVSCodeCliMissingMessage, resolveVSCodeCli, type ResolvedVSCodeCli } from '../utils/vscode-cli.js';
 
@@ -51,6 +51,7 @@ export async function updateCommand(): Promise<void> {
     for (const name of profiles) {
       console.log(`Updating profile "${name}"...`);
       const profileDir = getProfileDir(name);
+      const userDataDir = getProfileUserDataDir(profileDir);
       const extensionsDir = getProfileExtensionsDir(profileDir);
 
       if (!fs.existsSync(extensionsDir)) {
@@ -62,7 +63,8 @@ export async function updateCommand(): Promise<void> {
         verifyControllerInstallInTempDir(codeCli, vsixPath, extensionsDir);
         const backup = quarantineControllerExtensionFolders(extensionsDir);
         try {
-          execVSCodeCliSync(codeCli, ['--extensions-dir', extensionsDir, '--install-extension', vsixPath, '--force'], {
+          cleanStaleControllerMetadata(extensionsDir);
+          execVSCodeCliSync(codeCli, ['--user-data-dir', userDataDir, '--extensions-dir', extensionsDir, '--install-extension', vsixPath, '--force'], {
             stdio: 'pipe',
           });
           if (!hasControllerExtension(extensionsDir)) {
@@ -118,16 +120,18 @@ function isUsableControllerExtensionFolder(extensionsDir: string, entry: string)
 }
 
 function verifyControllerInstallInTempDir(codeCli: ResolvedVSCodeCli, vsixPath: string, extensionsDir: string): void {
-  const probeExtensionsDir = fs.mkdtempSync(path.join(path.dirname(extensionsDir), '.controller-probe-'));
+  const probeRoot = fs.mkdtempSync(path.join(path.dirname(extensionsDir), '.controller-probe-'));
+  const probeUserDataDir = path.join(probeRoot, 'user-data');
+  const probeExtensionsDir = path.join(probeRoot, 'extensions');
   try {
-    execVSCodeCliSync(codeCli, ['--extensions-dir', probeExtensionsDir, '--install-extension', vsixPath, '--force'], {
+    execVSCodeCliSync(codeCli, ['--user-data-dir', probeUserDataDir, '--extensions-dir', probeExtensionsDir, '--install-extension', vsixPath, '--force'], {
       stdio: 'pipe',
     });
     if (!hasControllerExtension(probeExtensionsDir)) {
       throw new Error('install probe ran but extension was not found');
     }
   } finally {
-    fs.rmSync(probeExtensionsDir, { recursive: true, force: true });
+    fs.rmSync(probeRoot, { recursive: true, force: true });
   }
 }
 
@@ -240,7 +244,7 @@ function isStaleControllerMetadataEntry(entry: unknown, extensionsDir: string): 
     .filter((location): location is string => typeof location === 'string' && location.length > 0)
     .map((location) => normalizeMetadataLocation(location, extensionsDir));
 
-  return locations.length > 0 && locations.every((location) => !fs.existsSync(location));
+  return locations.length === 0 || locations.every((location) => !fs.existsSync(location));
 }
 
 function normalizeMetadataLocation(location: string, extensionsDir: string): string {

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "currentVersion": "0.1.1",
+  "updatedAt": "2026-04-29",
+  "packages": [
+    "package.json",
+    "packages/cli/package.json",
+    "packages/controller-extension/package.json"
+  ],
+  "history": [
+    {
+      "version": "0.1.0",
+      "date": "2026-04-29",
+      "kind": "baseline",
+      "notes": "Baseline before automated extension build versioning."
+    },
+    {
+      "version": "0.1.1",
+      "date": "2026-04-29",
+      "kind": "patch",
+      "previousVersion": "0.1.0",
+      "notes": "Add automated extension build versioning workflow."
+    }
+  ]
+}

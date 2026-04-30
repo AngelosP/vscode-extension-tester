@@ -161,6 +161,41 @@ describe('updateCommand', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
+  it('uses profile user data and removes stale controller metadata before profile reinstall', async () => {
+    const userDataDir = path.join(tempDir, 'tests', 'vscode-extension-tester', 'profiles', 'profile-one', 'user-data');
+    const installedFolder = 'vscode-extension-tester.vscode-extension-tester-controller-0.2.0';
+    fs.writeFileSync(path.join(extensionsDir, 'extensions.json'), JSON.stringify([
+      { identifier: { id: 'vscode-extension-tester.vscode-extension-tester-controller' }, relativeLocation: CONTROLLER_FOLDER },
+      { identifier: { id: 'publisher.other-extension' }, relativeLocation: 'publisher.other-extension-1.0.0' },
+    ]), 'utf-8');
+
+    let realProfileInstallSawCleanMetadata = false;
+    mockExecVSCodeCliSync.mockImplementation((_cli, args: string[]) => {
+      if (args.includes('--extensions-dir')) {
+        const extensionsDirArg = args[args.indexOf('--extensions-dir') + 1];
+        const userDataDirArg = args[args.indexOf('--user-data-dir') + 1];
+        if (extensionsDirArg.includes('.controller-probe-')) {
+          expect(userDataDirArg).toContain('.controller-probe-');
+          createControllerManifest(extensionsDirArg, CONTROLLER_FOLDER);
+          return '';
+        }
+
+        expect(userDataDirArg).toBe(userDataDir);
+        const metadataBeforeInstall = JSON.parse(fs.readFileSync(path.join(extensionsDirArg, 'extensions.json'), 'utf-8')) as Array<{ relativeLocation?: string }>;
+        expect(metadataBeforeInstall.map((entry) => entry.relativeLocation)).toEqual(['publisher.other-extension-1.0.0']);
+        realProfileInstallSawCleanMetadata = true;
+        createControllerManifest(extensionsDirArg, installedFolder);
+      }
+      return '';
+    });
+
+    await updateCommand();
+
+    expect(realProfileInstallSawCleanMetadata).toBe(true);
+    expect(fs.existsSync(path.join(extensionsDir, installedFolder, 'package.json'))).toBe(true);
+    expect(process.exitCode).toBeUndefined();
+  });
+
   it('removes partial controller files when a first profile install fails', async () => {
     fs.rmSync(path.join(extensionsDir, CONTROLLER_FOLDER), { recursive: true, force: true });
 

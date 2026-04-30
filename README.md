@@ -81,11 +81,13 @@ Release artifacts are built by GitHub Actions on Windows so the packaged CLI inc
 * `assets/controller-extension.vsix` \- bundled controller extension installed by `vscode-ext-test install`
 * `assets/native/win-x64/FlaUIBridge.exe` \- self\-contained native UI automation bridge for Windows CI agents
 
-To create a release, update the package versions, then push a semver tag:
+To create a release, bump the synchronized build version, then push the matching
+semver tag:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+npm run version:extension -- patch --note "Release summary"
+git tag v<version>
+git push origin v<version>
 ```
 
 The `Release` workflow runs tests, builds the TypeScript packages, packages the controller extension, publishes the native bridge, runs `npm pack`, and uploads the installable tarball to the GitHub Release. Manual workflow runs are also supported; they upload the same files as workflow artifacts without creating a GitHub Release.
@@ -93,10 +95,24 @@ The `Release` workflow runs tests, builds the TypeScript packages, packages the 
 Downstream CI can install the released CLI directly from the tarball:
 
 ```bash
-npm install -g https://github.com/<org>/vscode-extension-tester/releases/download/v0.1.0/vscode-ext-test-0.1.0.tgz
+npm install -g https://github.com/<org>/vscode-extension-tester/releases/download/v<version>/vscode-ext-test-<version>.tgz
 vscode-ext-test install
 vscode-ext-test run --features tests/vscode-extension-tester/e2e
 ```
+
+### Versioning Builds
+
+Use the versioning helper to keep the CLI package, bundled controller extension,
+package lock metadata, and version history in sync:
+
+```bash
+npm run version:extension -- patch --note "Controller install resolver fix"
+```
+
+The first positional argument can be `patch`, `minor`, `major`, or an explicit
+version such as `0.2.0`. Use `--dry-run` to preview the next version without
+writing files. Version history is tracked in `extension-version-history.json`
+and `CHANGELOG.md`.
 
 ## Commands
 

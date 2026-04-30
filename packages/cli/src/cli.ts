@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { Command } from 'commander';
 import { runCommand } from './commands/run.js';
 import { liveCommand } from './commands/live.js';
@@ -13,7 +15,7 @@ const program = new Command();
 program
   .name('vscode-ext-test')
   .description('E2E test VS Code extensions as if a real user was operating them')
-  .version('0.1.0');
+  .version(readCliPackageVersion());
 
 program
   .command('run')
@@ -143,3 +145,12 @@ profileCmd
   });
 
 program.parse();
+
+function readCliPackageVersion(): string {
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf-8')) as { version?: string };
+    return packageJson.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}

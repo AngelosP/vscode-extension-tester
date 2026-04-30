@@ -1,6 +1,6 @@
 {
   "name": "vscode-extension-tester",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Copilot CLI-powered agent for testing VS Code extensions like a real user",
   "workspaces": [
@@ -13,7 +13,8 @@
     "clean": "turbo run clean",
     "test": "vitest run",
     "lint": "turbo run lint",
-    "package:release": "node scripts/package-release.mjs"
+    "package:release": "node scripts/package-release.mjs",
+    "version:extension": "node scripts/version-extension.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
