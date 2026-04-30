@@ -106,7 +106,7 @@ vscode-ext-test run --features tests/vscode-extension-tester/e2e
 | `run` | Execute `.feature` tests (dev mode or CI mode) |
 | `live` | Start or attach to VS Code once and execute Gherkin steps over JSONL stdin/stdout |
 | `tests add [context...]` | AI agent analyzes codebase, writes tests, explores the live extension, self-heals failures |
-| `install` | Install the controller extension + check prerequisites (`gh`, `git`, `code`) |
+| `install` | Install the controller extension + check prerequisites (`gh`, `git`, VS Code CLI auto-discovery) |
 | `uninstall` | Remove the controller extension |
 
 ### `run` Options

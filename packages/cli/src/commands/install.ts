@@ -1,22 +1,34 @@
 import * as path from 'node:path';
 import * as cp from 'node:child_process';
-import { CONTROLLER_EXTENSION_ID } from '../types.js';
+import {
+  execVSCodeCliSync,
+  formatVSCodeCliMissingMessage,
+  resolveVSCodeCli,
+  type ResolvedVSCodeCli,
+} from '../utils/vscode-cli.js';
 
 /**
  * Install the controller extension and verify prerequisites.
  */
 export async function installCommand(): Promise<void> {
   // 1. Check prerequisites
-  checkPrerequisites();
+  const codeCli = checkPrerequisites();
 
   // 2. Install controller extension
   const vsixPath = getVsixPath();
-  const codeCmd = process.platform === 'win32' ? 'code.cmd' : 'code';
+
+  if (!codeCli) {
+    console.error('\nFailed to install controller extension automatically.');
+    console.error(formatVSCodeCliMissingMessage());
+    console.error('You can install manually in VS Code:');
+    console.error(`  Ctrl+Shift+P -> "Extensions: Install from VSIX..." -> ${vsixPath}`);
+    process.exit(1);
+  }
 
   console.log('\nInstalling controller extension into VS Code...');
 
   try {
-    cp.execSync(`${codeCmd} --install-extension "${vsixPath}" --force`, {
+    execVSCodeCliSync(codeCli, ['--install-extension', vsixPath, '--force'], {
       stdio: 'inherit',
     });
     console.log('\nController extension installed successfully.');
@@ -24,12 +36,12 @@ export async function installCommand(): Promise<void> {
   } catch {
     console.error('\nFailed to install controller extension.');
     console.error('You can install manually in VS Code:');
-    console.error(`  Ctrl+Shift+P → "Extensions: Install from VSIX..." → ${vsixPath}`);
+    console.error(`  Ctrl+Shift+P -> "Extensions: Install from VSIX..." -> ${vsixPath}`);
     process.exit(1);
   }
 }
 
-function checkPrerequisites(): void {
+function checkPrerequisites(): ResolvedVSCodeCli | null {
   console.log('Checking prerequisites...\n');
   let allGood = true;
 
@@ -55,12 +67,12 @@ function checkPrerequisites(): void {
   }
 
   // Check VS Code CLI
-  const codeCmd = process.platform === 'win32' ? 'code.cmd' : 'code';
-  if (commandExists(codeCmd)) {
-    console.log(`  \u2713 VS Code CLI (${codeCmd}) available`);
+  const codeCli = resolveVSCodeCli();
+  if (codeCli) {
+    console.log(`  \u2713 VS Code CLI (${codeCli.command}) available`);
   } else {
-    console.log(`  \u2717 VS Code CLI (${codeCmd}) not found`);
-    console.log('    In VS Code: Ctrl+Shift+P → "Shell Command: Install \'code\' command in PATH"');
+    console.log('  \u2717 VS Code CLI not found');
+    console.log(`    ${formatVSCodeCliMissingMessage().replace(/\n/g, '\n    ')}`);
     allGood = false;
   }
 
@@ -76,6 +88,8 @@ function checkPrerequisites(): void {
   if (!allGood) {
     console.log('\nSome prerequisites are missing. Core features will work but AI features require all prerequisites.');
   }
+
+  return codeCli;
 }
 
 function commandExists(cmd: string): boolean {

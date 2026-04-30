@@ -59,7 +59,7 @@ After making changes to the controller extension:
 cd packages/controller-extension
 npm run package                          # creates .vsix
 cp *.vsix ../cli/assets/controller-extension.vsix  # update bundled asset
-code --install-extension ../cli/assets/controller-extension.vsix --force
+node ../cli/bin/vscode-ext-test.js install          # install using this checkout's bundled asset
 ```
 
 ## Running Locally
@@ -147,7 +147,7 @@ Update model cascade priority list
 
 ## Critical Knowledge (don't forget!)
 
-* **Windows**: Use `code.cmd` not `code` for CLI commands
+* **VS Code CLI**: Use the shared resolver in `packages/cli/src/utils/vscode-cli.ts` for user-installed VS Code operations; it handles Windows `code.cmd`, standard install paths, and `VSCODE_EXT_TEST_CODE`.
 * **Extension ID**: `vscode-extension-tester.vscode-extension-tester-controller` (publisher.name)
 * **Dev Host detection**: Check `VSCODE_EXT_TESTER_PORT` env var, NOT process argv
 * **WebSocket polling**: In `--wait-for-devhost`, poll WS directly instead of scanning processes

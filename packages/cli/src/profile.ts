@@ -1,8 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as cp from 'node:child_process';
 import { getVsixPath } from './commands/install.js';
 import { buildExtension } from './build.js';
+import { execVSCodeCliSync, formatVSCodeCliMissingMessage, resolveVSCodeCli, spawnVSCodeCli } from './utils/vscode-cli.js';
 
 /** Root directory for CLI-owned named profiles, relative to cwd. */
 const PROFILES_DIR = 'tests/vscode-extension-tester/profiles';
@@ -54,6 +54,11 @@ export function profileExists(name: string): boolean {
  */
 export function openProfile(name: string, extensionPath?: string): void {
   const profileDir = getProfileDir(name);
+  const codeCli = resolveVSCodeCli();
+  if (!codeCli) {
+    throw new Error(formatVSCodeCliMissingMessage());
+  }
+
   const userDataDir = getProfileUserDataDir(profileDir);
 
   const extensionsDir = getProfileExtensionsDir(profileDir);
@@ -71,17 +76,15 @@ export function openProfile(name: string, extensionPath?: string): void {
     }, null, 2), 'utf-8');
   }
 
-  const codeCmd = process.platform === 'win32' ? 'code.cmd' : 'code';
-
   // Install controller extension into this profile's user-data-dir
   const vsixPath = getVsixPath();
   console.log(`Installing controller extension into profile "${name}"...`);
   try {
-    cp.execFileSync(codeCmd, [
+    execVSCodeCliSync(codeCli, [
       `--user-data-dir=${userDataDir}`,
       `--extensions-dir=${extensionsDir}`,
       '--install-extension', vsixPath,
-    ], { stdio: 'inherit', shell: process.platform === 'win32' });
+    ], { stdio: 'inherit' });
   } catch {
     console.warn('Warning: could not install controller extension into profile.');
   }
@@ -113,9 +116,8 @@ export function openProfile(name: string, extensionPath?: string): void {
   console.log(`  ${profileDir}\n`);
 
   // Launch VS Code - detached so the CLI can exit while VS Code stays open
-  const proc = cp.spawn(codeCmd, args, {
+  const proc = spawnVSCodeCli(codeCli, args, {
     stdio: 'ignore',
-    shell: process.platform === 'win32',
     detached: true,
   });
   proc.unref();

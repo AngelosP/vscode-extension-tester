@@ -1,7 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as cp from 'node:child_process';
 import * as JSONC from 'jsonc-parser';
+import { CONTROLLER_EXTENSION_ID } from '../types.js';
+import { getVsixPath } from './install.js';
+import { execVSCodeCliSync, formatVSCodeCliMissingMessage, resolveVSCodeCli } from '../utils/vscode-cli.js';
 
 /**
  * Scaffold tests/vscode-extension-tester/e2e/ with example .feature file and merge VS Code configs.
@@ -53,14 +55,27 @@ export async function initCommand(opts: { features?: string }): Promise<void> {
 }
 
 function ensureControllerInstalled(): void {
-  const codeCmd = process.platform === 'win32' ? 'code.cmd' : 'code';
+  const vsixPath = getVsixPath();
+  if (!fs.existsSync(vsixPath)) {
+    console.warn('Warning: controller extension .vsix not found. Run `vscode-ext-test install` manually.');
+    return;
+  }
+
+  const codeCli = resolveVSCodeCli();
+  if (!codeCli) {
+    console.warn('Warning: could not find VS Code CLI; skipping automatic controller extension install.');
+    console.warn(formatVSCodeCliMissingMessage());
+    console.warn(`Install manually: Ctrl+Shift+P -> "Extensions: Install from VSIX..." -> ${vsixPath}`);
+    return;
+  }
+
   try {
-    const installed = cp.execSync(`${codeCmd} --list-extensions`, {
+    const installed = String(execVSCodeCliSync(codeCli, ['--list-extensions'], {
       encoding: 'utf-8',
       timeout: 15000,
       stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    if (installed.includes('vscode-extension-tester-controller')) {
+    }));
+    if (installed.includes(CONTROLLER_EXTENSION_ID)) {
       console.log('Controller extension already installed.');
       return;
     }
@@ -68,22 +83,16 @@ function ensureControllerInstalled(): void {
     // Can't check - try installing anyway
   }
 
-  const vsixPath = path.resolve(__dirname, '..', '..', 'assets', 'controller-extension.vsix');
-  if (!fs.existsSync(vsixPath)) {
-    console.warn('Warning: controller extension .vsix not found. Run `vscode-ext-test install` manually.');
-    return;
-  }
-
   console.log('Installing controller extension...');
   try {
-    cp.execSync(`${codeCmd} --install-extension "${vsixPath}" --force`, {
+    execVSCodeCliSync(codeCli, ['--install-extension', vsixPath, '--force'], {
       stdio: 'inherit',
       timeout: 30000,
     });
     console.log('Controller extension installed. Restart VS Code to activate it.');
   } catch {
     console.warn('Warning: could not install controller extension automatically.');
-    console.warn(`Install manually: Ctrl+Shift+P → "Extensions: Install from VSIX..." → ${vsixPath}`);
+    console.warn(`Install manually: Ctrl+Shift+P -> "Extensions: Install from VSIX..." -> ${vsixPath}`);
   }
 }
 
