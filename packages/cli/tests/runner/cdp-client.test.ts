@@ -14,6 +14,7 @@ const { CdpClient } = await import('../../src/runner/cdp-client.js');
 function createMockClient() {
   return {
     Runtime: {
+      disable: vi.fn().mockResolvedValue(undefined),
       enable: vi.fn().mockResolvedValue(undefined),
       evaluate: vi.fn(),
     },
@@ -23,6 +24,8 @@ function createMockClient() {
       insertText: vi.fn().mockResolvedValue(undefined),
     },
     close: vi.fn(),
+    on: vi.fn(),
+    removeListener: vi.fn(),
   };
 }
 
@@ -32,6 +35,7 @@ describe('CdpClient', () => {
   beforeEach(() => {
     mockClientRef.current = createMockClient();
     mockCdpFactoryRef.current.mockReset();
+    (mockCdpFactoryRef.current as any).List = vi.fn().mockResolvedValue([]);
     mockCdpFactoryRef.current.mockResolvedValue(mockClientRef.current);
     client = new CdpClient(9333);
   });
@@ -229,5 +233,27 @@ describe('CdpClient', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('uses DOM events before mouse dispatch for explicit webview selector clicks', async () => {
+    let contextHandler: ((params: { context: { id: number } }) => void) | undefined;
+    mockClientRef.current.on.mockImplementation((event: string, handler: typeof contextHandler) => {
+      if (event === 'Runtime.executionContextCreated') contextHandler = handler;
+    });
+    mockClientRef.current.Runtime.enable.mockImplementation(() => {
+      contextHandler?.({ context: { id: 1 } });
+      return Promise.resolve(undefined);
+    });
+    mockClientRef.current.Runtime.evaluate.mockResolvedValue({ result: { value: true } });
+    (mockCdpFactoryRef.current as any).List = vi.fn().mockResolvedValue([
+      { type: 'page', url: 'vscode-webview://kusto', id: 'target-1', title: 'Kusto Workbench' },
+    ]);
+
+    await client.clickInWebviewBySelector("button[data-add-kind='query']");
+
+    const firstEvaluation = mockClientRef.current.Runtime.evaluate.mock.calls[0][0].expression;
+    expect(firstEvaluation).toContain("button[data-add-kind=\\'query\\']");
+    expect(firstEvaluation).toContain('PointerEvent');
+    expect(mockClientRef.current.Input.dispatchMouseEvent).not.toHaveBeenCalled();
   });
 });

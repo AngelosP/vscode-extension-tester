@@ -750,11 +750,14 @@ export class CdpClient {
     options: CdpClickOptions = {},
   ): Promise<void> {
     const safe = escapeSelector(selector);
+
+    const found = await this.tryInWebviews(syntheticClickExpression(safe, options), webviewTitle);
+    if (found) return;
+
     const clicked = await this.clickInWebviewWithMouse(safe, webviewTitle, options);
     if (clicked) return;
 
-    const found = await this.tryInWebviews(syntheticClickExpression(safe, options), webviewTitle);
-    if (!found) throw new Error(`Element not found in webview: ${selector}`);
+    throw new Error(`Element not found in webview: ${selector}`);
   }
 
   /** Focus an element inside a webview by CSS selector. */
