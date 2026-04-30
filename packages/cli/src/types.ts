@@ -97,6 +97,62 @@ export interface LiveStepArtifacts {
   readonly manifestPath?: string;
 }
 
+export interface AutomationDiagnosticEntry {
+  readonly phase: string;
+  readonly targetId?: string;
+  readonly targetTitle?: string;
+  readonly contextId?: number;
+  readonly strategy?: string;
+  readonly message: string;
+}
+
+export interface AutomationDiagnostic {
+  readonly kind: 'webview-click' | 'webview-evaluate' | 'screenshot' | 'step-timeout';
+  readonly subject?: string;
+  readonly entries: AutomationDiagnosticEntry[];
+  readonly candidates?: unknown[];
+}
+
+export interface ExtensionHostScriptError {
+  readonly name?: string;
+  readonly message: string;
+  readonly stack?: string;
+}
+
+export interface ExtensionHostScriptResult {
+  readonly ok: boolean;
+  readonly value?: unknown;
+  readonly error?: ExtensionHostScriptError;
+  readonly durationMs: number;
+}
+
+export interface NativeBridgeErrorDetails {
+  readonly message: string;
+  readonly type?: string;
+  readonly hresult?: string | number;
+  readonly stack?: string;
+  readonly method?: string;
+  readonly phase?: string;
+  readonly inner?: NativeBridgeErrorDetails;
+}
+
+export interface ScreenshotCaptureAttempt {
+  readonly attempt: number;
+  readonly strategy: string;
+  readonly success: boolean;
+  readonly message?: string;
+}
+
+export interface ScreenshotCaptureResult {
+  readonly success: boolean;
+  readonly filePath: string;
+  readonly width?: number;
+  readonly height?: number;
+  readonly strategy?: string;
+  readonly attempts?: ScreenshotCaptureAttempt[];
+  readonly warnings?: string[];
+}
+
 export interface LiveStepResult extends StepResult {
   readonly stepIndex: number;
   readonly artifacts: LiveStepArtifacts;
@@ -142,6 +198,7 @@ export interface LiveSessionSummary {
   readonly stepsRun: number;
   readonly failedSteps: number;
   readonly finalScreenshot?: StepArtifact;
+  readonly warnings?: string[];
   readonly closed: boolean;
 }
 

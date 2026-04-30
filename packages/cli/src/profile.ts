@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { getVsixPath } from './commands/install.js';
 import { buildExtension } from './build.js';
 import { execVSCodeCliSync, formatVSCodeCliMissingMessage, resolveVSCodeCli, spawnVSCodeCli } from './utils/vscode-cli.js';
+import type { RunOptions } from './types.js';
 
 /** Root directory for CLI-owned named profiles, relative to cwd. */
 const PROFILES_DIR = 'tests/vscode-extension-tester/profiles';
@@ -10,14 +11,14 @@ const PROFILES_DIR = 'tests/vscode-extension-tester/profiles';
 /**
  * Resolve the on-disk root for a named profile.
  */
-export function getProfileDir(name: string): string {
+export function getProfileDir(name: string, cwd = process.cwd()): string {
   if (!isValidProfileName(name)) {
     throw new Error(
       `Invalid profile name: "${name}"\n` +
       'Profile names must be alphanumeric with hyphens/underscores (e.g. sql-authenticated).'
     );
   }
-  return path.resolve(process.cwd(), PROFILES_DIR, name);
+  return path.resolve(cwd, PROFILES_DIR, name);
 }
 
 /**
@@ -39,9 +40,96 @@ export function getProfileExtensionsDir(profileDir: string): string {
 /**
  * Check whether a named profile exists on disk.
  */
-export function profileExists(name: string): boolean {
-  const dir = getProfileDir(name);
+export function profileExists(name: string, cwd = process.cwd()): boolean {
+  const dir = getProfileDir(name, cwd);
   return fs.existsSync(dir) && fs.existsSync(getProfileUserDataDir(dir));
+}
+
+export function getEffectiveProfileName(options: Pick<RunOptions, 'reuseNamedProfile' | 'reuseOrCreateNamedProfile' | 'cloneNamedProfile'>): string | undefined {
+  return options.reuseNamedProfile
+    ?? options.reuseOrCreateNamedProfile
+    ?? options.cloneNamedProfile;
+}
+
+export function validateProfileOptions(
+  options: Pick<RunOptions,
+    'attachDevhost' |
+    'parallel' |
+    'reuseNamedProfile' |
+    'reuseOrCreateNamedProfile' |
+    'cloneNamedProfile'
+  >,
+  config: { allowAttachWithProfile?: boolean; cwd?: string; log?: (message: string) => void } = {},
+): void {
+  const cwd = config.cwd ?? process.cwd();
+  const profileFlags = getProfileFlagNames(options);
+
+  if (profileFlags.length > 1) {
+    throw new Error(
+      `Only one profile strategy can be used at a time. Got: ${profileFlags.join(', ')}`
+    );
+  }
+
+  if (options.attachDevhost && profileFlags.length > 0 && config.allowAttachWithProfile !== true) {
+    throw new Error(
+      `Profile flags are not compatible with --attach-devhost.\n` +
+      'In attach mode, you use the existing Dev Host session as-is. Remove --attach-devhost to use named profiles.'
+    );
+  }
+
+  if (options.parallel && (options.reuseNamedProfile || options.reuseOrCreateNamedProfile)) {
+    throw new Error(
+      '--parallel is not compatible with in-place profile reuse.\n' +
+      'Use --clone-named-profile instead so each worker gets its own isolated copy.'
+    );
+  }
+
+  if (options.reuseNamedProfile && !profileExists(options.reuseNamedProfile, cwd)) {
+    throw new Error(
+      `Profile "${options.reuseNamedProfile}" not found.\n` +
+      `Create it first with: vscode-ext-test profile open ${options.reuseNamedProfile}`
+    );
+  }
+
+  if (options.reuseOrCreateNamedProfile && !profileExists(options.reuseOrCreateNamedProfile, cwd)) {
+    const dir = getProfileDir(options.reuseOrCreateNamedProfile, cwd);
+    const userDataDir = getProfileUserDataDir(dir);
+    const extensionsDir = getProfileExtensionsDir(dir);
+    fs.mkdirSync(userDataDir, { recursive: true });
+    fs.mkdirSync(extensionsDir, { recursive: true });
+    config.log?.(`Created new profile "${options.reuseOrCreateNamedProfile}"`);
+  }
+
+  if (options.cloneNamedProfile) {
+    if (!profileExists(options.cloneNamedProfile, cwd)) {
+      throw new Error(
+        `Profile "${options.cloneNamedProfile}" not found - cannot clone a non-existent profile.\n` +
+        `Create it first with: vscode-ext-test profile open ${options.cloneNamedProfile}`
+      );
+    }
+    throw new Error(
+      'Clone-named-profile execution is not yet implemented.\n' +
+      `The profile "${options.cloneNamedProfile}" exists, but cloned worker execution is planned for a future release.\n` +
+      `For now, use --reuse-named-profile ${options.cloneNamedProfile} for serial execution.`
+    );
+  }
+}
+
+export function getProfileUserDataDirForName(name: string, cwd = process.cwd()): string {
+  return getProfileUserDataDir(getProfileDir(name, cwd));
+}
+
+export function getProfileExtensionsDirForName(name: string, cwd = process.cwd()): string {
+  return getProfileExtensionsDir(getProfileDir(name, cwd));
+}
+
+export function detectedUserDataDirMatchesProfile(userDataDir: string | undefined, profileName: string | undefined, cwd = process.cwd()): boolean {
+  if (!profileName || !userDataDir) return false;
+  return normalizePath(userDataDir) === normalizePath(getProfileUserDataDirForName(profileName, cwd));
+}
+
+export function normalizeProfilePath(value: string): string {
+  return normalizePath(value);
 }
 
 /**
@@ -168,4 +256,16 @@ export function listProfiles(): string[] {
 
 function isValidProfileName(name: string): boolean {
   return /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(name);
+}
+
+function getProfileFlagNames(options: Pick<RunOptions, 'reuseNamedProfile' | 'reuseOrCreateNamedProfile' | 'cloneNamedProfile'>): string[] {
+  return [
+    options.reuseNamedProfile && '--reuse-named-profile',
+    options.reuseOrCreateNamedProfile && '--reuse-or-create-named-profile',
+    options.cloneNamedProfile && '--clone-named-profile',
+  ].filter((flag): flag is string => Boolean(flag));
+}
+
+function normalizePath(value: string): string {
+  return path.resolve(value).toLowerCase().replace(/\\/g, '/').replace(/\/+$/g, '');
 }

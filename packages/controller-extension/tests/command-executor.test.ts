@@ -71,6 +71,37 @@ describe('CommandExecutor', () => {
     });
   });
 
+  describe('runExtensionHostScript()', () => {
+    it('should run a script with access to vscode and return JSON-safe values', async () => {
+      const result = await executor.runExtensionHostScript('return { commandCount: (await vscode.commands.getCommands(true)).length };');
+
+      expect(result.ok).toBe(true);
+      expect(result.value).toEqual({ commandCount: 3 });
+    });
+
+    it('should return structured script errors', async () => {
+      const result = await executor.runExtensionHostScript('throw new Error("script failed");');
+
+      expect(result.ok).toBe(false);
+      expect(result.error?.message).toBe('script failed');
+      expect(result.error?.name).toBe('Error');
+    });
+
+    it('should return a timeout error for unresolved async scripts', async () => {
+      vi.useFakeTimers();
+      try {
+        const resultPromise = executor.runExtensionHostScript('await new Promise(() => {});', 25);
+        await vi.advanceTimersByTimeAsync(25);
+        const result = await resultPromise;
+
+        expect(result.ok).toBe(false);
+        expect(result.error?.message).toContain('timed out after 25ms');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe('start()', () => {
     it('should call executeCommand and return immediately', () => {
       let resolveCommand!: () => void;

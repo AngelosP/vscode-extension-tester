@@ -377,6 +377,31 @@ describe('NativeUIClient', () => {
       await expect(client.findWindow('Missing')).rejects.toThrow('Element not found');
     });
 
+    it('should format structured bridge error responses', async () => {
+      const writeFn = fakeProcess.stdin!.write as ReturnType<typeof vi.fn>;
+      writeFn.mockImplementationOnce((data: string) => {
+        stdinWrites.push(data);
+        const id = JSON.parse(data).id;
+        queueMicrotask(() => {
+          fakeStdout.push(JSON.stringify({
+            id,
+            error: {
+              message: 'CopyFromScreen failed',
+              type: 'System.ComponentModel.Win32Exception',
+              hresult: '0x80004005',
+              method: 'captureWindowScreenshot',
+              phase: 'CopyFromScreen',
+            },
+          }) + '\n');
+        });
+        return true;
+      });
+
+      await expect(client.captureWindowScreenshot('win_1', 'C:\\tmp\\shot.png')).rejects.toThrow(
+        /CopyFromScreen failed[\s\S]*type=System\.ComponentModel\.Win32Exception[\s\S]*method=captureWindowScreenshot/,
+      );
+    });
+
     it('should reject when bridge returns invalid JSON', async () => {
       respondWithRaw('NOT VALID JSON');
       await expect(client.findWindow('Test')).rejects.toThrow('Invalid response');

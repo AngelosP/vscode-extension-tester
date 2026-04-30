@@ -236,10 +236,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       parameters: {
         type: 'object',
         properties: {
-          target: { type: 'string', enum: ['webviewSelector', 'accessibleName', 'coordinates', 'currentPosition'], description: 'How to target the click' },
+          target: { type: 'string', enum: ['webviewSelector', 'webviewText', 'webviewAccessibleText', 'accessibleName', 'coordinates', 'currentPosition'], description: 'How to target the click' },
           selector: { type: 'string', description: 'CSS selector when target=webviewSelector' },
           webviewTitle: { type: 'string', description: 'Optional webview title substring to disambiguate' },
-          name: { type: 'string', description: 'Accessible name/text when target=accessibleName' },
+          name: { type: 'string', description: 'Accessible name/text when target=accessibleName, webviewText, or webviewAccessibleText' },
           controlType: { type: 'string', description: 'Optional accessibility control type, e.g. button, edit, menuitem' },
           x: { type: 'integer', description: 'X coordinate when target=coordinates. Relative to the live Dev Host window when a live session is active; otherwise absolute screen X.' },
           y: { type: 'integer', description: 'Y coordinate when target=coordinates. Relative to the live Dev Host window when a live session is active; otherwise absolute screen Y.' },
@@ -404,6 +404,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         properties: {
           mode: { type: 'string', enum: ['auto', 'launch', 'attach'], description: 'How to acquire VS Code. auto attaches when possible, otherwise launches.' },
           screenshotPolicy: { type: 'string', enum: ['always', 'onFailure', 'never'], description: 'When to capture screenshots for live steps.' },
+          reuseNamedProfile: { type: 'string', description: 'Use an existing named profile for launch/auto mode.' },
+          reuseOrCreateNamedProfile: { type: 'string', description: 'Use a named profile, creating it if missing, for launch/auto mode.' },
         },
       },
     },
@@ -432,6 +434,21 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         properties: {
           script: { type: 'string', description: 'Gherkin step block or feature/scenario fragment to run.' },
           stopOnFailure: { type: 'boolean', description: 'Whether to stop at the first failed step. Defaults to true.' },
+        },
+        required: ['script'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'run_extension_host_script',
+      description: 'Run explicit diagnostic JavaScript in the VS Code extension host. This is not Gherkin; use run_gherkin_script for step blocks.',
+      parameters: {
+        type: 'object',
+        properties: {
+          script: { type: 'string', description: 'JavaScript body for an async function with access to the vscode API. Use return to send a result.' },
+          timeoutMs: { type: 'integer', description: 'Optional timeout in milliseconds. Defaults to the controller request timeout.' },
         },
         required: ['script'],
       },
@@ -590,6 +607,8 @@ export async function executeToolCall(
         return await toolRunGherkinStep(ctx, args);
       case 'run_gherkin_script':
         return await toolRunGherkinScript(ctx, args);
+      case 'run_extension_host_script':
+        return await toolRunExtensionHostScript(ctx, args);
       case 'reset_live_session':
         return await toolResetLiveSession(ctx, args);
       case 'end_live_session':
@@ -821,8 +840,7 @@ async function toolClick(ctx: ToolContext, args: Record<string, unknown>): Promi
     throw new Error('Raw mouse targeting requires a reason. Prefer webviewSelector or accessibleName when possible.');
   }
 
-  if (target === 'webviewSelector') {
-    const selector = requiredString(args, 'selector');
+  if (target === 'webviewSelector' || target === 'webviewText' || target === 'webviewAccessibleText') {
     const { CdpClient } = await import('../runner/cdp-client.js');
     const cdp = new CdpClient(ctx.cdpPort ?? CDP_PORT);
     if (ctx.controllerClient) {
@@ -832,8 +850,14 @@ async function toolClick(ctx: ToolContext, args: Record<string, unknown>): Promi
     }
     try {
       await cdp.connect();
-      await cdp.clickInWebviewBySelector(selector, args['webviewTitle'] as string | undefined, { button, clickCount });
-      return `${button} click sent to webview selector: ${selector}`;
+      if (target === 'webviewSelector') {
+        const selector = requiredString(args, 'selector');
+        await cdp.clickInWebviewBySelector(selector, args['webviewTitle'] as string | undefined, { button, clickCount });
+        return `${button} click sent to webview selector: ${selector}`;
+      }
+      const name = requiredString(args, 'name');
+      await cdp.clickInWebviewByAccessibleText(name, args['webviewTitle'] as string | undefined, { button, clickCount });
+      return `${button} click sent to webview text: ${name}`;
     } finally {
       cdp.disconnect();
     }
@@ -1040,6 +1064,8 @@ async function toolStartLiveSession(ctx: ToolContext, args: Record<string, unkno
         parallel: false,
         build: false,
         paused: false,
+        reuseNamedProfile: optionalString(args, 'reuseNamedProfile'),
+        reuseOrCreateNamedProfile: optionalString(args, 'reuseOrCreateNamedProfile'),
       },
       screenshotPolicy,
       finalScreenshot: true,
@@ -1051,6 +1077,15 @@ async function toolStartLiveSession(ctx: ToolContext, args: Record<string, unkno
     ctx.targetPid = session.getSummary().targetPid;
   }
   return JSON.stringify(ctx.liveSession.getSummary(), null, 2);
+}
+
+async function toolRunExtensionHostScript(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const script = requiredString(args, 'script');
+  const timeoutMs = args['timeoutMs'] === undefined ? undefined : requiredInteger(args, 'timeoutMs');
+  const result = ctx.liveSession
+    ? await ctx.liveSession.runExtensionHostScript(script, timeoutMs)
+    : await requireClient(ctx).runExtensionHostScript(script, timeoutMs);
+  return JSON.stringify(result, null, 2);
 }
 
 async function toolRunGherkinStep(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
@@ -1152,6 +1187,15 @@ function requiredString(args: Record<string, unknown>, name: string): string {
   const value = args[name];
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error(`Missing required string argument: ${name}`);
+  }
+  return value;
+}
+
+function optionalString(args: Record<string, unknown>, name: string): string | undefined {
+  const value = args[name];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`Invalid string argument: ${name}`);
   }
   return value;
 }

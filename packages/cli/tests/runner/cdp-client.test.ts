@@ -235,6 +235,58 @@ describe('CdpClient', () => {
     }
   });
 
+  it('uses an explicit evaluate timeout for user diagnostics', async () => {
+    vi.useFakeTimers();
+    mockClientRef.current.Runtime.evaluate.mockReturnValue(new Promise(() => {}));
+
+    try {
+      await client.connect();
+      const evaluation = client.evaluate('window.__longDiagnostic', { timeoutMs: 25_000 });
+      let settled = false;
+      evaluation.catch(() => { settled = true; });
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(settled).toBe(false);
+
+      const assertion = expect(evaluation).rejects.toThrow('CDP Runtime.evaluate timed out after 25000ms');
+      await vi.advanceTimersByTimeAsync(20_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not let the 5s webview operation wrapper preempt explicit long webview evals', async () => {
+    vi.useFakeTimers();
+    let contextHandler: ((params: { context: { id: number } }) => void) | undefined;
+    mockClientRef.current.on.mockImplementation((event: string, handler: typeof contextHandler) => {
+      if (event === 'Runtime.executionContextCreated') contextHandler = handler;
+    });
+    mockClientRef.current.Runtime.enable.mockImplementation(() => {
+      contextHandler?.({ context: { id: 1 } });
+      return Promise.resolve(undefined);
+    });
+    mockClientRef.current.Runtime.evaluate.mockReturnValue(new Promise(() => {}));
+    (mockCdpFactoryRef.current as any).List = vi.fn().mockResolvedValue([
+      { type: 'page', url: 'vscode-webview://kusto', id: 'target-1', title: 'Kusto Workbench' },
+    ]);
+
+    try {
+      const evaluation = client.evaluateInWebview('waitForCompletionTargets(25000)', undefined, { timeoutMs: 25_000 });
+      let settled = false;
+      evaluation.catch(() => { settled = true; });
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(settled).toBe(false);
+
+      const assertion = expect(evaluation).rejects.toThrow('25000ms');
+      await vi.advanceTimersByTimeAsync(20_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('uses DOM events before mouse dispatch for explicit webview selector clicks', async () => {
     let contextHandler: ((params: { context: { id: number } }) => void) | undefined;
     mockClientRef.current.on.mockImplementation((event: string, handler: typeof contextHandler) => {

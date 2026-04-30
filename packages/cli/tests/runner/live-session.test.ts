@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => {
     disconnect: vi.fn(),
     connect: vi.fn().mockResolvedValue(undefined),
     ping: vi.fn().mockResolvedValue({ status: 'ok' }),
+    runExtensionHostScript: vi.fn().mockResolvedValue({ ok: true, value: 42, durationMs: 1 }),
   };
   return {
     client,
@@ -200,5 +201,24 @@ describe('LiveTestSession', () => {
       1234,
       { coordinateOrigin: 'devHostWindow', stepTimeoutMs: 30_000 },
     );
+  });
+
+  it('should run extension-host diagnostic scripts through the live queue', async () => {
+    const session = await LiveTestSession.start({ mode: 'launch', runOptions: runOptions(), finalScreenshot: false });
+
+    const result = await session.runExtensionHostScript('return 42;', 5_000);
+
+    expect(result).toEqual({ ok: true, value: 42, durationMs: 1 });
+    expect(mocks.client.runExtensionHostScript).toHaveBeenCalledWith('return 42;', 5_000);
+  });
+
+  it('should persist final screenshot failures as live summary warnings', async () => {
+    mocks.captureArtifactScreenshot.mockRejectedValueOnce(new Error('GDI+ failed'));
+    const session = await LiveTestSession.start({ mode: 'launch', runOptions: runOptions(), finalScreenshot: true });
+
+    await session.close();
+
+    expect(session.getSummary().warnings?.join('\n')).toContain('GDI+ failed');
+    expect(mocks.events).toEqual(['cleanup', 'close']);
   });
 });

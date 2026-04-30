@@ -101,6 +101,13 @@ export class WSServer {
         );
       }
 
+      case 'runExtensionHostScript': {
+        return this.services.commandExecutor.runExtensionHostScript(
+          p['script'] as string,
+          p['timeoutMs'] as number | undefined,
+        );
+      }
+
       // ─── Open file in editor (via code, no dialog) ───
       case 'openFile': {
         const vscode = require('vscode');

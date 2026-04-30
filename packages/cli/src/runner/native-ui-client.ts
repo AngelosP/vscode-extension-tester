@@ -2,6 +2,7 @@ import * as cp from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
+import type { NativeBridgeErrorDetails, ScreenshotCaptureResult } from '../types.js';
 
 /**
  * Client for the FlaUI bridge - automates native Windows dialogs.
@@ -133,8 +134,8 @@ export class NativeUIClient {
   }
 
   /** Capture a window screenshot to a PNG file. */
-  async captureWindowScreenshot(windowId: string, filePath: string): Promise<void> {
-    await this.call('captureWindowScreenshot', { windowId, filePath });
+  async captureWindowScreenshot(windowId: string, filePath: string): Promise<ScreenshotCaptureResult> {
+    return this.call('captureWindowScreenshot', { windowId, filePath }) as Promise<ScreenshotCaptureResult>;
   }
 
   /** List all visible windows. */
@@ -264,9 +265,9 @@ export class NativeUIClient {
   }
 
   /** Capture the Dev Host window to a PNG file. */
-  async captureDevHostScreenshot(filePath: string): Promise<void> {
+  async captureDevHostScreenshot(filePath: string): Promise<ScreenshotCaptureResult> {
     const win = await this.findDevHostWindow();
-    await this.captureWindowScreenshot(win.id, filePath);
+    return this.captureWindowScreenshot(win.id, filePath);
   }
 
   /**
@@ -468,7 +469,7 @@ export class NativeUIClient {
     clearTimeout(pending.timer);
 
     if (parsed.error) {
-      pending.reject(new Error(parsed.error));
+      pending.reject(new Error(formatNativeBridgeError(parsed.error, this.stderrBuffer)));
     } else {
       pending.resolve(parsed.result);
     }
@@ -517,7 +518,28 @@ interface PendingNativeCall {
 interface NativeBridgeResponse {
   id?: number;
   result?: unknown;
-  error?: string;
+  error?: string | NativeBridgeErrorDetails;
+}
+
+function formatNativeBridgeError(error: string | NativeBridgeErrorDetails, stderr: string): string {
+  if (typeof error === 'string') {
+    const detail = stderr.trim();
+    return detail ? `${error}\nRecent FlaUI stderr:\n${detail}` : error;
+  }
+
+  const parts = [error.message];
+  const metadata = [
+    error.type && `type=${error.type}`,
+    error.hresult !== undefined && `hresult=${error.hresult}`,
+    error.method && `method=${error.method}`,
+    error.phase && `phase=${error.phase}`,
+  ].filter(Boolean).join(', ');
+  if (metadata) parts.push(`(${metadata})`);
+  if (error.inner) parts.push(`Inner: ${formatNativeBridgeError(error.inner, '')}`);
+  if (error.stack) parts.push(`Stack:\n${error.stack}`);
+  const detail = stderr.trim();
+  if (detail) parts.push(`Recent FlaUI stderr:\n${detail}`);
+  return parts.join('\n');
 }
 
 export type NativeMouseButton = 'left' | 'right' | 'middle';

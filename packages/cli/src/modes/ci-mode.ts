@@ -66,7 +66,7 @@ export async function createLaunchDevHostSession(options: RunOptions): Promise<L
   let extensionsDir: string | undefined;
 
   if (profileName) {
-    const profileDir = getProfileDir(profileName);
+    const profileDir = getProfileDir(profileName, path.resolve(options.extensionPath));
     userDataDir = getProfileUserDataDir(profileDir);
     extensionsDir = getProfileExtensionsDir(profileDir);
     clearWindowRestoreState(userDataDir);

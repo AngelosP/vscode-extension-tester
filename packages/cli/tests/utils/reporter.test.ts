@@ -29,6 +29,7 @@ function makeRunResult(overrides: Partial<TestRunResult> = {}): TestRunResult {
               {
                 keyword: 'Then ', text: 'I should see notification "missing"', status: 'failed', durationMs: 5000,
                 error: { message: 'Notification not found' },
+                artifacts: { screenshots: [], logs: [], warnings: ['Could not capture failure screenshot: GDI+ failed'] },
               },
             ],
             durationMs: 5100,
@@ -92,6 +93,18 @@ describe('reporter', () => {
       const output = logs.join('\n');
       expect(output).toContain('Notification not found');
 
+      spy.mockRestore();
+    });
+
+    it('should show artifact warnings for affected steps', () => {
+      const logs: string[] = [];
+      const spy = vi.spyOn(console, 'log').mockImplementation((...args) => {
+        logs.push(args.join(' '));
+      });
+
+      printResults(makeRunResult(), 'console');
+
+      expect(logs.join('\n')).toContain('Could not capture failure screenshot');
       spy.mockRestore();
     });
 
@@ -229,6 +242,13 @@ describe('reporter', () => {
       expect(content).toContain('Notification not found');
     });
 
+    it('should include artifact warnings in markdown', () => {
+      const reportPath = writeReportFile(makeRunResult(), tmpDir, testMetadata);
+      const content = fs.readFileSync(reportPath, 'utf-8');
+
+      expect(content).toContain('Warning: Could not capture failure screenshot');
+    });
+
     it('should include run metadata in markdown', () => {
       const reportPath = writeReportFile(makeRunResult(), tmpDir, testMetadata);
       const content = fs.readFileSync(reportPath, 'utf-8');
@@ -275,6 +295,7 @@ describe('reporter', () => {
       expect(fs.existsSync(path.join(runDir, 'console.log'))).toBe(true);
       const content = fs.readFileSync(path.join(runDir, 'console.log'), 'utf-8');
       expect(content).toContain('test console output');
+      expect(content).toContain('WARNING: Could not capture failure screenshot');
     });
 
     it('should include screenshots in results.json if present', () => {

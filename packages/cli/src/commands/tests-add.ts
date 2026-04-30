@@ -63,6 +63,8 @@ When steps (actions):
   When I right click "<css selector>" in the webview
   When I middle click "<css selector>" in the webview
   When I double click "<css selector>" in the webview
+  When I click the webview element "<text>"
+  When I evaluate "<js>" in the webview for <N> seconds
   When I move the mouse to <x>, <y>
   When I click
   When I right click
@@ -94,6 +96,7 @@ Then steps (assertions):
 
 INPUT TARGETING RULES:
 - Prefer VS Code commands, QuickInput inspection/selection/text steps, dialog responders, and stable webview CSS selectors/data-testid values.
+- Use webview visible-text clicks only when no stable selector exists; use native accessible-name clicks after webview text clicks.
 - Prefer QuickInput/progress/notification wait steps over fixed waits; QuickInput steps can use captured state or the visible workbench widget.
 - Use accessible-name clicks for native/workbench UI when a stable name exists.
 - Use right-click steps to open context menus before selecting from the popup menu.
@@ -116,7 +119,7 @@ YOUR WORKFLOW:
 2. Read source files to understand command implementations and expected behavior
 3. Read existing .feature files to understand current test coverage
 4. Read memory files for knowledge from previous sessions
-5. If you have Dev Host access, use run_gherkin_step or run_gherkin_script to probe behavior in the live session, then inspect screenshots/log artifacts from the result. Avoid committing raw-coordinate steps unless there is no semantic alternative.
+5. If you have Dev Host access, use run_gherkin_step or run_gherkin_script to probe Gherkin behavior in the live session, then inspect screenshots/log artifacts from the result. Use run_extension_host_script only for diagnostic JavaScript that must run inside the VS Code extension host with the vscode API. Avoid committing raw-coordinate steps unless there is no semantic alternative.
 6. Draft new .feature files or updates to existing ones
 7. Write the .feature files using write_feature_file
 8. If you have Dev Host access, run the tests using run_test to verify they pass
@@ -142,7 +145,7 @@ You have access to the same tools as before. The tests you wrote in a previous s
 YOUR WORKFLOW:
 1. Read the failing test files and understand the failures
 2. Read source code to verify expected behavior
-3. If you have Dev Host access, use run_gherkin_step or run_gherkin_script to observe actual behavior, screenshots, and logs
+3. If you have Dev Host access, use run_gherkin_step or run_gherkin_script to observe actual Gherkin behavior, screenshots, and logs; use run_extension_host_script only for vscode API diagnostics
 4. Optionally escalate log level with set_log_level for more diagnostics
 5. Fix the .feature files based on what you observe
 6. Run the tests again with run_test to verify the fix

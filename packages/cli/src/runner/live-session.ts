@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type {
   FeatureResult,
+  ExtensionHostScriptResult,
   LiveScriptResult,
   LiveSessionOptions,
   LiveSessionSummary,
@@ -19,6 +20,7 @@ import { createLaunchDevHostSession, type LaunchDevHostSession } from '../modes/
 import { attachDevHostSession, type AttachDevHostSession, runFeatures } from '../modes/dev-mode.js';
 import { detectDevHost } from '../utils/dev-host-detector.js';
 import { buildExtension } from '../build.js';
+import { detectedUserDataDirMatchesProfile, getEffectiveProfileName, getProfileUserDataDirForName } from '../profile.js';
 
 export type LiveDevHostSession = LaunchDevHostSession | AttachDevHostSession;
 
@@ -33,6 +35,7 @@ export class LiveTestSession {
   private failedSteps = 0;
   private closed = false;
   private finalScreenshot?: StepArtifact;
+  private readonly warnings: string[] = [];
 
   readonly artifactsDir: string;
 
@@ -70,6 +73,11 @@ export class LiveTestSession {
 
     const runOptions = { ...this.options.runOptions, build: this.options.build ?? this.options.runOptions.build };
     const requestedMode = this.options.mode;
+    const extensionCwd = path.resolve(runOptions.extensionPath);
+    const requestedProfile = getEffectiveProfileName(runOptions);
+    const requestedProfileUserDataDir = requestedProfile
+      ? getProfileUserDataDirForName(requestedProfile, extensionCwd)
+      : undefined;
     let lifecycle: LiveDevHostSession;
 
     if (requestedMode === 'attach') {
@@ -78,14 +86,18 @@ export class LiveTestSession {
       lifecycle = await createLaunchDevHostSession(runOptions);
     } else {
       const devHost = await detectDevHost(runOptions.extensionPath);
-      if (devHost) {
+      const canAttachToDetectedHost = devHost && (!requestedProfile || detectedUserDataDirMatchesProfile(devHost.userDataDir, requestedProfile, extensionCwd));
+      if (canAttachToDetectedHost) {
         try {
-          lifecycle = await attachDevHostSession(runOptions);
+          lifecycle = await attachDevHostSession(runOptions, requestedProfileUserDataDir);
         } catch (err) {
           this.log(`Could not attach to existing Dev Host, launching a new one: ${errorMessage(err)}`);
           lifecycle = await createLaunchDevHostSession(runOptions);
         }
       } else {
+        if (devHost && requestedProfile) {
+          this.log(`Detected Dev Host is not using profile "${requestedProfile}"; launching a new profiled Dev Host.`);
+        }
         lifecycle = await createLaunchDevHostSession(runOptions);
       }
     }
@@ -130,6 +142,13 @@ export class LiveTestSession {
         stoppedOnFailure,
         durationMs: Date.now() - started,
       };
+    });
+  }
+
+  async runExtensionHostScript(script: string, timeoutMs?: number): Promise<ExtensionHostScriptResult> {
+    return this.enqueue(async () => {
+      if (!this.lifecycle) throw new Error('Live session has not started');
+      return this.lifecycle.client.runExtensionHostScript(script, timeoutMs);
     });
   }
 
@@ -219,6 +238,7 @@ export class LiveTestSession {
         cdpPort: this.options.runOptions.cdpPort,
         stepsRun: this.stepsRun,
         failedSteps: this.failedSteps,
+        warnings: this.warnings.length > 0 ? [...this.warnings] : undefined,
         closed: this.closed,
       };
     }
@@ -235,6 +255,7 @@ export class LiveTestSession {
       stepsRun: this.stepsRun,
       failedSteps: this.failedSteps,
       finalScreenshot: this.finalScreenshot,
+      warnings: this.warnings.length > 0 ? [...this.warnings] : undefined,
       closed: this.closed,
     };
   }
@@ -258,8 +279,16 @@ export class LiveTestSession {
     try {
       const targetDir = path.join(this.artifactsDir, 'final');
       this.finalScreenshot = await this.runner.captureArtifactScreenshot('final', 'final-screenshot', targetDir);
+      if (this.finalScreenshot.message) {
+        this.warnings.push(this.finalScreenshot.message);
+      }
     } catch (err) {
-      this.log(`Could not capture final screenshot: ${errorMessage(err)}`);
+      const message = `Could not capture final screenshot: ${errorMessage(err)}`;
+      this.warnings.push(message);
+      this.log(message);
+      const targetDir = path.join(this.artifactsDir, 'final');
+      fs.mkdirSync(targetDir, { recursive: true });
+      fs.writeFileSync(path.join(targetDir, 'screenshot-error.json'), JSON.stringify({ message, timestamp: new Date().toISOString() }, null, 2), 'utf-8');
     }
     return this.finalScreenshot;
   }

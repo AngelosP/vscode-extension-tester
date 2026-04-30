@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "currentVersion": "0.1.1",
-  "updatedAt": "2026-04-29",
+  "currentVersion": "0.2.0",
+  "updatedAt": "2026-04-30",
   "packages": [
     "packages/controller-extension/package.json"
   ],
@@ -18,6 +18,13 @@
       "kind": "patch",
       "previousVersion": "0.1.0",
       "notes": "Add automated extension build versioning workflow."
+    },
+    {
+      "version": "0.2.0",
+      "date": "2026-04-30",
+      "kind": "minor",
+      "previousVersion": "0.1.1",
+      "notes": "Add extension-host diagnostic script RPC for live sessions"
     }
   ]
 }

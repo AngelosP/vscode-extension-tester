@@ -256,6 +256,8 @@ When steps (actions):
   When I right click "<css selector>" in the webview
   When I middle click "<css selector>" in the webview
   When I double click "<css selector>" in the webview
+  When I click the webview element "<text>"
+  When I evaluate "<js>" in the webview for <N> seconds
   When I move the mouse to <x>, <y>
   When I click
   When I right click
@@ -296,7 +298,7 @@ RULES:
 - Keep scenarios focused - test one behavior per scenario.
 - Include at least one assertion per scenario (notification, editor content, or output channel).
 - If a command opens a QuickPick or InputBox, first wait for/inspect the QuickInput, then select by visible label or item id and enter text with QuickInput steps; these can use captured state or the visible workbench widget.
-- Prefer commands and stable webview selectors/data-testid values; use accessible-name clicks next; use raw coordinates only as a last resort. Live-session raw coordinates are full Dev Host window/screenshot-relative; normal batch-run raw coordinates are absolute screen coordinates.
+- Prefer commands and stable webview selectors/data-testid values; use webview visible-text clicks when selectors are unavailable; use native accessible-name clicks next; use raw coordinates only as a last resort. Live-session raw coordinates are full Dev Host window/screenshot-relative; normal batch-run raw coordinates are absolute screen coordinates.
 - Use right-click steps to open context menus before selecting items from popup menus.
 `;
 

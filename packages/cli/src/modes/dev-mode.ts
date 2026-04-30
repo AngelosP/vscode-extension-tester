@@ -5,6 +5,7 @@ import { detectDevHost } from '../utils/dev-host-detector.js';
 import { ControllerClient } from '../runner/controller-client.js';
 import { GherkinParser } from '../runner/gherkin-parser.js';
 import { TestRunner, type TestRunnerOptions } from '../runner/test-runner.js';
+import { normalizeProfilePath } from '../profile.js';
 
 export interface AttachDevHostSession {
   mode: 'attach';
@@ -44,7 +45,7 @@ export async function attachMode(options: RunOptions, artifactsDir?: string): Pr
   }
 }
 
-export async function attachDevHostSession(options: RunOptions): Promise<AttachDevHostSession> {
+export async function attachDevHostSession(options: RunOptions, expectedUserDataDir?: string): Promise<AttachDevHostSession> {
   // 1. Fast-fail: verify a Dev Host process exists before polling the WebSocket
   const devHost = await detectDevHost(options.extensionPath);
   if (!devHost) {
@@ -52,6 +53,13 @@ export async function attachDevHostSession(options: RunOptions): Promise<AttachD
       'No Extension Development Host found.\n' +
       'Make sure you have started a debug session (F5) first.\n' +
       'Or remove --attach-devhost to launch an isolated VS Code instance automatically.'
+    );
+  }
+  if (expectedUserDataDir && normalizeProfilePath(devHost.userDataDir ?? '') !== normalizeProfilePath(expectedUserDataDir)) {
+    throw new Error(
+      `Detected Dev Host is not using the requested profile user-data-dir.\n` +
+      `Expected: ${expectedUserDataDir}\n` +
+      `Actual: ${devHost.userDataDir ?? '<unknown>'}`
     );
   }
   console.log(`Found Extension Development Host (PID: ${devHost.pid})`);

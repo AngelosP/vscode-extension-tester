@@ -8,6 +8,7 @@ import type {
   QuickInputSelectResult,
   QuickInputState,
   QuickInputTextResult,
+  ExtensionHostScriptResult,
 } from '../types.js';
 import { WS_CONNECT_TIMEOUT_MS } from '../types.js';
 
@@ -53,6 +54,14 @@ export class ControllerClient {
 
   async startCommand(commandId: string, args?: unknown[]): Promise<unknown> {
     return this.send('startCommand', { commandId, args });
+  }
+
+  async runExtensionHostScript(script: string, timeoutMs = this.requestTimeoutMs): Promise<ExtensionHostScriptResult> {
+    return this.send(
+      'runExtensionHostScript',
+      { script, timeoutMs },
+      Math.max(this.requestTimeoutMs, timeoutMs + 1_000),
+    ) as Promise<ExtensionHostScriptResult>;
   }
 
   async respondToQuickPick(label: string): Promise<unknown> {
@@ -211,7 +220,7 @@ export class ControllerClient {
     await this.send('resetState');
   }
 
-  private send(method: string, params?: unknown): Promise<unknown> {
+  private send(method: string, params?: unknown, requestTimeoutMs = this.requestTimeoutMs): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         reject(new Error('Not connected'));
@@ -222,7 +231,7 @@ export class ControllerClient {
       const timer = setTimeout(() => {
         const p = this.pending.get(id);
         if (p) { this.pending.delete(id); p.reject(new Error(`Request ${method} timed out`)); }
-      }, this.requestTimeoutMs);
+      }, requestTimeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.ws.send(JSON.stringify(request));
     });

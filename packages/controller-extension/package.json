@@ -2,7 +2,7 @@
   "name": "vscode-extension-tester-controller",
   "displayName": "Extension Tester Controller",
   "description": "VS Code extension that provides remote control via WebSocket for automated testing",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "vscode-extension-tester",
   "main": "dist/extension.js",
   "activationEvents": [

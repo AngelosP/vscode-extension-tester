@@ -5,6 +5,10 @@ import {
   getProfileDir,
   getProfileUserDataDir,
   getProfileExtensionsDir,
+  getEffectiveProfileName,
+  getProfileUserDataDirForName,
+  validateProfileOptions,
+  detectedUserDataDirMatchesProfile,
   profileExists,
   listProfiles,
   deleteProfile,
@@ -47,6 +51,13 @@ describe('profile', () => {
       const dir = getProfileDir('test');
       expect(dir).toContain(path.join('tests', 'vscode-extension-tester', 'profiles', 'test'));
     });
+
+    it('should resolve profiles relative to an explicit cwd', () => {
+      const root = path.join(process.cwd(), 'fixture-extension');
+      const dir = getProfileDir('test', root);
+
+      expect(dir).toBe(path.join(root, 'tests', 'vscode-extension-tester', 'profiles', 'test'));
+    });
   });
 
   describe('getProfileUserDataDir()', () => {
@@ -60,6 +71,28 @@ describe('profile', () => {
     it('should return extensions subdirectory', () => {
       const dir = getProfileExtensionsDir('/some/profile');
       expect(dir).toBe(path.join('/some/profile', 'extensions'));
+    });
+  });
+
+  describe('shared profile option helpers', () => {
+    it('should resolve the effective named profile from mutually exclusive options', () => {
+      expect(getEffectiveProfileName({ reuseNamedProfile: 'existing' })).toBe('existing');
+      expect(getEffectiveProfileName({ reuseOrCreateNamedProfile: 'new' })).toBe('new');
+      expect(getEffectiveProfileName({ cloneNamedProfile: 'clone' })).toBe('clone');
+    });
+
+    it('should reject conflicting named profile options', () => {
+      expect(() => validateProfileOptions({ reuseNamedProfile: 'a', cloneNamedProfile: 'b' })).toThrow(
+        'Only one profile strategy can be used at a time',
+      );
+    });
+
+    it('should compare detected user data paths against a named profile', () => {
+      const root = path.join(process.cwd(), 'fixture-extension');
+      const expected = getProfileUserDataDirForName('live', root);
+
+      expect(detectedUserDataDirMatchesProfile(expected, 'live', root)).toBe(true);
+      expect(detectedUserDataDirMatchesProfile(path.join(root, 'elsewhere'), 'live', root)).toBe(false);
     });
   });
 

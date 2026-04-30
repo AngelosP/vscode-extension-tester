@@ -158,10 +158,13 @@ The command emits JSONL on stdout and reads JSONL requests from stdin. All opera
 ```jsonl
 {"id":1,"method":"runStep","params":{"step":"When I execute command \"workbench.action.showCommands\""}}
 {"id":2,"method":"runScript","params":{"script":"Then I wait 1 second\nWhen I press \"Escape\""}}
-{"id":3,"method":"end"}
+{"id":3,"method":"runExtensionHostScript","params":{"script":"return vscode.window.activeTextEditor?.document.uri.toString();","timeoutMs":5000}}
+{"id":4,"method":"end"}
 ```
 
-Live mode supports `auto`, `launch`, and `attach`. Each step returns pass/fail status, output/log artifact paths, current VS Code state, and screenshots according to `--screenshot-policy` (`always`, `onFailure`, or `never`). A final screenshot is captured before shutdown unless `--no-final-screenshot` is set. In attach mode, ending a session only disconnects from the existing Dev Host.
+Live mode supports `auto`, `launch`, and `attach`. Launch/auto mode also accepts `--reuse-named-profile`, `--reuse-or-create-named-profile`, and `--clone-named-profile`; auto attach only reuses an existing Dev Host when its detected user-data directory matches the requested profile. Each step returns pass/fail status, output/log artifact paths, current VS Code state, and screenshots according to `--screenshot-policy` (`always`, `onFailure`, or `never`). Screenshot capture warnings are included in the step artifacts and reports. A final screenshot is captured before shutdown unless `--no-final-screenshot` is set. In attach mode, ending a session only disconnects from the existing Dev Host.
+
+Use `runScript` for Gherkin step blocks. Use `runExtensionHostScript` only for explicit diagnostic JavaScript that must run inside the VS Code extension host with the `vscode` API available.
 
 `tests add` uses live probing by default when exploration is enabled. Control it with `--live-mode auto|launch|attach|off`.
 
@@ -213,6 +216,8 @@ Scenario: Monitor only the channels I care about
 | `I wait for QuickInput item "<label>"` | Then | Wait for a QuickInput item from the captured model or visible workbench widget |
 | `I select QuickInput item "<label>"` | When | Select a QuickInput item by visible label or item id |
 | `I enter "<text>" in the QuickInput` | When | Enter and accept QuickInput text after validation clears |
+| `I click the webview element "<text>"` | When | Click a webview control by visible text, aria-label, title, or role text |
+| `I evaluate "<js>" in the webview for <N> seconds` | When | Run diagnostic JavaScript in a webview with an explicit timeout budget |
 | `I click "<action>" on notification "<text>"` | When | Resolve a captured VS Code notification action |
 | `I wait for progress "<title>" to complete` | Then | Wait for a tracked VS Code progress operation to finish |
 | `the output channel "<name>" should contain "<text>"` | Then | Assert the channel contains the given text |

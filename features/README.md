@@ -34,7 +34,7 @@ tests/vscode-extension-tester/
 
 The reserved folder name `default` is used when no `--reuse-named-profile`, `--reuse-or-create-named-profile`, or `--clone-named-profile` flag is passed.
 
-Live authoring sessions keep one VS Code window open and write per-step screenshots, output-channel deltas, copied host logs, and `step-result.json` manifests under `.vscode-ext-test/live/<timestamp>/`. This is what `vscode-ext-test live` and `vscode-ext-test tests add --live-mode auto` use while probing steps before committing a full `.feature` file.
+Live authoring sessions keep one VS Code window open and write per-step screenshots, output-channel deltas, copied host logs, and `step-result.json` manifests under `.vscode-ext-test/live/<timestamp>/`. Screenshot capture warnings are copied into step artifacts and reports. This is what `vscode-ext-test live` and `vscode-ext-test tests add --live-mode auto` use while probing steps before committing a full `.feature` file. Live launch/auto sessions accept the same named profile flags as normal runs; auto attach only attaches to an existing Dev Host when the detected user-data directory matches the requested profile.
 
 ## Running Tests
 
@@ -99,6 +99,8 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 | `When I right click "<sel>" in the webview` | Right-click a webview element by CSS selector |
 | `When I middle click "<sel>" in the webview` | Middle-click a webview element by CSS selector |
 | `When I double click "<sel>" in the webview` | Double-click a webview element by CSS selector |
+| `When I click the webview element "<text>"` | Click a webview control by visible text, aria-label, title, or role text |
+| `When I evaluate "<js>" in the webview for <N> seconds` | Run diagnostic JavaScript in a webview with an explicit timeout budget |
 | `When I move the mouse to <x>, <y>` | Move the OS cursor to coordinates; live sessions use Dev Host window/screenshot-relative coordinates, normal batch runs use absolute screen coordinates |
 | `When I click` | Click at the current mouse position |
 | `When I right click` | Right-click at the current mouse position |
@@ -121,9 +123,8 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 
 ### Input Targeting Guidance
 
-Prefer commands and QuickInput inspection/selection/text steps first; they use captured extension-host state when available and the visible workbench widget as a fallback. Use webview CSS selectors next,
-and accessible-name clicks for workbench/native UI. Use raw mouse coordinates
-only when no command, selector, or accessible name can target the UI. In live
+Prefer commands and QuickInput inspection/selection/text steps first; they use captured extension-host state when available and the visible workbench widget as a fallback. Use stable webview CSS selectors next, then webview visible-text clicks when selectors are unavailable, then accessible-name clicks for workbench/native UI. Use raw mouse coordinates
+only when no command, selector, visible text, or accessible name can target the UI. In live
 sessions, raw coordinates are relative to the full Dev Host window/screenshot,
 including title bar and borders; in normal batch runs, they are absolute screen
 coordinates. Stabilize the Dev Host window with resize/move steps first. To use a context menu,

@@ -111,6 +111,7 @@ function resetMockCdp(): void {
     getTextInWebview: vi.fn().mockResolvedValue(''),
     evaluateInWebview: vi.fn().mockResolvedValue(undefined),
     clickInWebviewBySelector: vi.fn().mockResolvedValue(undefined),
+    clickInWebviewByAccessibleText: vi.fn().mockResolvedValue(undefined),
     focusInWebviewBySelector: vi.fn().mockResolvedValue(undefined),
     scrollInWebview: vi.fn().mockResolvedValue(undefined),
     evaluate: vi.fn().mockResolvedValue(null),
@@ -1466,6 +1467,54 @@ describe('TestRunner', () => {
         button: 'right',
         clickCount: 1,
       });
+    });
+
+    it('should click a webview element by visible text', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Click webview text', [
+          makeStep('When ', 'I click the webview element "Try In Playground"'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(getMockCdp().clickInWebviewByAccessibleText).toHaveBeenCalledWith('Try In Playground', undefined, {
+        button: 'left',
+        clickCount: 1,
+      });
+    });
+
+    it('should pass explicit long webview eval timeouts through CDP', async () => {
+      getMockCdp().evaluateInWebview.mockResolvedValue('diagnostic');
+      const feature = makeFeature('Test', [
+        makeScenario('Long eval', [
+          makeStep('When ', 'I evaluate "waitForCompletionTargets(25000)" in the webview for 25 seconds'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(getMockCdp().evaluateInWebview).toHaveBeenCalledWith(
+        'waitForCompletionTargets(25000)',
+        undefined,
+        { timeoutMs: 25_000 },
+      );
+    });
+
+    it('should reject webview eval timeouts that consume the whole step budget', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Too long eval', [
+          makeStep('When ', 'I evaluate "waitForCompletionTargets(30000)" in the webview for 30 seconds'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('failed');
+      expect(result.scenarios[0].steps[0].error?.message).toContain('must be less than the step timeout');
+      expect(getMockCdp().evaluateInWebview).not.toHaveBeenCalled();
     });
   });
 

@@ -13,6 +13,7 @@ while ((line = Console.ReadLine()) != null)
     if (string.IsNullOrWhiteSpace(line)) continue;
 
     int? id = null;
+    string? method = null;
 
     try
     {
@@ -22,7 +23,7 @@ while ((line = Console.ReadLine()) != null)
         {
             id = idEl.GetInt32();
         }
-        var method = root.GetProperty("method").GetString()!;
+        method = root.GetProperty("method").GetString()!;
         var p = root.TryGetProperty("params", out var paramsEl) ? paramsEl : default;
 
         object? result = method switch
@@ -120,8 +121,21 @@ while ((line = Console.ReadLine()) != null)
     }
     catch (Exception ex)
     {
-        Console.WriteLine(JsonSerializer.Serialize(new { id, error = ex.Message }));
+        Console.WriteLine(JsonSerializer.Serialize(new { id, error = ToErrorDetails(ex, method) }));
     }
 
     Console.Out.Flush();
+}
+
+static object ToErrorDetails(Exception ex, string? method)
+{
+    return new
+    {
+        message = ex.Message,
+        type = ex.GetType().FullName,
+        hresult = $"0x{ex.HResult:X8}",
+        stack = ex.StackTrace,
+        method,
+        inner = ex.InnerException == null ? null : ToErrorDetails(ex.InnerException, method)
+    };
 }

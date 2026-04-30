@@ -1,7 +1,9 @@
 import * as readline from 'node:readline';
+import * as path from 'node:path';
 import type { RunOptions, ScreenshotPolicy } from '../types.js';
 import { CDP_PORT, CONTROLLER_WS_PORT, DEFAULT_FEATURES_DIR, STEP_TIMEOUT_MS } from '../types.js';
 import { LiveTestSession } from '../runner/live-session.js';
+import { validateProfileOptions } from '../profile.js';
 
 interface LiveCommandOptions {
   mode?: 'auto' | 'launch' | 'attach';
@@ -16,6 +18,9 @@ interface LiveCommandOptions {
   screenshotPolicy?: ScreenshotPolicy;
   finalScreenshot?: boolean;
   artifactsDir?: string;
+  reuseNamedProfile?: string;
+  reuseOrCreateNamedProfile?: string;
+  cloneNamedProfile?: string;
 }
 
 interface LiveRequest {
@@ -61,11 +66,18 @@ export async function liveCommand(opts: LiveCommandOptions): Promise<void> {
       recordOnFailure: false,
       reporter: 'json',
       timeout: parseInt(String(opts.timeout ?? STEP_TIMEOUT_MS), 10),
+      reuseNamedProfile: opts.reuseNamedProfile,
+      reuseOrCreateNamedProfile: opts.reuseOrCreateNamedProfile,
+      cloneNamedProfile: opts.cloneNamedProfile,
       autoReset: false,
       parallel: false,
       build: opts.build !== false,
       paused: false,
     };
+    validateProfileOptions(runOptions, {
+      cwd: path.resolve(runOptions.extensionPath),
+      log: (message) => console.error(message),
+    });
 
     session = await LiveTestSession.start({
       mode: normalizeLiveMode(opts.mode),
@@ -124,6 +136,11 @@ async function handleRequest(session: LiveTestSession, request: LiveRequest): Pr
       const stopOnFailure = request.params?.stopOnFailure !== false;
       return session.runScript(script, stopOnFailure);
     }
+    case 'runExtensionHostScript': {
+      const script = requiredString(request.params?.script, 'params.script');
+      const timeoutMs = optionalPositiveInteger(request.params?.timeoutMs, 'params.timeoutMs');
+      return session.runExtensionHostScript(script, timeoutMs);
+    }
     case 'reset': {
       const mode = request.params?.mode === 'reload' ? 'reload' : 'cleanState';
       await session.reset(mode);
@@ -138,6 +155,14 @@ async function handleRequest(session: LiveTestSession, request: LiveRequest): Pr
     default:
       throw new Error(`Unknown live method: ${request.method ?? '<missing>'}`);
   }
+}
+
+function optionalPositiveInteger(value: unknown, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return value;
 }
 
 function requiredString(value: unknown, name: string): string {

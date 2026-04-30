@@ -2,6 +2,7 @@ import type { ControllerClient } from './controller-client.js';
 import type { ParsedFeature, ParsedScenario, ParsedStep } from './gherkin-parser.js';
 import type {
   FeatureResult,
+  AutomationDiagnostic,
   LiveStepArtifacts,
   LiveStepResult,
   NotificationInfo,
@@ -32,6 +33,7 @@ export class TestRunner {
   private nativeUI?: NativeUIClient;
   private cdp?: CdpClient;
   private screenshotCounter = 0;
+  private diagnosticCounter = 0;
   private currentScenarioName: string | undefined;
   private dispatchArtifacts: StepArtifact[] = [];
   /** Per-channel byte offsets recorded before each scenario starts. */
@@ -156,6 +158,7 @@ export class TestRunner {
             stepDir,
           );
           artifacts.screenshots.push(screenshot);
+          if (screenshot.message) artifacts.warnings.push(screenshot.message);
         } catch (err) {
           artifacts.warnings.push(`Could not capture step screenshot: ${errorMessage(err)}`);
         }
@@ -218,6 +221,7 @@ export class TestRunner {
       return { keyword: step.keyword, text: step.text, status: 'passed', durationMs: Date.now() - startTime, outputLog, artifacts };
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
+      const diagnosticArtifacts = this.diagnosticArtifactsFromError(error);
 
       let outputLog: string | undefined;
       try {
@@ -238,7 +242,7 @@ export class TestRunner {
           warnings.push(`Could not capture failure screenshot: ${errorMessage(screenshotError)}`);
         }
       }
-      const artifacts = this.buildArtifacts(screenshots, [], warnings);
+      const artifacts = this.buildArtifacts(screenshots, diagnosticArtifacts, warnings);
       return { keyword: step.keyword, text: step.text, status: 'failed', durationMs: Date.now() - startTime, error: { message: error.message, stack: error.stack }, outputLog, artifacts };
     }
   }
@@ -248,16 +252,27 @@ export class TestRunner {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return operation;
 
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    const observedOperation = operation.catch((err) => {
+      if (timedOut) return new Promise<never>(() => undefined);
+      throw err;
+    });
     const timeout = new Promise<never>((_, reject) => {
       timeoutHandle = setTimeout(() => {
+        timedOut = true;
         this.cdp?.disconnect();
+        this.cdp = undefined;
+        if (this.nativeUI?.isRunning) {
+          this.nativeUI.stop();
+          this.nativeUI = undefined;
+        }
         reject(new Error(`Step timed out after ${timeoutMs}ms: "${stepText}"`));
       }, timeoutMs);
       unrefTimer(timeoutHandle);
     });
 
     try {
-      return await Promise.race([operation, timeout]);
+      return await Promise.race([observedOperation, timeout]);
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
     }
@@ -648,6 +663,16 @@ export class TestRunner {
       return;
     }
 
+    // ─── Webview: click by accessible/visible text ───
+    match = text.match(/^I (?:(left|right|middle) )?(click|double click) the webview element "([^"]+)"(?: in the webview(?: "([^"]+)")?)?$/);
+    if (match) {
+      await (await this.requireCdp()).clickInWebviewByAccessibleText(match[3], match[4], {
+        button: (match[1] ?? 'left') as 'left' | 'right' | 'middle',
+        clickCount: match[2] === 'double click' ? 2 : 1,
+      });
+      return;
+    }
+
     // ─── Webview: focus by selector ───
     match = text.match(/^I focus "([^"]+)" in the webview(?: "([^"]+)")?$/);
     if (match) {
@@ -698,9 +723,11 @@ export class TestRunner {
     }
 
     // ─── Webview: evaluate JS ───
-    match = text.match(/^I evaluate "([^"]+)" in the webview(?: "([^"]+)")?$/);
+    match = text.match(/^I evaluate "([^"]+)" in the webview(?: "([^"]+)")?(?: for (\d+) seconds?)?$/);
     if (match) {
-      const result = await (await this.requireCdp()).evaluateInWebview(match[1], match[2]);
+      const result = await (await this.requireCdp()).evaluateInWebview(match[1], match[2], {
+        timeoutMs: this.resolveUserEvalTimeout(match[3]),
+      });
       if (result !== undefined && result !== null) {
         const serialized = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
         console.log(`[evaluate] ${serialized}`);
@@ -1458,8 +1485,9 @@ export class TestRunner {
     const filePath = path.join(targetDir, name);
     fs.mkdirSync(targetDir, { recursive: true });
 
-    await (await this.requireNativeUI()).captureDevHostScreenshot(filePath);
-    return { kind, path: filePath, label: label ?? 'screenshot' };
+    const result = await (await this.requireNativeUI()).captureDevHostScreenshot(filePath);
+    const warnings = result?.warnings?.filter(Boolean) ?? [];
+    return { kind, path: filePath, label: label ?? 'screenshot', message: warnings.length > 0 ? warnings.join('\n') : undefined };
   }
 
   private async takeScreenshot(label?: string): Promise<void> {
@@ -1468,8 +1496,45 @@ export class TestRunner {
   }
 
   private buildArtifacts(screenshots: StepArtifact[] = [], logs: StepArtifact[] = [], warnings: string[] = []): LiveStepArtifacts | undefined {
-    if (screenshots.length === 0 && logs.length === 0 && warnings.length === 0) return undefined;
-    return { screenshots, logs, warnings };
+    const artifactWarnings = screenshots
+      .map((artifact) => artifact.message)
+      .filter((message): message is string => Boolean(message));
+    const allWarnings = [...warnings, ...artifactWarnings];
+    if (screenshots.length === 0 && logs.length === 0 && allWarnings.length === 0) return undefined;
+    return { screenshots, logs, warnings: allWarnings };
+  }
+
+  private resolveUserEvalTimeout(timeoutSeconds?: string): number | undefined {
+    const stepTimeoutMs = this.options.stepTimeoutMs ?? STEP_TIMEOUT_MS;
+    const bufferMs = 1_000;
+    const requestedMs = timeoutSeconds ? parseInt(timeoutSeconds, 10) * 1000 : undefined;
+
+    if (!Number.isFinite(stepTimeoutMs) || stepTimeoutMs <= 0) return requestedMs;
+    const maxEvalTimeoutMs = Math.max(1, stepTimeoutMs - bufferMs);
+    if (requestedMs !== undefined) {
+      if (requestedMs >= maxEvalTimeoutMs) {
+        throw new Error(
+          `Requested webview eval timeout ${requestedMs}ms must be less than the step timeout ${stepTimeoutMs}ms ` +
+          `with at least ${bufferMs}ms reserved for cleanup.`
+        );
+      }
+      return requestedMs;
+    }
+    return maxEvalTimeoutMs;
+  }
+
+  private diagnosticArtifactsFromError(error: Error): StepArtifact[] {
+    const diagnostic = (error as Error & { diagnostic?: AutomationDiagnostic }).diagnostic;
+    if (!diagnostic || !this.artifactsDir) return [];
+
+    this.diagnosticCounter++;
+    const filePath = path.join(
+      this.artifactsDir,
+      `${this.diagnosticCounter}-${sanitizeFilename(diagnostic.kind)}-diagnostic.json`,
+    );
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(diagnostic, null, 2), 'utf-8');
+    return [{ kind: 'log-manifest', path: filePath, label: `${diagnostic.kind} diagnostic` }];
   }
 
   // ─── File utility helpers ───────────────────────────────────────

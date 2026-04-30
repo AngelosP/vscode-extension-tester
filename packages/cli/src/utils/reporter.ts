@@ -35,6 +35,9 @@ function printConsole(result: TestRunResult): void {
         if (step.error) {
           console.log(`      Error: ${step.error.message}`);
         }
+        for (const warning of step.artifacts?.warnings ?? []) {
+          console.log(`      Warning: ${warning}`);
+        }
       }
     }
     console.log('');
@@ -138,6 +141,9 @@ function generateMarkdown(result: TestRunResult, metadataOrScreenshots?: RunMeta
         if (step.error) {
           lines.push(`  > ${step.error.message}`);
         }
+        for (const warning of step.artifacts?.warnings ?? []) {
+          lines.push(`  > Warning: ${warning}`);
+        }
       }
       lines.push('');
     }
@@ -231,6 +237,10 @@ function generateConsoleLog(result: TestRunResult): string {
 
         if (step.error) {
           lines.push(`      ✗ ERROR: ${step.error.message}`);
+        }
+
+        for (const warning of step.artifacts?.warnings ?? []) {
+          lines.push(`      ⚠ WARNING: ${warning}`);
         }
       }
       lines.push('');

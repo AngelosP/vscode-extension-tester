@@ -121,6 +121,13 @@ describe('ControllerClient', () => {
               result: { status: 'reset' },
             }));
             break;
+          case 'runExtensionHostScript':
+            ws.send(JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              result: { ok: true, value: request.params?.script, timeoutMs: request.params?.timeoutMs, durationMs: 1 },
+            }));
+            break;
           default:
             // Don't auto-respond to unknown methods (used for testing pending rejection)
             break;
@@ -255,6 +262,15 @@ describe('ControllerClient', () => {
       await client.connect();
       await client.resetState();
       // No error thrown
+    });
+  });
+
+  describe('runExtensionHostScript()', () => {
+    it('should send script and timeout parameters', async () => {
+      await client.connect();
+      const result = await client.runExtensionHostScript('return 42;', 25_000);
+
+      expect(result).toEqual({ ok: true, value: 'return 42;', timeoutMs: 25_000, durationMs: 1 });
     });
   });
 

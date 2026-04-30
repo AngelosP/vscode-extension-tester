@@ -22,6 +22,9 @@ import type {
   LiveStepResult,
   LiveScriptResult,
   LiveSessionSummary,
+  AutomationDiagnostic,
+  ExtensionHostScriptResult,
+  ScreenshotCaptureResult,
 } from '../src/types.js';
 
 describe('Types and Constants', () => {
@@ -216,6 +219,46 @@ describe('Types and Constants', () => {
         closed: false,
       };
       expect(summary.mode).toBe('launch');
+    });
+
+    it('should accept automation diagnostics and extension-host script results', () => {
+      const diagnostic: AutomationDiagnostic = {
+        kind: 'webview-click',
+        subject: 'Try In Playground',
+        entries: [{ phase: 'webview-text-click', strategy: 'accessible-text', message: 'not found' }],
+        candidates: [{ name: 'Try' }],
+      };
+
+      const scriptResult: ExtensionHostScriptResult = {
+        ok: false,
+        error: { name: 'Error', message: 'script failed' },
+        durationMs: 12,
+      };
+
+      const screenshot: ScreenshotCaptureResult = {
+        success: true,
+        filePath: 'shot.png',
+        width: 800,
+        height: 600,
+        warnings: ['Used PrintWindow fallback'],
+      };
+
+      const summary: LiveSessionSummary = {
+        sessionId: 'session-1',
+        mode: 'launch',
+        startedAt: '2025-01-01T00:00:00.000Z',
+        artifactsDir: '.vscode-ext-test/live/session-1',
+        controllerPort: 9788,
+        cdpPort: 9222,
+        stepsRun: 0,
+        failedSteps: 0,
+        warnings: screenshot.warnings,
+        closed: false,
+      };
+
+      expect(diagnostic.entries[0].phase).toBe('webview-text-click');
+      expect(scriptResult.ok).toBe(false);
+      expect(summary.warnings?.[0]).toContain('PrintWindow');
     });
   });
 });

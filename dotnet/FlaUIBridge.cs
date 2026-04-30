@@ -5,6 +5,7 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
@@ -29,6 +30,9 @@ namespace FlaUIBridge
 
         [DllImport("user32.dll")]
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
 
         /// <summary>
         /// Find a window by title pattern (partial match).
@@ -386,6 +390,51 @@ namespace FlaUIBridge
             if (!_elementCache.TryGetValue(windowId, out var element))
                 throw new Exception($"Window {windowId} not found in cache");
 
+            var attempts = new List<object>();
+            var warnings = new List<string>();
+            Exception? lastError = null;
+
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                try
+                {
+                    var capture = await PrepareCapture(element);
+                    SaveCopyFromScreen(capture.X, capture.Y, capture.Width, capture.Height, filePath);
+                    attempts.Add(new { attempt, strategy = "CopyFromScreen", success = true });
+                    return new { success = true, filePath, width = capture.Width, height = capture.Height, strategy = "CopyFromScreen", attempts = attempts.ToArray(), warnings = warnings.ToArray() };
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                    attempts.Add(new { attempt, strategy = "CopyFromScreen", success = false, message = ex.Message });
+                    warnings.Add($"CopyFromScreen attempt {attempt} failed: {ex.Message}");
+                    await Task.Delay(150 * attempt);
+                }
+            }
+
+            var nativeHandle = element.Properties.NativeWindowHandle.ValueOrDefault;
+            if (nativeHandle != 0)
+            {
+                try
+                {
+                    var capture = await PrepareCapture(element);
+                    SavePrintWindow(new IntPtr(nativeHandle), capture.Width, capture.Height, filePath);
+                    attempts.Add(new { attempt = 4, strategy = "PrintWindow", success = true });
+                    warnings.Add("Used PrintWindow fallback after CopyFromScreen failures; Chromium content can render blank on some systems.");
+                    return new { success = true, filePath, width = capture.Width, height = capture.Height, strategy = "PrintWindow", attempts = attempts.ToArray(), warnings = warnings.ToArray() };
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                    attempts.Add(new { attempt = 4, strategy = "PrintWindow", success = false, message = ex.Message });
+                }
+            }
+
+            throw new Exception($"Screenshot capture failed after retries: {lastError?.Message}", lastError);
+        }
+
+        private static async Task<(int X, int Y, int Width, int Height)> PrepareCapture(AutomationElement element)
+        {
             var window = element.AsWindow();
             var nativeHandle = element.Properties.NativeWindowHandle.ValueOrDefault;
             if (nativeHandle != 0) ShowWindow(new IntPtr(nativeHandle), SW_RESTORE);
@@ -402,15 +451,44 @@ namespace FlaUIBridge
             int height = Convert.ToInt32(Math.Round(Convert.ToDouble(rect.Height)));
             if (width <= 0 || height <= 0)
                 throw new Exception($"Window has invalid screenshot bounds: {rect}");
+            return (x, y, width, height);
+        }
 
-            var directory = Path.GetDirectoryName(filePath);
-            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-
+        private static void SaveCopyFromScreen(int x, int y, int width, int height, string filePath)
+        {
             using var bitmap = new Bitmap(width, height);
             using var graphics = Graphics.FromImage(bitmap);
             graphics.CopyFromScreen(x, y, 0, 0, new Size(width, height));
-            bitmap.Save(filePath, ImageFormat.Png);
-            return new { success = true, filePath, width, height };
+            SavePngAtomically(bitmap, filePath);
+        }
+
+        private static void SavePrintWindow(IntPtr hwnd, int width, int height, string filePath)
+        {
+            using var bitmap = new Bitmap(width, height);
+            using var graphics = Graphics.FromImage(bitmap);
+            var hdc = graphics.GetHdc();
+            try
+            {
+                if (!PrintWindow(hwnd, hdc, 2))
+                    throw new Exception("PrintWindow returned false");
+            }
+            finally
+            {
+                graphics.ReleaseHdc(hdc);
+            }
+            SavePngAtomically(bitmap, filePath);
+        }
+
+        private static void SavePngAtomically(Bitmap bitmap, string filePath)
+        {
+            var directory = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+            var tempPath = filePath + ".tmp";
+            bitmap.Save(tempPath, ImageFormat.Png);
+            if (new FileInfo(tempPath).Length == 0)
+                throw new Exception("Screenshot file was empty after save");
+            if (File.Exists(filePath)) File.Delete(filePath);
+            File.Move(tempPath, filePath);
         }
 
         // ─── Helpers ─────────────────────────────────────────────────

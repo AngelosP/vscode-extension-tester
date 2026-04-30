@@ -1,7 +1,7 @@
 import CDP from 'chrome-remote-interface';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { QuickInputSelectResult, QuickInputState, QuickInputTextResult } from '../types.js';
+import type { AutomationDiagnostic, AutomationDiagnosticEntry, QuickInputSelectResult, QuickInputState, QuickInputTextResult } from '../types.js';
 
 /**
  * A JS function string that finds an element by CSS selector, piercing open
@@ -156,6 +156,22 @@ export type CdpMouseButton = 'left' | 'right' | 'middle';
 export interface CdpClickOptions {
   button?: CdpMouseButton;
   clickCount?: number;
+}
+
+export interface CdpEvaluationOptions {
+  timeoutMs?: number;
+}
+
+interface WebviewClientOptions {
+  operationTimeoutMs?: number;
+  retries?: number;
+  retryOperationTimeouts?: boolean;
+}
+
+interface WebviewTryOptions extends CdpEvaluationOptions {
+  strategy?: string;
+  diagnostics?: AutomationDiagnosticEntry[];
+  client?: WebviewClientOptions;
 }
 
 const CDP_PROTOCOL_TIMEOUT_MS = 5_000;
@@ -488,14 +504,14 @@ export class CdpClient {
   /**
    * Evaluate JavaScript in the page context. Returns the result.
    */
-  async evaluate(expression: string): Promise<unknown> {
+  async evaluate(expression: string, options: CdpEvaluationOptions = {}): Promise<unknown> {
     if (!this.client) throw new Error('CDP not connected');
 
     const result = await this.withProtocolTimeout(this.client.Runtime.evaluate({
       expression,
       returnByValue: true,
       awaitPromise: true,
-    }), 'CDP Runtime.evaluate');
+    }), 'CDP Runtime.evaluate', options.timeoutMs);
     if (result.exceptionDetails) {
       throw new Error(`JS eval failed: ${result.exceptionDetails.text}`);
     }
@@ -714,7 +730,7 @@ export class CdpClient {
    * marshalled back via `returnByValue`. If the expression throws, the error
    * propagates.
    */
-  async evaluateInWebview(expression: string, webviewTitle?: string): Promise<unknown> {
+  async evaluateInWebview(expression: string, webviewTitle?: string, options: CdpEvaluationOptions = {}): Promise<unknown> {
     const targets = await this.getWebviewTargets(webviewTitle, 5_000);
     if (targets.length === 0) {
       throw new Error(
@@ -728,8 +744,8 @@ export class CdpClient {
     for (const target of targets) {
       try {
         const value = await this.withWebviewClient(target.id, async (wv) => {
-          return await this.evaluateAcrossFrames(wv, expression);
-        });
+          return await this.evaluateAcrossFrames(wv, expression, options);
+        }, options.timeoutMs ? { operationTimeoutMs: options.timeoutMs, retries: 1, retryOperationTimeouts: false } : undefined);
         if (value !== null && value !== undefined) return value;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
@@ -750,14 +766,93 @@ export class CdpClient {
     options: CdpClickOptions = {},
   ): Promise<void> {
     const safe = escapeSelector(selector);
+    const diagnostics: AutomationDiagnosticEntry[] = [];
+    const clientOptions = { retries: 1, retryOperationTimeouts: false };
 
-    const found = await this.tryInWebviews(syntheticClickExpression(safe, options), webviewTitle);
+    const found = await this.tryInWebviews(syntheticClickExpression(safe, options), webviewTitle, {
+      strategy: 'synthetic-dom-events',
+      diagnostics,
+      client: clientOptions,
+    });
     if (found) return;
 
-    const clicked = await this.clickInWebviewWithMouse(safe, webviewTitle, options);
+    const clicked = await this.clickInWebviewWithMouse(safe, webviewTitle, options, diagnostics);
     if (clicked) return;
 
-    throw new Error(`Element not found in webview: ${selector}`);
+    throw diagnosticError(
+      `Element not found in webview: ${selector}${formatDiagnosticSummary(diagnostics)}`,
+      { kind: 'webview-click', subject: selector, entries: diagnostics },
+    );
+  }
+
+  async clickInWebviewByAccessibleText(
+    text: string,
+    webviewTitle?: string,
+    options: CdpClickOptions = {},
+  ): Promise<void> {
+    const targets = await this.getWebviewTargets(webviewTitle, 5_000);
+    const diagnostics: AutomationDiagnosticEntry[] = [];
+    const allCandidates: unknown[] = [];
+    const markerPrefix = `vscode-ext-test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    for (const target of targets) {
+      try {
+        const result = await this.withWebviewClient(target.id, async (wv) => {
+          const contextIds = await this.discoverFrameContextIds(wv);
+          const matches: Array<{ contextId: number; marker: string; name: string; tag: string; role?: string }> = [];
+          for (const contextId of contextIds) {
+            const discovered = await this.withProtocolTimeout(wv.Runtime.evaluate({
+              expression: webviewTextCandidatesExpression(text, markerPrefix, contextId),
+              returnByValue: true,
+              awaitPromise: true,
+              contextId,
+            }), `CDP Runtime.evaluate text candidates context ${contextId}`);
+            const value = discovered.result.value as { exact?: unknown[]; fuzzy?: unknown[]; candidates?: unknown[]; error?: string } | undefined;
+            if (!value || discovered.exceptionDetails) continue;
+            if (Array.isArray(value.candidates)) allCandidates.push(...value.candidates);
+            if (Array.isArray(value.exact)) {
+              for (const match of value.exact as Array<{ marker: string; name: string; tag: string; role?: string }>) {
+                matches.push({ ...match, contextId });
+              }
+            }
+          }
+          if (matches.length === 0) return { clicked: false as const };
+          if (matches.length > 1) {
+            return { clicked: false as const, ambiguous: true, matches };
+          }
+          const match = matches[0];
+          const click = await this.withProtocolTimeout(wv.Runtime.evaluate({
+            expression: webviewTextClickExpression(match.marker, options),
+            returnByValue: true,
+            awaitPromise: true,
+            contextId: match.contextId,
+          }), `CDP Runtime.evaluate text click context ${match.contextId}`);
+          return { clicked: click.result.value === true, match };
+        }, { retries: 1, retryOperationTimeouts: false });
+
+        if (result.clicked) return;
+        if ('ambiguous' in result && result.ambiguous) {
+          throw diagnosticError(
+            `Webview text "${text}" matched multiple actionable elements: ${JSON.stringify(result.matches)}`,
+            { kind: 'webview-click', subject: text, entries: diagnostics, candidates: result.matches },
+          );
+        }
+      } catch (err) {
+        if (hasDiagnostic(err)) throw err;
+        diagnostics.push({
+          phase: 'webview-text-click',
+          targetId: target.id,
+          targetTitle: target.title,
+          strategy: 'accessible-text',
+          message: errorMessage(err),
+        });
+      }
+    }
+
+    throw diagnosticError(
+      `Webview element with text "${text}" not found${formatDiagnosticSummary(diagnostics)}`,
+      { kind: 'webview-click', subject: text, entries: diagnostics, candidates: allCandidates.slice(0, 30) },
+    );
   }
 
   /** Focus an element inside a webview by CSS selector. */
@@ -971,6 +1066,7 @@ export class CdpClient {
   private async evaluateAcrossFrames(
     client: CDP.Client,
     expression: string,
+    options: CdpEvaluationOptions = {},
   ): Promise<unknown> {
     const contextIds = await this.discoverFrameContextIds(client);
 
@@ -981,7 +1077,7 @@ export class CdpClient {
           returnByValue: true,
           awaitPromise: true,
           contextId,
-        }), `CDP Runtime.evaluate context ${contextId}`);
+        }), `CDP Runtime.evaluate context ${contextId}`, options.timeoutMs);
         if (!r.exceptionDetails && r.result.value !== null && r.result.value !== undefined) {
           return r.result.value;
         }
@@ -999,6 +1095,7 @@ export class CdpClient {
   private async collectFromAllFrames(
     client: CDP.Client,
     expression: string,
+    options: CdpEvaluationOptions = {},
   ): Promise<unknown[]> {
     const contextIds = await this.discoverFrameContextIds(client);
     const results: unknown[] = [];
@@ -1010,7 +1107,7 @@ export class CdpClient {
           returnByValue: true,
           awaitPromise: true,
           contextId,
-        }), `CDP Runtime.evaluate context ${contextId}`);
+        }), `CDP Runtime.evaluate context ${contextId}`, options.timeoutMs);
         if (!r.exceptionDetails && r.result.value !== null && r.result.value !== undefined) {
           results.push(r.result.value);
         }
@@ -1026,15 +1123,23 @@ export class CdpClient {
    * Traverses all frames (including nested iframes) within each webview target.
    * Returns true if any target/frame succeeded, false if none matched.
    */
-  private async tryInWebviews(expression: string, webviewTitle?: string): Promise<boolean> {
+  private async tryInWebviews(expression: string, webviewTitle?: string, options: WebviewTryOptions = {}): Promise<boolean> {
     const targets = await this.getWebviewTargets(webviewTitle);
     for (const target of targets) {
       try {
         const value = await this.withWebviewClient(target.id, async (wv) => {
-          return await this.evaluateAcrossFrames(wv, expression);
-        });
+          return await this.evaluateAcrossFrames(wv, expression, options);
+        }, options.client);
         if (value === true) return true;
-      } catch { /* try next target */ }
+      } catch (err) {
+        options.diagnostics?.push({
+          phase: 'webview-operation',
+          targetId: target.id,
+          targetTitle: target.title,
+          strategy: options.strategy,
+          message: errorMessage(err),
+        });
+      }
     }
     return false;
   }
@@ -1043,13 +1148,13 @@ export class CdpClient {
    * Like tryInWebviews but returns the raw value of the first non-null result.
    * Traverses all frames within each webview target.
    */
-  private async tryInWebviewsRaw(expression: string, webviewTitle?: string): Promise<unknown> {
+  private async tryInWebviewsRaw(expression: string, webviewTitle?: string, options: WebviewTryOptions = {}): Promise<unknown> {
     const targets = await this.getWebviewTargets(webviewTitle);
     for (const target of targets) {
       try {
         const value = await this.withWebviewClient(target.id, async (wv) => {
-          return await this.evaluateAcrossFrames(wv, expression);
-        });
+          return await this.evaluateAcrossFrames(wv, expression, options);
+        }, options.client);
         if (value !== null && value !== undefined) return value;
       } catch { /* try next */ }
     }
@@ -1170,9 +1275,11 @@ export class CdpClient {
   private async withWebviewClient<T>(
     targetId: string,
     fn: (client: CDP.Client) => Promise<T>,
+    options: WebviewClientOptions = {},
   ): Promise<T> {
     let lastError: Error | undefined;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    const retries = options.retries ?? 3;
+    for (let attempt = 0; attempt < retries; attempt++) {
       try {
         const wvClient = await this.withProtocolTimeout(
           CDP({ port: this.port, target: targetId }),
@@ -1180,13 +1287,18 @@ export class CdpClient {
         );
         try {
           await this.withProtocolTimeout(wvClient.Runtime.enable(), `CDP Runtime.enable for webview target ${targetId}`);
-          return await this.withProtocolTimeout(fn(wvClient), `CDP webview operation for target ${targetId}`);
+          return await this.withProtocolTimeout(
+            fn(wvClient),
+            `CDP webview operation for target ${targetId}`,
+            options.operationTimeoutMs,
+          );
         } finally {
           try { wvClient.close(); } catch { /* best effort */ }
         }
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
-        if (attempt < 2) await delay(500);
+        if (isTimeoutError(lastError) && options.retryOperationTimeouts === false) break;
+        if (attempt < retries - 1) await delay(500);
       }
     }
     throw lastError!;
@@ -1205,12 +1317,20 @@ export class CdpClient {
     safeSelector: string,
     webviewTitle: string | undefined,
     options: CdpClickOptions,
+    diagnostics: AutomationDiagnosticEntry[] = [],
   ): Promise<boolean> {
     const targets = await this.getWebviewTargets(webviewTitle, 5_000);
     for (const target of targets) {
       try {
         const clicked = await this.withWebviewClient(target.id, async (wv) => {
           const contextIds = await this.discoverFrameContextIds(wv);
+          diagnostics.push({
+            phase: 'webview-click',
+            targetId: target.id,
+            targetTitle: target.title,
+            strategy: 'mouse-dispatch',
+            message: `Discovered ${contextIds.length} execution context(s)`,
+          });
           for (const contextId of contextIds) {
             const result = await this.withProtocolTimeout(wv.Runtime.evaluate({
               expression: elementPointExpression(safeSelector),
@@ -1219,14 +1339,32 @@ export class CdpClient {
               contextId,
             }), `CDP Runtime.evaluate element point context ${contextId}`);
             const point = result.result.value as { x: number; y: number; unreliable?: boolean } | undefined;
-            if (!point || point.unreliable || !Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+            if (!point || point.unreliable || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+              diagnostics.push({
+                phase: 'webview-click',
+                targetId: target.id,
+                targetTitle: target.title,
+                contextId,
+                strategy: 'mouse-dispatch',
+                message: point?.unreliable ? 'Element point crosses an inaccessible frame boundary' : 'Element point not available',
+              });
+              continue;
+            }
             await this.dispatchClick(wv, point.x, point.y, options);
             return true;
           }
           return false;
-        });
+        }, { retries: 1, retryOperationTimeouts: false });
         if (clicked) return true;
-      } catch { /* fall through to the DOM-event fallback */ }
+      } catch (err) {
+        diagnostics.push({
+          phase: 'webview-click',
+          targetId: target.id,
+          targetTitle: target.title,
+          strategy: 'mouse-dispatch',
+          message: errorMessage(err),
+        });
+      }
     }
     return false;
   }
@@ -1427,12 +1565,136 @@ function syntheticClickExpression(safeSelector: string, options: CdpClickOptions
   })()`;
 }
 
+function webviewTextCandidatesExpression(text: string, markerPrefix: string, contextId: number): string {
+  const target = JSON.stringify(text);
+  const prefix = JSON.stringify(`${markerPrefix}-${contextId}`);
+  return `(() => {
+    const target = ${target};
+    const markerPrefix = ${prefix};
+    const normalizedTarget = normalize(target);
+    const actionableSelector = 'button,a,input,select,textarea,[role="button"],[role="link"],[role="menuitem"],[role="option"],[role="tab"],[role="checkbox"],[role="radio"],[tabindex],summary';
+    function clean(value) { return String(value || '').replace(/\s+/g, ' ').trim(); }
+    function normalize(value) { return clean(value).toLowerCase(); }
+    function visible(el) {
+      if (!el || el === document.body || el === document.documentElement) return false;
+      const style = getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    }
+    function disabled(el) { return el.disabled || el.getAttribute('aria-disabled') === 'true'; }
+    function byId(id) { try { return id ? document.getElementById(id) : null; } catch { return null; } }
+    function labelsFor(el) {
+      const labels = [];
+      if (el.labels) for (const label of Array.from(el.labels)) labels.push(clean(label.textContent));
+      const id = el.id;
+      if (id) for (const label of Array.from(document.querySelectorAll('label[for="' + CSS.escape(id) + '"]'))) labels.push(clean(label.textContent));
+      return labels.filter(Boolean).join(' ');
+    }
+    function nameFor(el) {
+      const labelledBy = clean((el.getAttribute('aria-labelledby') || '').split(/\s+/).map((id) => clean((byId(id) || {}).textContent)).join(' '));
+      return clean(el.getAttribute('aria-label')) || labelledBy || clean(el.getAttribute('title')) || clean(el.getAttribute('alt')) || labelsFor(el) || clean(el.value) || clean(el.getAttribute('placeholder')) || clean(el.innerText || el.textContent);
+    }
+    function actionable(el) {
+      const hit = el.closest(actionableSelector);
+      if (!hit || !visible(hit) || disabled(hit)) return null;
+      return hit;
+    }
+    function walk(root, out) {
+      for (const el of Array.from(root.querySelectorAll('*'))) {
+        const sr = el.shadowRoot;
+        if (sr) walk(sr, out);
+        if (!visible(el)) continue;
+        const action = actionable(el);
+        if (!action) continue;
+        const name = nameFor(el) || nameFor(action);
+        if (!name) continue;
+        out.push({ element: el, action, name, normalized: normalize(name) });
+      }
+    }
+    const raw = [];
+    walk(document, raw);
+    const byAction = new Map();
+    for (const item of raw) {
+      if (!byAction.has(item.action)) byAction.set(item.action, item);
+      if (item.normalized === normalizedTarget) byAction.set(item.action, item);
+    }
+    const items = Array.from(byAction.values());
+    const exact = items.filter((item) => item.normalized === normalizedTarget);
+    const fuzzy = exact.length ? [] : items.filter((item) => item.normalized.includes(normalizedTarget));
+    let counter = 0;
+    function serialize(item) {
+      const marker = markerPrefix + '-' + (++counter);
+      item.action.setAttribute('data-vscode-ext-test-text-click', marker);
+      return {
+        marker,
+        name: item.name,
+        tag: item.action.tagName.toLowerCase(),
+        role: item.action.getAttribute('role') || undefined,
+        disabled: disabled(item.action),
+      };
+    }
+    const candidates = (exact.length ? exact : fuzzy).slice(0, 20).map(serialize);
+    return { exact: exact.map(serialize), fuzzy: fuzzy.map(serialize), candidates };
+  })()`;
+}
+
+function webviewTextClickExpression(marker: string, options: CdpClickOptions): string {
+  const safeMarker = JSON.stringify(marker);
+  const button = options.button ?? 'left';
+  const buttonNumber = button === 'left' ? 0 : button === 'middle' ? 1 : 2;
+  const buttons = buttonMask(button);
+  const clickCount = options.clickCount ?? 1;
+  return `(() => {
+    const el = document.querySelector('[data-vscode-ext-test-text-click=' + JSON.stringify(${safeMarker}) + ']');
+    if (!el) return false;
+    el.scrollIntoView({ block: 'center', inline: 'center' });
+    if (typeof el.focus === 'function') el.focus();
+    const rect = el.getBoundingClientRect();
+    const clientX = rect.left + rect.width / 2;
+    const clientY = rect.top + rect.height / 2;
+    const base = { bubbles: true, cancelable: true, composed: true, clientX, clientY, button: ${buttonNumber}, buttons: ${buttons} };
+    for (let i = 0; i < ${clickCount}; i++) {
+      if (typeof PointerEvent === 'function') el.dispatchEvent(new PointerEvent('pointerdown', base));
+      el.dispatchEvent(new MouseEvent('mousedown', base));
+      if (${buttonNumber} === 2) el.dispatchEvent(new MouseEvent('contextmenu', base));
+      if (typeof PointerEvent === 'function') el.dispatchEvent(new PointerEvent('pointerup', { ...base, buttons: 0 }));
+      el.dispatchEvent(new MouseEvent('mouseup', { ...base, buttons: 0 }));
+      if (${buttonNumber} !== 2) el.dispatchEvent(new MouseEvent('click', { ...base, buttons: 0, detail: i + 1 }));
+    }
+    return true;
+  })()`;
+}
+
+function diagnosticError(message: string, diagnostic: AutomationDiagnostic): Error {
+  const error = new Error(message) as Error & { diagnostic?: AutomationDiagnostic };
+  error.diagnostic = diagnostic;
+  return error;
+}
+
+function hasDiagnostic(error: unknown): error is Error & { diagnostic: AutomationDiagnostic } {
+  return error instanceof Error && 'diagnostic' in error;
+}
+
+function formatDiagnosticSummary(entries: AutomationDiagnosticEntry[]): string {
+  if (entries.length === 0) return '';
+  return `\nDiagnostics:\n${entries.slice(-8).map((entry) => `- ${entry.strategy ?? entry.phase}${entry.contextId !== undefined ? ` ctx=${entry.contextId}` : ''}: ${entry.message}`).join('\n')}`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function buttonMask(button: CdpMouseButton): number {
   switch (button) {
     case 'left': return 1;
     case 'right': return 2;
     case 'middle': return 4;
   }
+}
+
+function isTimeoutError(error: Error): boolean {
+  return /timed out after \d+ms/.test(error.message);
 }
 
 /**

@@ -39,6 +39,15 @@ function makeContext(live = false, liveTargetPid: number | null = 9999): ToolCon
   };
 }
 
+function makeContextWith(overrides: Partial<ToolContext>): ToolContext {
+  return {
+    cwd: process.cwd(),
+    env: {},
+    targetPid: 4242,
+    ...overrides,
+  };
+}
+
 describe('tools', () => {
   beforeEach(() => {
     nativeMocks.instances.length = 0;
@@ -96,8 +105,20 @@ describe('tools', () => {
       expect(names).toContain('start_live_session');
       expect(names).toContain('run_gherkin_step');
       expect(names).toContain('run_gherkin_script');
+      expect(names).toContain('run_extension_host_script');
       expect(names).toContain('reset_live_session');
       expect(names).toContain('end_live_session');
+    });
+
+    it('should expose profile options and semantic webview click targets in tool schemas', () => {
+      const startLive = TOOL_DEFINITIONS.find(tool => tool.function.name === 'start_live_session')!;
+      const click = TOOL_DEFINITIONS.find(tool => tool.function.name === 'click')!;
+
+      expect(startLive.function.parameters.properties).toHaveProperty('reuseNamedProfile');
+      expect(startLive.function.parameters.properties).toHaveProperty('reuseOrCreateNamedProfile');
+      expect((click.function.parameters.properties.target as any).enum).toEqual(
+        expect.arrayContaining(['webviewText', 'webviewAccessibleText']),
+      );
     });
 
     it('should include memory tools', () => {
@@ -203,6 +224,19 @@ describe('tools', () => {
       expect(nativeMocks.instances).toHaveLength(1);
       expect(nativeMocks.instances[0].clickMouse).toHaveBeenCalledWith(30, 40, { button: 'right', clickCount: 1 });
       expect(nativeMocks.instances[0].clickInDevHostAt).not.toHaveBeenCalled();
+    });
+
+    it('should execute extension-host live session scripts', async () => {
+      const liveSession = {
+        runExtensionHostScript: vi.fn().mockResolvedValue({ ok: true, value: 'ready', durationMs: 2 }),
+      };
+      const result = await executeToolCall('run_extension_host_script', JSON.stringify({
+        script: 'return vscode.env.appName;',
+        timeoutMs: 5_000,
+      }), makeContextWith({ liveSession: liveSession as never }));
+
+      expect(result).toContain('ready');
+      expect(liveSession.runExtensionHostScript).toHaveBeenCalledWith('return vscode.env.appName;', 5_000);
     });
 
     it('should route coordinate clicks through the live Dev Host window when a live session exists', async () => {
