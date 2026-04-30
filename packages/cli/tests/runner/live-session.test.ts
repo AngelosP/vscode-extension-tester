@@ -166,16 +166,16 @@ describe('LiveTestSession', () => {
     expect(mocks.cleanup).toHaveBeenCalledTimes(1);
   });
 
-  it('should create live runners with Dev Host-window coordinate origin', async () => {
+  it('should create live runners with Dev Host-window coordinate origin and step timeout', async () => {
     const session = await LiveTestSession.start({ mode: 'launch', runOptions: runOptions(), finalScreenshot: false });
 
     await session.reset('reload');
 
     expect(mocks.runnerCtorArgs).toHaveLength(2);
     expect(mocks.runnerCtorArgs[0][5]).toBe(1234);
-    expect(mocks.runnerCtorArgs[0][6]).toEqual({ coordinateOrigin: 'devHostWindow' });
+    expect(mocks.runnerCtorArgs[0][6]).toEqual({ coordinateOrigin: 'devHostWindow', stepTimeoutMs: 30_000 });
     expect(mocks.runnerCtorArgs[1][5]).toBe(1234);
-    expect(mocks.runnerCtorArgs[1][6]).toEqual({ coordinateOrigin: 'devHostWindow' });
+    expect(mocks.runnerCtorArgs[1][6]).toEqual({ coordinateOrigin: 'devHostWindow', stepTimeoutMs: 30_000 });
   });
 
   it('should run live feature files with Dev Host-window coordinate origin', async () => {
@@ -198,7 +198,7 @@ describe('LiveTestSession', () => {
       'user-data',
       19222,
       1234,
-      { coordinateOrigin: 'devHostWindow' },
+      { coordinateOrigin: 'devHostWindow', stepTimeoutMs: 30_000 },
     );
   });
 });
