@@ -10,6 +10,8 @@ import type {
   QuickInputState,
   RunSingleStepOptions,
   ScenarioResult,
+  ScreenshotArtifactCaptureMetadata,
+  ScreenshotCaptureResult,
   StepArtifact,
   StepResult,
 } from '../types.js';
@@ -1487,7 +1489,14 @@ export class TestRunner {
 
     const result = await (await this.requireNativeUI()).captureDevHostScreenshot(filePath);
     const warnings = result?.warnings?.filter(Boolean) ?? [];
-    return { kind, path: filePath, label: label ?? 'screenshot', message: warnings.length > 0 ? warnings.join('\n') : undefined };
+    const capture = buildScreenshotCaptureMetadata(result);
+    return {
+      kind,
+      path: filePath,
+      label: label ?? 'screenshot',
+      message: warnings.length > 0 ? warnings.join('\n') : undefined,
+      ...(capture ? { capture } : {}),
+    };
   }
 
   private async takeScreenshot(label?: string): Promise<void> {
@@ -1599,6 +1608,38 @@ interface MutableLiveStepArtifacts extends LiveStepArtifacts {
   logs: StepArtifact[];
   warnings: string[];
   manifestPath?: string;
+}
+
+function buildScreenshotCaptureMetadata(result: ScreenshotCaptureResult | undefined): ScreenshotArtifactCaptureMetadata | undefined {
+  if (!result) return undefined;
+  const captureMethod = typeof (result.captureMethod ?? result.strategy) === 'string'
+    ? result.captureMethod ?? result.strategy
+    : undefined;
+  const metadata: ScreenshotArtifactCaptureMetadata = {
+    ...(isFiniteNumber(result.devHostPid) ? { devHostPid: result.devHostPid } : {}),
+    ...(isFiniteNumber(result.windowProcessId) ? { windowProcessId: result.windowProcessId } : {}),
+    ...(typeof result.windowTitle === 'string' ? { windowTitle: result.windowTitle } : {}),
+    ...(isValidBounds(result.windowBounds) ? { windowBounds: result.windowBounds } : {}),
+    ...(captureMethod ? { captureMethod } : {}),
+    ...(isFiniteNumber(result.width) && isFiniteNumber(result.height)
+      ? { captureSize: { width: result.width, height: result.height } }
+      : {}),
+    ...(result.attempts && result.attempts.length > 0 ? { attempts: result.attempts } : {}),
+  };
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
+function isValidBounds(bounds: unknown): bounds is ScreenshotArtifactCaptureMetadata['windowBounds'] {
+  if (!bounds || typeof bounds !== 'object') return false;
+  const candidate = bounds as Partial<NonNullable<ScreenshotArtifactCaptureMetadata['windowBounds']>>;
+  return isFiniteNumber(candidate.x) &&
+    isFiniteNumber(candidate.y) &&
+    isFiniteNumber(candidate.width) &&
+    isFiniteNumber(candidate.height);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
 }
 
 function sanitizeFilename(name: string, maxLength = 120): string {

@@ -267,7 +267,8 @@ export class NativeUIClient {
   /** Capture the Dev Host window to a PNG file. */
   async captureDevHostScreenshot(filePath: string): Promise<ScreenshotCaptureResult> {
     const win = await this.findDevHostWindow();
-    return this.captureWindowScreenshot(win.id, filePath);
+    const result = await this.captureWindowScreenshot(win.id, filePath);
+    return withDevHostCaptureMetadata(result, win, this.targetPid);
   }
 
   /**
@@ -613,6 +614,43 @@ export interface NativeWindow {
   processId: number;
   bounds: { x: number; y: number; width: number; height: number };
   isVisible: boolean;
+}
+
+function withDevHostCaptureMetadata(
+  result: ScreenshotCaptureResult,
+  window: NativeWindow,
+  devHostPid: number | undefined,
+): ScreenshotCaptureResult {
+  const windowBounds = isValidBounds(result.windowBounds) ? result.windowBounds : window.bounds;
+  return {
+    ...result,
+    devHostPid,
+    windowProcessId: isPositiveInteger(result.windowProcessId) ? result.windowProcessId : window.processId,
+    windowTitle: isNonEmptyString(result.windowTitle) ? result.windowTitle : window.title,
+    windowBounds,
+    captureMethod: result.captureMethod ?? result.strategy,
+  };
+}
+
+function isValidBounds(bounds: unknown): bounds is NativeWindow['bounds'] {
+  if (!bounds || typeof bounds !== 'object') return false;
+  const candidate = bounds as Partial<NativeWindow['bounds']>;
+  return isFiniteNumber(candidate.x) &&
+    isFiniteNumber(candidate.y) &&
+    isFiniteNumber(candidate.width) &&
+    isFiniteNumber(candidate.height);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) > 0;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 /**

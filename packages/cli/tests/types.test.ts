@@ -25,6 +25,7 @@ import type {
   AutomationDiagnostic,
   ExtensionHostScriptResult,
   ScreenshotCaptureResult,
+  StepArtifact,
 } from '../src/types.js';
 
 describe('Types and Constants', () => {
@@ -189,7 +190,17 @@ describe('Types and Constants', () => {
         durationMs: 10,
         stepIndex: 1,
         artifacts: {
-          screenshots: [{ kind: 'screenshot', path: 'after.png' }],
+          screenshots: [{
+            kind: 'screenshot',
+            path: 'after.png',
+            capture: {
+              devHostPid: 111,
+              windowProcessId: 222,
+              windowTitle: 'Extension Development Host',
+              windowBounds: { x: 10, y: 20, width: 800, height: 600 },
+              captureMethod: 'CopyFromScreen',
+            },
+          }],
           logs: [{ kind: 'output-log', path: 'output.log' }],
           warnings: [],
         },
@@ -204,6 +215,30 @@ describe('Types and Constants', () => {
       };
 
       expect(script.steps[0].artifacts.screenshots[0].kind).toBe('screenshot');
+      expect(script.steps[0].artifacts.screenshots[0].capture?.captureMethod).toBe('CopyFromScreen');
+    });
+
+    it('should accept screenshot artifact capture metadata', () => {
+      const artifact: StepArtifact = {
+        kind: 'screenshot',
+        path: 'shot.png',
+        label: 'after command',
+        capture: {
+          devHostPid: 1234,
+          windowProcessId: 2345,
+          windowTitle: 'project - Extension Development Host',
+          windowBounds: { x: -1440, y: -250, width: 1440, height: 2560 },
+          captureMethod: 'PrintWindow',
+          captureSize: { width: 1440, height: 2560 },
+          attempts: [
+            { attempt: 1, strategy: 'CopyFromScreen', success: false, message: 'screen unavailable' },
+            { attempt: 4, strategy: 'PrintWindow', success: true },
+          ],
+        },
+      };
+
+      expect(artifact.capture?.windowBounds?.x).toBe(-1440);
+      expect(artifact.capture?.attempts?.[1].strategy).toBe('PrintWindow');
     });
 
     it('should accept live session summary shape', () => {
@@ -240,6 +275,12 @@ describe('Types and Constants', () => {
         filePath: 'shot.png',
         width: 800,
         height: 600,
+        strategy: 'CopyFromScreen',
+        captureMethod: 'CopyFromScreen',
+        devHostPid: 1234,
+        windowProcessId: 2345,
+        windowTitle: 'Extension Development Host',
+        windowBounds: { x: 0, y: 0, width: 800, height: 600 },
         warnings: ['Used PrintWindow fallback'],
       };
 
@@ -258,6 +299,7 @@ describe('Types and Constants', () => {
 
       expect(diagnostic.entries[0].phase).toBe('webview-text-click');
       expect(scriptResult.ok).toBe(false);
+      expect(screenshot.windowProcessId).toBe(2345);
       expect(summary.warnings?.[0]).toContain('PrintWindow');
     });
   });

@@ -401,7 +401,7 @@ namespace FlaUIBridge
                     var capture = await PrepareCapture(element);
                     SaveCopyFromScreen(capture.X, capture.Y, capture.Width, capture.Height, filePath);
                     attempts.Add(new { attempt, strategy = "CopyFromScreen", success = true });
-                    return new { success = true, filePath, width = capture.Width, height = capture.Height, strategy = "CopyFromScreen", attempts = attempts.ToArray(), warnings = warnings.ToArray() };
+                    return BuildScreenshotResult(filePath, capture, "CopyFromScreen", attempts, warnings);
                 }
                 catch (Exception ex)
                 {
@@ -421,7 +421,7 @@ namespace FlaUIBridge
                     SavePrintWindow(new IntPtr(nativeHandle), capture.Width, capture.Height, filePath);
                     attempts.Add(new { attempt = 4, strategy = "PrintWindow", success = true });
                     warnings.Add("Used PrintWindow fallback after CopyFromScreen failures; Chromium content can render blank on some systems.");
-                    return new { success = true, filePath, width = capture.Width, height = capture.Height, strategy = "PrintWindow", attempts = attempts.ToArray(), warnings = warnings.ToArray() };
+                    return BuildScreenshotResult(filePath, capture, "PrintWindow", attempts, warnings);
                 }
                 catch (Exception ex)
                 {
@@ -433,7 +433,7 @@ namespace FlaUIBridge
             throw new Exception($"Screenshot capture failed after retries: {lastError?.Message}", lastError);
         }
 
-        private static async Task<(int X, int Y, int Width, int Height)> PrepareCapture(AutomationElement element)
+        private static async Task<CaptureSnapshot> PrepareCapture(AutomationElement element)
         {
             var window = element.AsWindow();
             var nativeHandle = element.Properties.NativeWindowHandle.ValueOrDefault;
@@ -451,8 +451,47 @@ namespace FlaUIBridge
             int height = Convert.ToInt32(Math.Round(Convert.ToDouble(rect.Height)));
             if (width <= 0 || height <= 0)
                 throw new Exception($"Window has invalid screenshot bounds: {rect}");
-            return (x, y, width, height);
+            return new CaptureSnapshot(
+                x,
+                y,
+                width,
+                height,
+                element.Name ?? "",
+                element.Properties.ProcessId.ValueOrDefault
+            );
         }
+
+        private static object BuildScreenshotResult(
+            string filePath,
+            CaptureSnapshot capture,
+            string strategy,
+            List<object> attempts,
+            List<string> warnings)
+        {
+            return new
+            {
+                success = true,
+                filePath,
+                width = capture.Width,
+                height = capture.Height,
+                strategy,
+                captureMethod = strategy,
+                windowProcessId = capture.ProcessId,
+                windowTitle = capture.Title,
+                windowBounds = new { x = capture.X, y = capture.Y, width = capture.Width, height = capture.Height },
+                attempts = attempts.ToArray(),
+                warnings = warnings.ToArray()
+            };
+        }
+
+        private sealed record CaptureSnapshot(
+            int X,
+            int Y,
+            int Width,
+            int Height,
+            string Title,
+            int ProcessId
+        );
 
         private static void SaveCopyFromScreen(int x, int y, int width, int height, string filePath)
         {

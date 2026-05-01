@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { TestRunResult, FeatureResult, ScenarioResult, StepResult, RunMetadata } from '../types.js';
+import type { TestRunResult, FeatureResult, ScenarioResult, StepResult, RunMetadata, StepArtifact } from '../types.js';
 
 /**
  * Print test results to console with colors, or as JSON/HTML.
@@ -144,6 +144,9 @@ function generateMarkdown(result: TestRunResult, metadataOrScreenshots?: RunMeta
         for (const warning of step.artifacts?.warnings ?? []) {
           lines.push(`  > Warning: ${warning}`);
         }
+        for (const screenshot of step.artifacts?.screenshots ?? []) {
+          lines.push(...formatScreenshotArtifactMarkdown(screenshot, runDirRel));
+        }
       }
       lines.push('');
     }
@@ -163,6 +166,50 @@ function generateMarkdown(result: TestRunResult, metadataOrScreenshots?: RunMeta
 
   lines.push('---', `*Generated at ${new Date().toISOString()}*`, '');
   return lines.join('\n');
+}
+
+function formatScreenshotArtifactMarkdown(artifact: StepArtifact, runDirRel?: string): string[] {
+  const lines: string[] = [];
+  const label = artifact.label ? ` (${escapeMarkdownText(artifact.label)})` : '';
+  const displayPath = artifact.path ? formatArtifactPath(artifact.path, runDirRel) : undefined;
+  if (displayPath) {
+    lines.push(`  > Screenshot${label}: \`${displayPath}\``);
+  } else if (artifact.capture) {
+    lines.push(`  > Screenshot${label}`);
+  }
+
+  const metadata = formatCaptureMetadata(artifact);
+  if (metadata) lines.push(`  > Capture metadata: ${metadata}`);
+  return lines;
+}
+
+function formatCaptureMetadata(artifact: StepArtifact): string | undefined {
+  const capture = artifact.capture;
+  if (!capture) return undefined;
+  const fields: string[] = [];
+  if (typeof capture.devHostPid === 'number') fields.push(`Dev Host PID ${capture.devHostPid}`);
+  if (typeof capture.windowProcessId === 'number') fields.push(`window PID ${capture.windowProcessId}`);
+  if (capture.windowTitle !== undefined) fields.push(`title "${escapeMarkdownText(capture.windowTitle)}"`);
+  if (capture.windowBounds) {
+    const { x, y, width, height } = capture.windowBounds;
+    fields.push(`bounds ${x},${y} ${width}x${height}`);
+  }
+  if (capture.captureMethod) fields.push(`method ${escapeMarkdownText(capture.captureMethod)}`);
+  return fields.length > 0 ? fields.join('; ') : undefined;
+}
+
+function formatArtifactPath(artifactPath: string, runDirRel?: string): string {
+  const normalized = artifactPath.replace(/\\/g, '/');
+  if (!runDirRel) return normalized;
+  const normalizedRunDir = runDirRel.replace(/\\/g, '/');
+  if (normalized === normalizedRunDir || normalized.startsWith(`${normalizedRunDir}/`)) return normalized;
+  const marker = `/${normalizedRunDir}/`;
+  const index = normalized.toLowerCase().indexOf(marker.toLowerCase());
+  return index >= 0 ? normalized.slice(index + 1) : normalized;
+}
+
+function escapeMarkdownText(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\|/g, '\\|');
 }
 
 function esc(s: string): string {

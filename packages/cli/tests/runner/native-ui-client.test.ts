@@ -664,6 +664,97 @@ describe('NativeUIClient', () => {
       expect(client.moveWindow).toHaveBeenCalledWith('dev_win', 100, 200);
     });
 
+    it('captureDevHostScreenshot() should include bridge capture-time metadata and Dev Host PID', async () => {
+      client.targetPid = 1999;
+      const devWin = { ...SAMPLE_WINDOW, id: 'dev_win', title: 'Extension Development Host', processId: 2000 };
+      const captureResult = {
+        success: true,
+        filePath: 'C:\\tmp\\shot.png',
+        width: 1024,
+        height: 768,
+        strategy: 'CopyFromScreen',
+        captureMethod: 'CopyFromScreen',
+        windowProcessId: 2001,
+        windowTitle: 'Captured - Extension Development Host',
+        windowBounds: { x: 20, y: 30, width: 1024, height: 768 },
+      };
+
+      (cp.execSync as any).mockReturnValue('ParentProcessId,ProcessId\n1999,2000\n');
+      vi.spyOn(client, 'listWindows').mockResolvedValueOnce([devWin]);
+      vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
+      vi.spyOn(client, 'captureWindowScreenshot').mockResolvedValueOnce(captureResult);
+
+      const result = await client.captureDevHostScreenshot('C:\\tmp\\shot.png');
+
+      expect(client.captureWindowScreenshot).toHaveBeenCalledWith('dev_win', 'C:\\tmp\\shot.png');
+      expect(result).toMatchObject({
+        devHostPid: 1999,
+        windowProcessId: 2001,
+        windowTitle: 'Captured - Extension Development Host',
+        windowBounds: { x: 20, y: 30, width: 1024, height: 768 },
+        captureMethod: 'CopyFromScreen',
+      });
+    });
+
+    it('captureDevHostScreenshot() should fall back to selected window metadata for legacy bridge responses', async () => {
+      const devWin = {
+        ...SAMPLE_WINDOW,
+        id: 'dev_win',
+        title: 'Fallback - Extension Development Host',
+        processId: 2000,
+        bounds: { x: 50, y: 75, width: 800, height: 600 },
+      };
+
+      vi.spyOn(client, 'listWindows').mockResolvedValueOnce([devWin]);
+      vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
+      vi.spyOn(client, 'captureWindowScreenshot').mockResolvedValueOnce({
+        success: true,
+        filePath: 'C:\\tmp\\shot.png',
+        width: 800,
+        height: 600,
+        strategy: 'PrintWindow',
+      });
+
+      const result = await client.captureDevHostScreenshot('C:\\tmp\\shot.png');
+
+      expect(result).toMatchObject({
+        windowProcessId: 2000,
+        windowTitle: 'Fallback - Extension Development Host',
+        windowBounds: { x: 50, y: 75, width: 800, height: 600 },
+        captureMethod: 'PrintWindow',
+      });
+    });
+
+    it('captureDevHostScreenshot() should fall back when bridge metadata uses sentinel values', async () => {
+      const devWin = {
+        ...SAMPLE_WINDOW,
+        id: 'dev_win',
+        title: 'Sentinel fallback - Extension Development Host',
+        processId: 2468,
+      };
+
+      vi.spyOn(client, 'listWindows').mockResolvedValueOnce([devWin]);
+      vi.spyOn(client, 'focusWindow').mockResolvedValueOnce(undefined);
+      vi.spyOn(client, 'captureWindowScreenshot').mockResolvedValueOnce({
+        success: true,
+        filePath: 'C:\\tmp\\shot.png',
+        width: 800,
+        height: 600,
+        strategy: 'CopyFromScreen',
+        windowProcessId: 0,
+        windowTitle: '',
+        windowBounds: { x: 10, y: 20, width: 800, height: 600 },
+      });
+
+      const result = await client.captureDevHostScreenshot('C:\\tmp\\shot.png');
+
+      expect(result).toMatchObject({
+        windowProcessId: 2468,
+        windowTitle: 'Sentinel fallback - Extension Development Host',
+        captureMethod: 'CopyFromScreen',
+      });
+    });
+
     it('findDevHostWindow should match by partial title', async () => {
       const devWin = {
         ...SAMPLE_WINDOW,

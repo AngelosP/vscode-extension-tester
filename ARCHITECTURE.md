@@ -141,7 +141,7 @@ Runs inside the VS Code Extension Host. Activated when `VSCODE_EXT_TESTER_PORT` 
 
 ### 5. FlaUI Bridge (`dotnet/`)
 
-An optional .NET 8 process that uses [FlaUI](https://github.com/FlaUI/FlaUI) to automate native Windows UI elements that can't be reached through the VS Code API (e.g., OS file dialogs, system message boxes, window resize/move, screen-coordinate mouse input, right-click/context-menu opening). Communicates with the CLI over stdin/stdout using request IDs so delayed native responses cannot be confused with later requests. Screenshot capture retries `CopyFromScreen`, can fall back to `PrintWindow`, and returns warning metadata when a fallback was needed.
+An optional .NET 8 process that uses [FlaUI](https://github.com/FlaUI/FlaUI) to automate native Windows UI elements that can't be reached through the VS Code API (e.g., OS file dialogs, system message boxes, window resize/move, screen-coordinate mouse input, right-click/context-menu opening). Communicates with the CLI over stdin/stdout using request IDs so delayed native responses cannot be confused with later requests. Screenshot capture retries `CopyFromScreen`, can fall back to `PrintWindow`, and returns warning metadata when a fallback was needed. Screenshot results also include capture-time window metadata: process id, title, bounds, and capture method.
 
 ## Communication Protocol
 

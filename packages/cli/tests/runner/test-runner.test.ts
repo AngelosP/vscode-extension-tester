@@ -286,6 +286,18 @@ describe('TestRunner', () => {
     it('should return live artifacts, state, and a screenshot for a passing step', async () => {
       const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-live-'));
       const liveRunner = new TestRunner(client, {}, artifactsDir);
+      getMockNativeUI().captureDevHostScreenshot.mockResolvedValueOnce({
+        success: true,
+        filePath: path.join(artifactsDir, 'live-steps', 'shot.png'),
+        width: 800,
+        height: 600,
+        strategy: 'CopyFromScreen',
+        captureMethod: 'CopyFromScreen',
+        devHostPid: 1234,
+        windowProcessId: 2345,
+        windowTitle: 'Live - Extension Development Host',
+        windowBounds: { x: 10, y: 20, width: 800, height: 600 },
+      });
 
       try {
         const result = await liveRunner.runSingleStep(makeStep('When ', 'I execute command "test.command"'), {
@@ -297,6 +309,14 @@ describe('TestRunner', () => {
         expect(result.stepIndex).toBe(1);
         expect(result.state?.terminals).toEqual([]);
         expect(result.artifacts.screenshots[0].kind).toBe('screenshot');
+        expect(result.artifacts.screenshots[0].capture).toMatchObject({
+          devHostPid: 1234,
+          windowProcessId: 2345,
+          windowTitle: 'Live - Extension Development Host',
+          windowBounds: { x: 10, y: 20, width: 800, height: 600 },
+          captureMethod: 'CopyFromScreen',
+          captureSize: { width: 800, height: 600 },
+        });
         expect(fs.existsSync(path.join(artifactsDir, 'live-steps'))).toBe(true);
         expect(result.artifacts.logs.some((artifact) => artifact.kind === 'log-manifest')).toBe(true);
         expect(getMockNativeUI().captureDevHostScreenshot).toHaveBeenCalled();
@@ -2416,12 +2436,31 @@ describe('TestRunner', () => {
           makeStep('When ', 'I take a screenshot "resource picker"'),
         ]),
       ]);
+      getMockNativeUI().captureDevHostScreenshot.mockResolvedValueOnce({
+        success: true,
+        filePath: path.join(artifactsDir, '1-resource_picker.png'),
+        width: 1024,
+        height: 768,
+        strategy: 'PrintWindow',
+        devHostPid: 4321,
+        windowProcessId: 5432,
+        windowTitle: 'Test - Extension Development Host',
+        windowBounds: { x: 100, y: 200, width: 1024, height: 768 },
+      });
 
       try {
-        await screenshotRunner.runFeature(feature);
+        const result = await screenshotRunner.runFeature(feature);
         expect(getMockNativeUI().captureDevHostScreenshot).toHaveBeenCalledWith(
           path.join(artifactsDir, '1-resource_picker.png')
         );
+        expect(result.scenarios[0].steps[0].artifacts?.screenshots[0].capture).toMatchObject({
+          devHostPid: 4321,
+          windowProcessId: 5432,
+          windowTitle: 'Test - Extension Development Host',
+          windowBounds: { x: 100, y: 200, width: 1024, height: 768 },
+          captureMethod: 'PrintWindow',
+          captureSize: { width: 1024, height: 768 },
+        });
       } finally {
         screenshotRunner.cleanup();
         fs.rmSync(artifactsDir, { recursive: true, force: true });

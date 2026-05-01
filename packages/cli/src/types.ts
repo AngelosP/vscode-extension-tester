@@ -88,6 +88,7 @@ export interface StepArtifact {
   readonly path?: string;
   readonly label?: string;
   readonly message?: string;
+  readonly capture?: ScreenshotArtifactCaptureMetadata;
 }
 
 export interface LiveStepArtifacts {
@@ -143,12 +144,34 @@ export interface ScreenshotCaptureAttempt {
   readonly message?: string;
 }
 
+export interface ScreenshotBounds {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export interface ScreenshotArtifactCaptureMetadata {
+  readonly devHostPid?: number;
+  readonly windowProcessId?: number;
+  readonly windowTitle?: string;
+  readonly windowBounds?: ScreenshotBounds;
+  readonly captureMethod?: string;
+  readonly captureSize?: { readonly width: number; readonly height: number };
+  readonly attempts?: ScreenshotCaptureAttempt[];
+}
+
 export interface ScreenshotCaptureResult {
   readonly success: boolean;
   readonly filePath: string;
   readonly width?: number;
   readonly height?: number;
   readonly strategy?: string;
+  readonly captureMethod?: string;
+  readonly devHostPid?: number;
+  readonly windowProcessId?: number;
+  readonly windowTitle?: string;
+  readonly windowBounds?: ScreenshotBounds;
   readonly attempts?: ScreenshotCaptureAttempt[];
   readonly warnings?: string[];
 }

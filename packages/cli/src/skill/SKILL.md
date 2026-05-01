@@ -100,6 +100,12 @@ run, you MUST verify the screenshots.
 Screenshots are saved as `.png` files in the run directory. The `report.md`
 lists all screenshot file paths.
 
+Each screenshot artifact also includes capture metadata in `results.json`,
+live `step-result.json` manifests, live JSONL responses, and `report.md`:
+the intended Dev Host process id, the captured window process id, window title,
+window bounds, and capture method. Use this metadata with the PNG to spot
+wrong-window or stale-window captures before trusting the visual state.
+
 **Automatic failure screenshots.** When a test step fails, the framework
 automatically takes a screenshot of the Dev Host window at the moment of
 failure. These are saved as `<N>-failure-<scenario>-<step>.png` in the run
@@ -243,12 +249,7 @@ profile.
    `e2e/default/<test-id>/`, and writes artifacts to `runs/default/<test-id>/<timestamp>/`.
    Each run uses a unique timestamp so previous results are preserved.
 
-3. **Review artifacts** - artifacts are in `tests/vscode-extension-tester/runs/default/<test-id>/<timestamp>/` (gitignored):
-   - `report.md` - read this FIRST. It lists all results AND screenshot file paths.
-   - `results.json` - structured results with screenshot paths.
-   - `console.log` - structured output log per scenario/step.
-   - `*.png` - screenshot images.
-  - screenshot warnings - if native capture had to fall back or failed, warnings appear in the step artifact, `report.md`, and `console.log`.
+3. **Review artifacts** - artifacts are in `tests/vscode-extension-tester/runs/default/<test-id>/<timestamp>/` (gitignored). Read `report.md` first because it lists all results, screenshot file paths, capture metadata, and warnings. Use `results.json` for structured results with per-screenshot capture metadata, `console.log` for scenario/step output and warnings, and `*.png` for the screenshot images. Check the step artifact metadata when native capture fell back or the wrong window may have been captured.
 
 4. **Verify screenshots** - use `view_image` on each .png listed in `report.md`. Do NOT skip this step.
 
@@ -654,8 +655,8 @@ Then the editor should contain "hello world"
 \\`\\`\\`
 
 ### Screenshots
-- `Then I take a screenshot` - capture the targeted Extension Development Host window, saved to the run directory
-- `Then I take a screenshot "label"` - capture the targeted Dev Host with a descriptive label (e.g. "after-query-runs")
+- `Then I take a screenshot` - capture the targeted Extension Development Host window, saved to the run directory with Dev Host PID, captured window title/bounds, and capture method metadata
+- `Then I take a screenshot "label"` - capture the targeted Dev Host with a descriptive label (e.g. "after-query-runs") and the same capture metadata
 
 ### File Utilities (direct via code - no UI dialogs)
 Use these for test setup when you don't need to test the actual dialog interaction:

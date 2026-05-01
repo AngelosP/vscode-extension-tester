@@ -113,7 +113,17 @@ describe('LiveTestSession', () => {
     });
     mocks.captureArtifactScreenshot.mockImplementation(async () => {
       mocks.events.push('screenshot');
-      return { kind: 'final-screenshot', path: 'final.png' };
+      return {
+        kind: 'final-screenshot',
+        path: 'final.png',
+        capture: {
+          devHostPid: 1234,
+          windowProcessId: 2345,
+          windowTitle: 'Final - Extension Development Host',
+          windowBounds: { x: 10, y: 20, width: 800, height: 600 },
+          captureMethod: 'CopyFromScreen',
+        },
+      };
     });
     mocks.cleanup.mockImplementation(() => { mocks.events.push('cleanup'); });
   });
@@ -146,6 +156,11 @@ describe('LiveTestSession', () => {
 
     expect(mocks.events).toEqual(['screenshot', 'cleanup', 'close']);
     expect(session.getSummary().finalScreenshot?.kind).toBe('final-screenshot');
+    expect(session.getSummary().finalScreenshot?.capture).toMatchObject({
+      devHostPid: 1234,
+      windowProcessId: 2345,
+      captureMethod: 'CopyFromScreen',
+    });
   });
 
   it('should attach in auto mode when a Dev Host is detected', async () => {

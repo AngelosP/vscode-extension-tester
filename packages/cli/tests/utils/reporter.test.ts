@@ -29,7 +29,22 @@ function makeRunResult(overrides: Partial<TestRunResult> = {}): TestRunResult {
               {
                 keyword: 'Then ', text: 'I should see notification "missing"', status: 'failed', durationMs: 5000,
                 error: { message: 'Notification not found' },
-                artifacts: { screenshots: [], logs: [], warnings: ['Could not capture failure screenshot: GDI+ failed'] },
+                artifacts: {
+                  screenshots: [{
+                    kind: 'failure-screenshot',
+                    path: 'C:/test/workspace/tests/vscode-extension-tester/runs/default/failure.png',
+                    label: 'failure',
+                    capture: {
+                      devHostPid: 1234,
+                      windowProcessId: 2345,
+                      windowTitle: 'Failure - Extension Development Host',
+                      windowBounds: { x: 10, y: 20, width: 800, height: 600 },
+                      captureMethod: 'CopyFromScreen',
+                    },
+                  }],
+                  logs: [],
+                  warnings: ['Could not capture failure screenshot: GDI+ failed'],
+                },
               },
             ],
             durationMs: 5100,
@@ -249,6 +264,17 @@ describe('reporter', () => {
       expect(content).toContain('Warning: Could not capture failure screenshot');
     });
 
+    it('should include screenshot capture metadata in markdown', () => {
+      const reportPath = writeReportFile(makeRunResult(), tmpDir, testMetadata);
+      const content = fs.readFileSync(reportPath, 'utf-8');
+
+      expect(content).toContain('Screenshot (failure):');
+      expect(content).toContain('Capture metadata: Dev Host PID 1234; window PID 2345');
+      expect(content).toContain('title "Failure - Extension Development Host"');
+      expect(content).toContain('bounds 10,20 800x600');
+      expect(content).toContain('method CopyFromScreen');
+    });
+
     it('should include run metadata in markdown', () => {
       const reportPath = writeReportFile(makeRunResult(), tmpDir, testMetadata);
       const content = fs.readFileSync(reportPath, 'utf-8');
@@ -307,8 +333,15 @@ describe('reporter', () => {
 
       const json = JSON.parse(fs.readFileSync(path.join(runDir, 'results.json'), 'utf-8'));
       expect(json.screenshots).toHaveLength(1);
+      expect(typeof json.screenshots[0]).toBe('string');
       expect(json.screenshots[0]).toContain('1-screenshot.png');
+      expect(json.features[0].scenarios[1].steps[1].artifacts.screenshots[0].capture).toMatchObject({
+        devHostPid: 1234,
+        windowProcessId: 2345,
+        captureMethod: 'CopyFromScreen',
+      });
     });
+
     it('should include metadata in run report.md', () => {
       writeRunArtifacts(makeRunResult(), tmpDir, 'meta-run', ['test.feature'], '', testMetadata);
 
@@ -316,6 +349,7 @@ describe('reporter', () => {
       const content = fs.readFileSync(path.join(runDir, 'report.md'), 'utf-8');
       expect(content).toContain('## Run Information');
       expect(content).toContain('vscode-ext-test run');
+      expect(content).toContain('Capture metadata: Dev Host PID 1234; window PID 2345');
     });
   });
 });
