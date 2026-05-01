@@ -12,7 +12,7 @@ Here is an example of me asking Copilot to test the auto-completion of SQL state
 
 ## Quick Start
 
-Just init the extension project you want to enable this for, and a SKILLS.md file (and other artifacts) will be added and you are good to go.
+Install the tester into the extension project you want to enable this for, and a SKILLS.md file (and other artifacts) will be added and you are good to go.
 
 ```bash
 # Install globally
@@ -20,10 +20,10 @@ npm link  # from packages/cli/
 
 # Set it up to work in a project
 cd your-extension/
-vscode-ext-test init                     # scaffolds configs + installs controller
+vscode-ext-test install-into-project     # scaffolds configs + installs controller
 ```
 
-Rerun `vscode-ext-test init` after upgrading the CLI to refresh the generated
+Rerun `vscode-ext-test install-into-project` after upgrading the CLI to refresh the generated
 `.github/skills/e2e-test-extension/SKILL.md` instructions. Project-specific
 notes in `repo-knowledge.md` are preserved.
 
@@ -78,7 +78,7 @@ npm run package
 
 Release artifacts are built by GitHub Actions on Windows so the packaged CLI includes both required runtime assets:
 
-* `assets/controller-extension.vsix` \- bundled controller extension installed by `vscode-ext-test install`
+* `assets/controller-extension.vsix` \- bundled controller extension installed by `vscode-ext-test install-testing-extension-to-vscode` and `vscode-ext-test install-testing-extension-to-profiles`
 * `assets/native/win-x64/FlaUIBridge.exe` \- self\-contained native UI automation bridge for Windows CI agents
 
 To create a CLI release, bump the CLI package version, then push the matching
@@ -96,7 +96,7 @@ Downstream CI can install the released CLI directly from the tarball:
 
 ```bash
 npm install -g https://github.com/<org>/vscode-extension-tester/releases/download/v<version>/vscode-ext-test-<version>.tgz
-vscode-ext-test install
+vscode-ext-test install-testing-extension-to-vscode
 vscode-ext-test run --features tests/vscode-extension-tester/e2e
 ```
 
@@ -119,11 +119,12 @@ writing files. Controller extension version history is tracked in
 
 | Command | Description |
 | ------- | ----------- |
-| `init` | Install controller extension, scaffold `.feature` file, `launch.json`, and `tasks.json` |
+| `install-into-project` | Install controller extension, scaffold `.feature` file, `launch.json`, and `tasks.json` |
 | `run` | Execute `.feature` tests (dev mode or CI mode) |
 | `live` | Start or attach to VS Code once and execute Gherkin steps over JSONL stdin/stdout |
 | `tests add [context...]` | AI agent analyzes codebase, writes tests, explores the live extension, self-heals failures |
-| `install` | Install the controller extension + check prerequisites (`gh`, `git`, VS Code CLI auto-discovery) |
+| `install-testing-extension-to-vscode` | Install the controller extension + check prerequisites (`gh`, `git`, VS Code CLI auto-discovery) |
+| `install-testing-extension-to-profiles` | Install the controller extension into VS Code and all named test profiles |
 | `uninstall` | Remove the controller extension |
 
 ### `run` Options
@@ -218,11 +219,17 @@ Scenario: Monitor only the channels I care about
 | `I enter "<text>" in the QuickInput` | When | Enter and accept QuickInput text after validation clears |
 | `I click the webview element "<text>"` | When | Click a webview control by visible text, aria-label, title, or role text |
 | `I evaluate "<js>" in the webview for <N> seconds` | When | Run diagnostic JavaScript in a webview with an explicit timeout budget |
+| `I list the webviews` | When | Log open webviews and record bounded visible text evidence in `results.json` and `report.md` |
 | `I click "<action>" on notification "<text>"` | When | Resolve a captured VS Code notification action |
 | `I wait for progress "<title>" to complete` | Then | Wait for a tracked VS Code progress operation to finish |
 | `the output channel "<name>" should contain "<text>"` | Then | Assert the channel contains the given text |
 | `the output channel "<name>" should not contain "<text>"` | Then | Assert the channel does NOT contain the given text |
 | `the output channel "<name>" should have been captured` | Then | Assert that any content was captured for the channel |
+| `the webview should contain "<text>"` | Then | Assert visible webview text and record bounded text evidence in `results.json` and `report.md` |
+| `the webview "<title>" should contain "<text>"` | Then | Assert visible text in a specific webview and record target-attributed evidence |
+| `element "<sel>" should have text "<text>"` | Then | Assert selector text in a webview and record bounded text evidence in `results.json` and `report.md` |
+| `element "<sel>" should have text "<text>" in the webview` | Then | Assert selector text in a webview and record selector-scoped evidence |
+| `element "<sel>" should have text "<text>" in the webview "<title>"` | Then | Assert selector text in a specific webview and record target-attributed evidence |
 
 ### How it works
 

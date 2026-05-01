@@ -673,6 +673,12 @@ async function withCdp<T>(ctx: ToolContext, fn: (cdp: CdpClient) => Promise<T>):
   }
 }
 
+async function tryStabilizeMonacoAfterPopupSelection(ctx: ToolContext): Promise<void> {
+  try {
+    await withCdp(ctx, (cdp) => cdp.stabilizeMonacoAfterPopupSelection());
+  } catch { /* best effort after successful popup selection */ }
+}
+
 async function toolExecuteCommand(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
   const client = requireClient(ctx);
   const result = await client.executeCommand(args['commandId'] as string, args['args'] as unknown[] | undefined);
@@ -782,7 +788,8 @@ async function toolRespondToDialog(ctx: ToolContext, args: Record<string, unknow
 }
 
 async function toolSelectPopupItem(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
-  const label = args['label'] as string;
+  const label = requiredString(args, 'label').trim();
+  if (!label) throw new Error('Missing required string argument: label');
   // Delegate to the test runner's popup dispatch logic: FlaUI first, CDP fallback.
   // We import NativeUIClient and CdpClient lazily to avoid circular deps.
   const { NativeUIClient } = await import('../runner/native-ui-client.js');
@@ -795,12 +802,13 @@ async function toolSelectPopupItem(ctx: ToolContext, args: Record<string, unknow
     await nativeUI.start();
     const selected = await nativeUI.selectFromDevHostPopup(label, 3000);
     nativeUI.stop();
+    await tryStabilizeMonacoAfterPopupSelection(ctx);
     return `Selected popup item: ${selected}`;
   } catch {
     nativeUI.stop();
   }
 
-  // Strategy 2: CDP (DOM-level — works for monaco-list overlays)
+  // Strategy 2: CDP (pointer-level — works for monaco-list overlays)
   const cdp = new CdpClient(ctx.cdpPort ?? CDP_PORT);
   try {
     await cdp.connect();

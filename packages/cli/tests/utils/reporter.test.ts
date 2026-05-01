@@ -16,7 +16,36 @@ function makeRunResult(overrides: Partial<TestRunResult> = {}): TestRunResult {
             status: 'passed',
             steps: [
               { keyword: 'Given ', text: 'the VS Code is in a clean state', status: 'passed', durationMs: 100 },
-              { keyword: 'When ', text: 'I execute command "test"', status: 'passed', durationMs: 50 },
+              {
+                keyword: 'Then ', text: 'the webview should contain "Dashboard"', status: 'passed', durationMs: 50,
+                artifacts: {
+                  screenshots: [],
+                  logs: [{
+                    kind: 'webview-evidence',
+                    label: 'Webview text assertion',
+                    webviewEvidence: {
+                      kind: 'webview-body',
+                      expectedText: 'Dashboard',
+                      matched: true,
+                      targetCount: 1,
+                      textSample: 'Welcome Dashboard Ready',
+                      textLength: 23,
+                      truncated: false,
+                      matchContext: 'Welcome Dashboard Ready',
+                      targets: [{
+                        title: 'Dashboard',
+                        url: 'vscode-webview://dashboard',
+                        probedTitle: 'Dashboard',
+                        matched: true,
+                        textSample: 'Welcome Dashboard Ready',
+                        textLength: 23,
+                        truncated: false,
+                      }],
+                    },
+                  }],
+                  warnings: [],
+                },
+              },
             ],
             durationMs: 150,
             tags: [],
@@ -275,6 +304,16 @@ describe('reporter', () => {
       expect(content).toContain('method CopyFromScreen');
     });
 
+    it('should include webview text evidence in markdown', () => {
+      const reportPath = writeReportFile(makeRunResult(), tmpDir, testMetadata);
+      const content = fs.readFileSync(reportPath, 'utf-8');
+
+      expect(content).toContain('Webview evidence (Webview text assertion): matched expected "Dashboard"; targets 1');
+      expect(content).toContain('Target: "Dashboard"; probed "Dashboard"; url vscode-webview://dashboard; matched; text 23 chars');
+      expect(content).toContain('Combined match context:');
+      expect(content).toContain('Welcome Dashboard Ready');
+    });
+
     it('should include run metadata in markdown', () => {
       const reportPath = writeReportFile(makeRunResult(), tmpDir, testMetadata);
       const content = fs.readFileSync(reportPath, 'utf-8');
@@ -339,6 +378,11 @@ describe('reporter', () => {
         devHostPid: 1234,
         windowProcessId: 2345,
         captureMethod: 'CopyFromScreen',
+      });
+      expect(json.features[0].scenarios[0].steps[1].artifacts.logs[0].webviewEvidence).toMatchObject({
+        kind: 'webview-body',
+        matched: true,
+        expectedText: 'Dashboard',
       });
     });
 

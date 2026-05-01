@@ -74,6 +74,7 @@ When steps (actions):
   When I right click at <x>, <y>
   When I middle click at <x>, <y>
   When I double click at <x>, <y>
+  When I list the webviews
 
 Then steps (assertions):
   Then I should see notification "<text>"
@@ -91,12 +92,17 @@ Then steps (assertions):
   Then the editor should contain "<text>"
   Then the output channel "<name>" should contain "<text>"
   Then the webview should contain "<text>"
+  Then the webview "<title>" should contain "<text>"
+  Then element "<css selector>" should have text "<text>"
+  Then element "<css selector>" should have text "<text>" in the webview
+  Then element "<css selector>" should have text "<text>" in the webview "<title>"
   Then element "<css selector>" should exist
   Then I wait <N> seconds
 
 INPUT TARGETING RULES:
 - Prefer VS Code commands, QuickInput inspection/selection/text steps, dialog responders, and stable webview CSS selectors/data-testid values.
 - Use webview visible-text clicks only when no stable selector exists; use native accessible-name clicks after webview text clicks.
+- Webview text assertions and \`I list the webviews\` produce bounded structured webview evidence in \`results.json\` and \`report.md\`; prefer those assertions over screenshot-only claims when validating webview content.
 - Prefer QuickInput/progress/notification wait steps over fixed waits; QuickInput steps can use captured state or the visible workbench widget.
 - Use accessible-name clicks for native/workbench UI when a stable name exists.
 - Use right-click steps to open context menus before selecting from the popup menu.

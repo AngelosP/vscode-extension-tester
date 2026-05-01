@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Command } from 'commander';
+import { Command, type CommandOptions } from 'commander';
 import { runCommand } from './commands/run.js';
 import { liveCommand } from './commands/live.js';
 import { installCommand } from './commands/install.js';
@@ -10,14 +10,15 @@ import { initCommand } from './commands/init.js';
 import { testsAddCommand } from './commands/tests-add.js';
 import { openProfile, deleteProfile, listProfiles } from './profile.js';
 
-const program = new Command();
+export function createProgram(): Command {
+  const program = new Command();
 
-program
-  .name('vscode-ext-test')
-  .description('E2E test VS Code extensions as if a real user was operating them')
-  .version(readCliPackageVersion());
+  program
+    .name('vscode-ext-test')
+    .description('E2E test VS Code extensions as if a real user was operating them')
+    .version(readCliPackageVersion());
 
-program
+  program
   .command('run')
   .description('Run E2E tests against a VS Code extension')
   .option('--attach-devhost', 'Attach to an already-running Dev Host instead of launching one', false)
@@ -42,7 +43,7 @@ program
   .option('--max-workers <n>', 'Max parallel workers (requires --parallel)')
   .action(runCommand);
 
-program
+  program
   .command('live')
   .description('Start or attach to VS Code and execute Gherkin steps over JSONL stdin/stdout')
   .option('--mode <mode>', 'Session mode: auto, launch, attach', 'auto')
@@ -62,32 +63,38 @@ program
   .option('--artifacts-dir <dir>', 'Directory for live artifacts')
   .action(liveCommand);
 
-program
-  .command('install')
-  .description('Install the controller extension into VS Code')
+  program
+  .command('install-testing-extension-to-vscode')
+  .description('Install the testing controller extension into VS Code')
   .action(installCommand);
 
-program
-  .command('update')
-  .description('Update the controller extension in VS Code and all named profiles')
+  program
+  .command('install-testing-extension-to-profiles')
+  .description('Install the testing controller extension into VS Code and all named profiles')
   .action(updateCommand);
 
-program
+  program
   .command('uninstall')
   .description('Remove the controller extension from VS Code')
   .action(uninstallCommand);
 
-program
-  .command('init')
+  program
+  .command('install-into-project')
   .description('Scaffold tests/vscode-extension-tester/e2e/ with example .feature file and VS Code configs')
   .option('--features <dir>', 'Target directory for .feature files', 'tests/vscode-extension-tester/e2e')
   .action(initCommand);
 
-const testsCmd = program
+  addDeprecatedAlias(program, 'install', 'install-testing-extension-to-vscode', installCommand);
+  addDeprecatedAlias(program, 'update', 'install-testing-extension-to-profiles', updateCommand);
+  addDeprecatedAlias(program, 'init', 'install-into-project', initCommand, (command) => {
+    command.option('--features <dir>', 'Target directory for .feature files', 'tests/vscode-extension-tester/e2e');
+  });
+
+  const testsCmd = program
   .command('tests')
   .description('AI-powered test management');
 
-testsCmd
+  testsCmd
   .command('add')
   .description('Automatically generate tests from git changes or user description')
   .argument('[context...]', 'Optional description of what to test')
@@ -103,11 +110,11 @@ testsCmd
 
 // ─── Profile management ──────────────────────────────────────────────────────
 
-const profileCmd = program
+  const profileCmd = program
   .command('profile')
   .description('Manage named test profiles');
 
-profileCmd
+  profileCmd
   .command('open <name>')
   .description('Open a named profile in VS Code so you can authenticate or prepare prerequisites')
   .option('--extension-path <dir>', 'Path to extension project to load in the profile', '.')
@@ -120,7 +127,7 @@ profileCmd
     }
   });
 
-profileCmd
+  profileCmd
   .command('delete <name>')
   .description('Delete a named profile and all its data')
   .action((name: string) => {
@@ -132,7 +139,7 @@ profileCmd
     }
   });
 
-profileCmd
+  profileCmd
   .command('list')
   .description('List all named profiles')
   .action(() => {
@@ -147,7 +154,33 @@ profileCmd
     }
   });
 
-program.parse();
+  return program;
+}
+
+export function main(argv = process.argv): void {
+  createProgram().parse(argv);
+}
+
+if (typeof require !== 'undefined' && typeof module !== 'undefined' && require.main === module) {
+  main();
+}
+
+function addDeprecatedAlias(
+  program: Command,
+  oldCommand: string,
+  newCommand: string,
+  action: (...args: any[]) => void | Promise<void>,
+  configure?: (command: Command) => void,
+): void {
+  const command = program
+    .command(oldCommand, { hidden: true } satisfies CommandOptions)
+    .description(`Deprecated alias for ${newCommand}`);
+  configure?.(command);
+  command.action((...args: any[]) => {
+    console.warn(`Warning: \`vscode-ext-test ${oldCommand}\` is deprecated. Use \`vscode-ext-test ${newCommand}\`.`);
+    return action(...args);
+  });
+}
 
 function readCliPackageVersion(): string {
   try {

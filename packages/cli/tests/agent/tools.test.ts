@@ -9,7 +9,20 @@ const nativeMocks = vi.hoisted(() => ({
     moveMouseInDevHost: ReturnType<typeof vi.fn>;
     clickMouse: ReturnType<typeof vi.fn>;
     clickInDevHostAt: ReturnType<typeof vi.fn>;
+    selectFromDevHostPopup: ReturnType<typeof vi.fn>;
   }>,
+  selectFromDevHostPopup: vi.fn(),
+}));
+
+const cdpMocks = vi.hoisted(() => ({
+  instances: [] as Array<{
+    connect: ReturnType<typeof vi.fn>;
+    disconnect: ReturnType<typeof vi.fn>;
+    selectPopupMenuItem: ReturnType<typeof vi.fn>;
+    stabilizeMonacoAfterPopupSelection: ReturnType<typeof vi.fn>;
+  }>,
+  selectPopupMenuItem: vi.fn(),
+  stabilizeMonacoAfterPopupSelection: vi.fn(),
 }));
 
 const liveMocks = vi.hoisted(() => ({
@@ -25,9 +38,23 @@ vi.mock('../../src/runner/native-ui-client.js', () => ({
     moveMouseInDevHost = vi.fn().mockResolvedValue(undefined);
     clickMouse = vi.fn().mockResolvedValue(undefined);
     clickInDevHostAt = vi.fn().mockResolvedValue(undefined);
+    selectFromDevHostPopup = nativeMocks.selectFromDevHostPopup;
 
     constructor() {
       nativeMocks.instances.push(this);
+    }
+  },
+}));
+
+vi.mock('../../src/runner/cdp-client.js', () => ({
+  CdpClient: class MockCdpClient {
+    connect = vi.fn().mockResolvedValue(undefined);
+    disconnect = vi.fn();
+    selectPopupMenuItem = cdpMocks.selectPopupMenuItem;
+    stabilizeMonacoAfterPopupSelection = cdpMocks.stabilizeMonacoAfterPopupSelection;
+
+    constructor() {
+      cdpMocks.instances.push(this);
     }
   },
 }));
@@ -61,6 +88,13 @@ function makeContextWith(overrides: Partial<ToolContext>): ToolContext {
 describe('tools', () => {
   beforeEach(() => {
     nativeMocks.instances.length = 0;
+    cdpMocks.instances.length = 0;
+    nativeMocks.selectFromDevHostPopup.mockReset();
+    nativeMocks.selectFromDevHostPopup.mockRejectedValue(new Error('Popup item not found'));
+    cdpMocks.selectPopupMenuItem.mockReset();
+    cdpMocks.selectPopupMenuItem.mockResolvedValue(undefined);
+    cdpMocks.stabilizeMonacoAfterPopupSelection.mockReset();
+    cdpMocks.stabilizeMonacoAfterPopupSelection.mockResolvedValue(undefined);
     liveMocks.start.mockReset();
     liveMocks.start.mockResolvedValue({
       client: {},
@@ -299,6 +333,40 @@ describe('tools', () => {
       expect(nativeMocks.instances[0].targetPid).toBe(9999);
       expect(nativeMocks.instances[0].clickInDevHostAt).toHaveBeenCalledWith(30, 40, { button: 'left', clickCount: 2 });
       expect(nativeMocks.instances[0].clickMouse).not.toHaveBeenCalled();
+    });
+
+    it('should stabilize Monaco after native select_popup_item succeeds', async () => {
+      nativeMocks.selectFromDevHostPopup.mockResolvedValue('StormEvents');
+
+      const result = await executeToolCall('select_popup_item', JSON.stringify({ label: 'StormEvents' }), makeContext());
+
+      expect(result).toBe('Selected popup item: StormEvents');
+      expect(nativeMocks.instances[0].selectFromDevHostPopup).toHaveBeenCalledWith('StormEvents', 3000);
+      expect(cdpMocks.instances).toHaveLength(1);
+      expect(cdpMocks.instances[0].stabilizeMonacoAfterPopupSelection).toHaveBeenCalled();
+      expect(cdpMocks.instances[0].selectPopupMenuItem).not.toHaveBeenCalled();
+    });
+
+    it('should keep select_popup_item successful when native stabilization fails', async () => {
+      nativeMocks.selectFromDevHostPopup.mockResolvedValue('StormEvents');
+      cdpMocks.stabilizeMonacoAfterPopupSelection.mockRejectedValueOnce(new Error('CDP unavailable'));
+
+      const result = await executeToolCall('select_popup_item', JSON.stringify({ label: 'StormEvents' }), makeContext());
+
+      expect(result).toBe('Selected popup item: StormEvents');
+      expect(cdpMocks.instances).toHaveLength(1);
+      expect(cdpMocks.instances[0].stabilizeMonacoAfterPopupSelection).toHaveBeenCalled();
+      expect(cdpMocks.instances[0].selectPopupMenuItem).not.toHaveBeenCalled();
+    });
+
+    it('should reject missing or blank select_popup_item labels', async () => {
+      const missing = await executeToolCall('select_popup_item', JSON.stringify({}), makeContext());
+      const blank = await executeToolCall('select_popup_item', JSON.stringify({ label: '   ' }), makeContext());
+
+      expect(missing).toContain('Missing required string argument: label');
+      expect(blank).toContain('Missing required string argument: label');
+      expect(nativeMocks.instances).toHaveLength(0);
+      expect(cdpMocks.instances).toHaveLength(0);
     });
 
     it('should fail closed for live coordinate clicks when the live session has no target PID', async () => {

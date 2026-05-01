@@ -1,7 +1,15 @@
 import CDP from 'chrome-remote-interface';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { AutomationDiagnostic, AutomationDiagnosticEntry, QuickInputSelectResult, QuickInputState, QuickInputTextResult } from '../types.js';
+import type {
+  AutomationDiagnostic,
+  AutomationDiagnosticEntry,
+  QuickInputSelectResult,
+  QuickInputState,
+  QuickInputTextResult,
+  WebviewTextEvidence,
+  WebviewTextEvidenceTarget,
+} from '../types.js';
 
 /**
  * A JS function string that finds an element by CSS selector, piercing open
@@ -174,7 +182,197 @@ interface WebviewTryOptions extends CdpEvaluationOptions {
   client?: WebviewClientOptions;
 }
 
+interface PopupMenuItemPoint {
+  text?: string;
+  x?: number;
+  y?: number;
+  unreliable?: boolean;
+  error?: string;
+}
+
 const CDP_PROTOCOL_TIMEOUT_MS = 5_000;
+const WEBVIEW_EVIDENCE_SAMPLE_LIMIT = 1_000;
+const WEBVIEW_EVIDENCE_CONTEXT_RADIUS = 240;
+const MONACO_STABILIZE_TIMEOUT_MS = 1_000;
+
+const POPUP_MENU_ITEM_POINT = `function(itemText) {
+  const needle = String(itemText || '').toLowerCase();
+  const selectors = [
+    { selector: '.suggest-widget.visible .monaco-list-row', preferRow: true },
+    { selector: '.context-view .action-label', preferRow: false },
+    { selector: '.context-view .monaco-list-row', preferRow: true },
+    { selector: '.quick-input-list .monaco-list-row', preferRow: true },
+    { selector: '.monaco-list .monaco-list-row', preferRow: true },
+  ];
+  function clean(value) { return String(value || '').replace(/\s+/g, ' ').trim(); }
+  function visible(el) {
+    if (!el) return false;
+    const style = getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+  function disabled(el) {
+    return !el || el.getAttribute('aria-disabled') === 'true' || el.getAttribute('aria-disabled') === 'mixed' || el.classList.contains('disabled');
+  }
+  function queryAll(selector) {
+    const results = [];
+    function walk(root) {
+      try {
+        results.push(...root.querySelectorAll(selector));
+        for (const el of Array.from(root.querySelectorAll('*'))) {
+          if (el.shadowRoot) walk(el.shadowRoot);
+        }
+      } catch {}
+    }
+    walk(document);
+    return results;
+  }
+  function pointFor(el) {
+    if (!el || typeof el.scrollIntoView !== 'function') return null;
+    el.scrollIntoView({ block: 'center', inline: 'nearest' });
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    let x = rect.left + rect.width / 2;
+    let y = rect.top + rect.height / 2;
+    let unreliable = false;
+    try {
+      let current = window;
+      while (current.frameElement) {
+        const frameRect = current.frameElement.getBoundingClientRect();
+        x += frameRect.left;
+        y += frameRect.top;
+        current = current.parent;
+      }
+    } catch {
+      unreliable = true;
+    }
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y, unreliable };
+  }
+  const available = [];
+  for (const spec of selectors) {
+    for (const el of queryAll(spec.selector)) {
+      const row = el.closest('.monaco-list-row') || el;
+      const text = clean(el.textContent || row.textContent);
+      if (text) available.push(text);
+      if (!text || !text.toLowerCase().includes(needle)) continue;
+      if ((!visible(el) && !visible(row)) || disabled(el) || disabled(row)) continue;
+      const pointEl = spec.preferRow ? row : el;
+      const point = pointFor(pointEl) || pointFor(row) || pointFor(el);
+      if (point) return { text, x: point.x, y: point.y, unreliable: point.unreliable };
+    }
+  }
+  const suffix = available.length ? ' Available items: ' + Array.from(new Set(available)).slice(0, 20).join(', ') : '';
+  return { error: 'Popup menu item "' + itemText + '" not found in DOM.' + suffix };
+}`;
+
+const POPUP_MENU_ITEMS = `function() {
+  const selectors = [
+    '.suggest-widget.visible .monaco-list-row',
+    '.context-view .action-label',
+    '.context-view .monaco-list-row',
+    '.quick-input-list .monaco-list-row',
+    '.monaco-list .monaco-list-row',
+  ];
+  function clean(value) { return String(value || '').replace(/\s+/g, ' ').trim(); }
+  function visible(el) {
+    if (!el) return false;
+    const style = getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+  function disabled(el) {
+    return !el || el.getAttribute('aria-disabled') === 'true' || el.getAttribute('aria-disabled') === 'mixed' || el.classList.contains('disabled');
+  }
+  function queryAll(selector) {
+    const results = [];
+    function walk(root) {
+      try {
+        results.push(...root.querySelectorAll(selector));
+        for (const el of Array.from(root.querySelectorAll('*'))) {
+          if (el.shadowRoot) walk(el.shadowRoot);
+        }
+      } catch {}
+    }
+    walk(document);
+    return results;
+  }
+  const items = [];
+  for (const selector of selectors) {
+    for (const el of queryAll(selector)) {
+      const row = el.closest('.monaco-list-row') || el;
+      if ((!visible(el) && !visible(row)) || disabled(el) || disabled(row)) continue;
+      const text = clean(el.textContent || row.textContent);
+      if (text) items.push(text);
+    }
+  }
+  return Array.from(new Set(items));
+}`;
+
+const MONACO_POPUP_STABILIZE_EXPRESSION = `(() => {
+  const marker = 'data-vscode-ext-test-monaco-focus-repair';
+  function canFocus(el) { return el && typeof el.focus === 'function'; }
+  function focusNoScroll(el) {
+    try { el.focus({ preventScroll: true }); }
+    catch { el.focus(); }
+  }
+  function forceLayout(el) {
+    try { el.getBoundingClientRect(); } catch {}
+    try { el.querySelector('.overflow-guard')?.getBoundingClientRect(); } catch {}
+    try { el.querySelector('.monaco-scrollable-element')?.getBoundingClientRect(); } catch {}
+  }
+  function queryAll(selector) {
+    const results = [];
+    function walk(root) {
+      try {
+        results.push(...root.querySelectorAll(selector));
+        for (const el of Array.from(root.querySelectorAll('*'))) {
+          if (el.shadowRoot) walk(el.shadowRoot);
+        }
+      } catch {}
+    }
+    walk(document);
+    return results;
+  }
+
+  const editors = queryAll('.monaco-editor');
+  if (editors.length === 0) return { editors: 0, repaired: false };
+
+  const active = document.activeElement;
+  for (const editor of editors) forceLayout(editor);
+
+  const focusedEditor = editors.find((editor) =>
+    editor.classList.contains('focused') ||
+    (active && active !== document.body && editor.contains(active)) ||
+    Boolean(editor.querySelector('textarea.inputarea:focus, textarea:focus'))
+  );
+
+  try { window.dispatchEvent(new Event('resize')); } catch {}
+  if (!focusedEditor) return { editors: editors.length, repaired: false };
+
+  const refocusTarget =
+    (active && active !== document.body && focusedEditor.contains(active) && canFocus(active) ? active : null) ||
+    focusedEditor.querySelector('textarea.inputarea, textarea, [contenteditable="true"], [tabindex]');
+  if (!canFocus(refocusTarget)) return { editors: editors.length, repaired: false };
+
+  const sentinel = document.createElement('button');
+  sentinel.setAttribute(marker, 'true');
+  sentinel.tabIndex = -1;
+  sentinel.style.cssText = 'position:fixed;left:-10000px;top:-10000px;width:1px;height:1px;opacity:0;pointer-events:none;';
+  try {
+    document.body.appendChild(sentinel);
+    focusNoScroll(sentinel);
+    forceLayout(focusedEditor);
+    focusNoScroll(refocusTarget);
+    forceLayout(focusedEditor);
+    try { window.dispatchEvent(new Event('resize')); } catch {}
+    return { editors: editors.length, repaired: true };
+  } finally {
+    try { sentinel.remove(); } catch {}
+  }
+})()`;
 
 /**
  * Chrome DevTools Protocol client for sending real input events to VS Code.
@@ -363,35 +561,17 @@ export class CdpClient {
   async getPopupMenuItems(): Promise<string[]> {
     if (!this.client) throw new Error('CDP not connected');
 
-    const result = await this.withProtocolTimeout(this.client.Runtime.evaluate({
-      expression: `(() => {
-        const items = new Set();
+    const items = new Set<string>();
+    try {
+      const result = await this.withProtocolTimeout(this.client.Runtime.evaluate({
+        expression: `(${POPUP_MENU_ITEMS})()`,
+        returnByValue: true,
+      }), 'CDP Runtime.evaluate popup menu items');
+      for (const item of (result.result.value as string[] | undefined) ?? []) items.add(item);
+    } catch { /* try webviews below */ }
 
-        // Context menus / dropdown menus
-        document.querySelectorAll('.context-view .action-label').forEach(el => {
-          const text = (el.textContent || '').trim();
-          if (text && !el.closest('[aria-disabled="true"]')) items.add(text);
-        });
-
-        // QuickPick / QuickInput list rows
-        document.querySelectorAll('.quick-input-list .monaco-list-row').forEach(el => {
-          const label = el.querySelector('.label-name, .label-description, .quick-input-list-entry .label-name');
-          const text = (label || el).textContent?.trim();
-          if (text) items.add(text);
-        });
-
-        // Generic monaco list rows (e.g. editor picker)
-        document.querySelectorAll('.monaco-list:not(.quick-input-list) .monaco-list-row').forEach(el => {
-          const text = (el.textContent || '').trim();
-          if (text) items.add(text);
-        });
-
-        return [...items];
-      })()`,
-      returnByValue: true,
-    }), 'CDP Runtime.evaluate popup menu items');
-
-    return (result.result.value as string[]) ?? [];
+    for (const item of await this.getPopupMenuItemsInWebviews()) items.add(item);
+    return [...items];
   }
 
   /** Inspect the visible workbench QuickInput widget from the renderer DOM. */
@@ -451,53 +631,58 @@ export class CdpClient {
    */
   async selectPopupMenuItem(itemText: string): Promise<void> {
     if (!this.client) throw new Error('CDP not connected');
+    const targetText = itemText.trim();
+    if (!targetText) throw new Error('Popup menu item text cannot be empty');
 
-    const safeText = itemText.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    let lastError: string | undefined;
+    try {
+      const selected = await this.selectPopupMenuItemInClient(this.client, targetText);
+      if (selected.clicked) {
+        await this.stabilizeMonacoAfterPopupSelection();
+        return;
+      }
+      lastError = selected.error;
+    } catch (err) {
+      lastError = errorMessage(err);
+    }
 
-    const result = await this.withProtocolTimeout(this.client.Runtime.evaluate({
-      expression: `(() => {
-        const needle = '${safeText}'.toLowerCase();
+    const webviewSelected = await this.selectPopupMenuItemInWebviews(targetText);
+    if (webviewSelected.clicked) {
+      await this.stabilizeMonacoAfterPopupSelection();
+      return;
+    }
 
-        // Helper: try to find and click in a set of elements
-        function tryClick(selector) {
-          const els = document.querySelectorAll(selector);
-          for (const el of els) {
-            const text = (el.textContent || '').trim();
-            if (text.toLowerCase().includes(needle)) {
-              el.scrollIntoView({ block: 'center' });
-              el.click();
-              return text;
-            }
-          }
-          return null;
-        }
+    throw new Error(
+      webviewSelected.error ??
+      lastError ??
+      `Popup menu item "${targetText}" not found in DOM. Use getPopupMenuItems() to see available items.`
+    );
+  }
 
-        // 1. Context menus / dropdown menus
-        let hit = tryClick('.context-view .action-label');
-        if (hit) return hit;
+  /** Best-effort repair for Monaco mouse geometry after accepting popup completions. */
+  async stabilizeMonacoAfterPopupSelection(): Promise<void> {
+    if (!this.client) return;
 
-        // 2. Context-view list items (broader)
-        hit = tryClick('.context-view .monaco-list-row');
-        if (hit) return hit;
+    try {
+      await delay(50);
+      await this.evaluateMonacoPopupStabilization(this.client);
+    } catch { /* best effort */ }
 
-        // 3. QuickPick list rows
-        hit = tryClick('.quick-input-list .monaco-list-row');
-        if (hit) return hit;
+    let targets: Array<{ id: string; url: string; title: string }> = [];
+    try {
+      targets = await this.getWebviewTargets();
+    } catch { /* best effort */ }
 
-        // 4. Generic monaco list rows
-        hit = tryClick('.monaco-list .monaco-list-row');
-        if (hit) return hit;
-
-        return null;
-      })()`,
-      returnByValue: true,
-    }), 'CDP Runtime.evaluate popup menu select');
-
-    if (!result.result.value) {
-      throw new Error(
-        `Popup menu item "${itemText}" not found in DOM. ` +
-        `Use getPopupMenuItems() to see available items.`
-      );
+    for (const target of targets) {
+      try {
+        await this.withWebviewClient(target.id, async (wv) => {
+          await this.evaluateMonacoPopupStabilizationAcrossFrames(wv);
+        }, {
+          retries: 1,
+          operationTimeoutMs: MONACO_STABILIZE_TIMEOUT_MS,
+          retryOperationTimeouts: false,
+        });
+      } catch { /* best effort */ }
     }
   }
 
@@ -934,17 +1119,92 @@ export class CdpClient {
 
   /** Get the visible text of an element in a webview. */
   async getTextInWebview(selector: string, webviewTitle?: string): Promise<string> {
+    const result = await this.getElementTextEvidence(selector, webviewTitle);
+    if (result.text === undefined) {
+      throw new Error(`Element not found in webview: ${selector}`);
+    }
+    return result.text;
+  }
+
+  /** Get selector-scoped visible text plus structured webview evidence. */
+  async getElementTextEvidence(
+    selector: string,
+    webviewTitle?: string,
+    expectedText?: string,
+  ): Promise<{ text?: string; evidence: WebviewTextEvidence; error?: string }> {
     const safe = escapeSelector(selector);
     const expr = `(() => {
       const el = (${DEEP_QS})('${safe}');
       if (!el) return null;
       return el.innerText || el.textContent || '';
     })()`;
-    const value = await this.tryInWebviewsRaw(expr, webviewTitle);
-    if (value === null || value === undefined) {
-      throw new Error(`Element not found in webview: ${selector}`);
+    const targets = await this.getWebviewTargets(webviewTitle);
+    if (targets.length === 0 && webviewTitle) {
+      const all = await this.getWebviewTargets();
+      const available = all.map((t) => `"${t.title || '(untitled)'}" (${t.url})`).join(', ') || 'none';
+      const error =
+        `No webview found matching title "${webviewTitle}". Available webviews: ${available}. ` +
+        'Note: the title is matched against the HTML <title> tag, not the VS Code panel title.';
+      const evidenceTargets = await this.webviewTargetIdentities(all);
+      return {
+        error,
+        evidence: buildWebviewEvidence({
+          kind: 'webview-element',
+          titleFilter: webviewTitle,
+          selector,
+          expectedText,
+          matched: expectedText === undefined ? undefined : false,
+          targets: evidenceTargets,
+          message: error,
+        }),
+      };
     }
-    return String(value);
+    const evidenceTargets: WebviewTextEvidenceTarget[] = [];
+
+    for (const target of targets) {
+      const base = await this.webviewTargetIdentity(target);
+      try {
+        const value = await this.withWebviewClient(target.id, async (wv) => {
+          return await this.evaluateAcrossFrames(wv, expr);
+        });
+        if (value !== null && value !== undefined) {
+          const text = String(value);
+          const matched = expectedText === undefined ? undefined : text.includes(expectedText);
+          const summary = summarizeEvidenceText(text, expectedText);
+          const foundTarget: WebviewTextEvidenceTarget = {
+            ...base,
+            ...(matched !== undefined ? { matched } : {}),
+            ...summary,
+          };
+          return {
+            text,
+            evidence: buildWebviewEvidence({
+              kind: 'webview-element',
+              titleFilter: webviewTitle,
+              selector,
+              expectedText,
+              matched,
+              targets: [...evidenceTargets, foundTarget],
+              text,
+            }),
+          };
+        }
+        evidenceTargets.push(base);
+      } catch (err) {
+        evidenceTargets.push({ ...base, error: errorMessage(err) });
+      }
+    }
+
+    return {
+      evidence: buildWebviewEvidence({
+        kind: 'webview-element',
+        titleFilter: webviewTitle,
+        selector,
+        expectedText,
+        matched: expectedText === undefined ? undefined : false,
+        targets: evidenceTargets,
+      }),
+    };
   }
 
   /** Check whether a selector exists in any matching webview. Never throws. */
@@ -961,34 +1221,89 @@ export class CdpClient {
 
   /** Return the full text content of all matching webviews, joined (including nested iframes). */
   async getWebviewBodyText(webviewTitle?: string): Promise<string> {
+    const result = await this.getWebviewBodyTextEvidence(webviewTitle);
+    if (result.error) throw new Error(result.error);
+    return result.text;
+  }
+
+  /** Return full body text plus bounded structured evidence for all matching webviews. */
+  async getWebviewBodyTextEvidence(
+    webviewTitle?: string,
+    expectedText?: string,
+  ): Promise<{ text: string; evidence: WebviewTextEvidence; error?: string }> {
     const targets = await this.getWebviewTargets(webviewTitle, 5_000);
     if (targets.length === 0) {
       if (webviewTitle) {
         const all = await this.getWebviewTargets();
         const available = all.map((t) => `"${t.title || '(untitled)'}" (${t.url})`).join(', ') || 'none';
-        throw new Error(
+        const error =
           `No webview found matching title "${webviewTitle}". Available webviews: ${available}. ` +
-          'Note: the title is matched against the HTML <title> tag, not the VS Code panel title.',
-        );
+          'Note: the title is matched against the HTML <title> tag, not the VS Code panel title.';
+        const evidenceTargets = await this.webviewTargetIdentities(all);
+        return {
+          text: '',
+          error,
+          evidence: buildWebviewEvidence({
+            kind: 'webview-body',
+            titleFilter: webviewTitle,
+            expectedText,
+            matched: expectedText === undefined ? undefined : false,
+            targets: evidenceTargets,
+            message: error,
+          }),
+        };
       }
-      return '';
+      return {
+        text: '',
+        evidence: buildWebviewEvidence({
+          kind: 'webview-body',
+          expectedText,
+          matched: expectedText === undefined ? undefined : false,
+          targets: [],
+          text: '',
+          message: 'No webviews are currently open.',
+        }),
+      };
     }
     const parts: string[] = [];
+    const evidenceTargets: WebviewTextEvidenceTarget[] = [];
     for (const target of targets) {
-      try {
-        const texts = await this.withWebviewClient(target.id, async (wv) => {
-          return await this.collectFromAllFrames(
-            wv,
-            '(document.body && document.body.innerText) || ""',
-          );
-        });
-        for (const t of texts) {
-          const s = String(t);
-          if (s) parts.push(s);
-        }
-      } catch { /* skip target */ }
+      const collected = await this.collectWebviewBodyEvidence(target, expectedText);
+      evidenceTargets.push(collected.target);
+      if (collected.text) parts.push(collected.text);
     }
-    return parts.join('\n');
+    const text = parts.join('\n');
+    const matched = expectedText === undefined ? undefined : text.includes(expectedText);
+    return {
+      text,
+      evidence: buildWebviewEvidence({
+        kind: 'webview-body',
+        titleFilter: webviewTitle,
+        expectedText,
+        matched,
+        targets: evidenceTargets,
+        text,
+      }),
+    };
+  }
+
+  /** List open webviews with bounded visible text samples for report evidence. */
+  async listWebviewTextEvidence(): Promise<WebviewTextEvidence> {
+    const targets = await this.getWebviewTargets(undefined, 3_000);
+    const evidenceTargets: WebviewTextEvidenceTarget[] = [];
+    for (const target of targets) {
+      const collected = await this.collectWebviewBodyEvidence(target, undefined, {
+        retries: 1,
+        operationTimeoutMs: 2_000,
+        retryOperationTimeouts: false,
+      });
+      evidenceTargets.push(collected.target);
+    }
+    return buildWebviewEvidence({
+      kind: 'webview-list',
+      targets: evidenceTargets,
+      message: evidenceTargets.length === 0 ? 'No webviews are currently open.' : undefined,
+    });
   }
 
   /** List the open webviews - useful for debugging "which titles can I target?". */
@@ -1254,7 +1569,7 @@ export class CdpClient {
    * Connect to a single webview target and return the first non-empty
    * `document.title` found across all frames, or `null`.
    */
-  private async probeDocumentTitle(targetId: string): Promise<string | null> {
+  private async probeDocumentTitle(targetId: string, clientOptions?: WebviewClientOptions): Promise<string | null> {
     return this.withWebviewClient(targetId, async (client) => {
       const titles = await this.collectFromAllFrames(client, 'document.title || null');
       for (const t of titles) {
@@ -1262,7 +1577,57 @@ export class CdpClient {
         if (s) return s;
       }
       return null;
-    });
+    }, clientOptions);
+  }
+
+  private async webviewTargetIdentities(
+    targets: Array<{ id: string; url: string; title: string }>,
+    clientOptions?: WebviewClientOptions,
+  ): Promise<WebviewTextEvidenceTarget[]> {
+    const identities: WebviewTextEvidenceTarget[] = [];
+    for (const target of targets) {
+      identities.push(await this.webviewTargetIdentity(target, clientOptions));
+    }
+    return identities;
+  }
+
+  private async webviewTargetIdentity(
+    target: { id: string; url: string; title: string },
+    clientOptions?: WebviewClientOptions,
+  ): Promise<WebviewTextEvidenceTarget> {
+    let probedTitle: string | undefined;
+    try {
+      probedTitle = await this.probeDocumentTitle(target.id, clientOptions) ?? undefined;
+    } catch { /* best effort */ }
+    return { title: target.title, url: target.url, ...(probedTitle ? { probedTitle } : {}) };
+  }
+
+  private async collectWebviewBodyEvidence(
+    target: { id: string; url: string; title: string },
+    expectedText?: string,
+    clientOptions?: WebviewClientOptions,
+  ): Promise<{ text: string; target: WebviewTextEvidenceTarget }> {
+    const base = await this.webviewTargetIdentity(target, clientOptions);
+    try {
+      const texts = await this.withWebviewClient(target.id, async (wv) => {
+        return await this.collectFromAllFrames(
+          wv,
+          '(document.body && document.body.innerText) || ""',
+        );
+      }, clientOptions);
+      const text = texts.map((value) => String(value)).filter(Boolean).join('\n');
+      const matched = expectedText === undefined ? undefined : text.includes(expectedText);
+      return {
+        text,
+        target: {
+          ...base,
+          ...(matched !== undefined ? { matched } : {}),
+          ...summarizeEvidenceText(text, expectedText),
+        },
+      };
+    } catch (err) {
+      return { text: '', target: { ...base, error: errorMessage(err) } };
+    }
   }
 
 
@@ -1302,6 +1667,104 @@ export class CdpClient {
       }
     }
     throw lastError!;
+  }
+
+  private async selectPopupMenuItemInClient(
+    client: CDP.Client,
+    itemText: string,
+    contextId?: number,
+    timeoutMs = CDP_PROTOCOL_TIMEOUT_MS,
+  ): Promise<{ clicked: boolean; error?: string }> {
+    const point = await this.getPopupMenuItemPoint(client, itemText, contextId, timeoutMs);
+    if (!point || point.error) return { clicked: false, error: point?.error };
+    if (point.unreliable || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+      return { clicked: false, error: `Popup menu item "${itemText}" was found, but its target coordinates were not reliable.` };
+    }
+
+    await this.dispatchClick(client, point.x!, point.y!, { button: 'left', clickCount: 1 });
+    return { clicked: true };
+  }
+
+  private async selectPopupMenuItemInWebviews(itemText: string): Promise<{ clicked: boolean; error?: string }> {
+    const targets = await this.getWebviewTargets(undefined, 1_000);
+    let lastError: string | undefined;
+    for (const target of targets) {
+      try {
+        const clicked = await this.withWebviewClient(target.id, async (wv) => {
+          const contextIds = await this.discoverFrameContextIds(wv);
+          for (const contextId of contextIds) {
+            try {
+              const selected = await this.selectPopupMenuItemInClient(
+                wv,
+                itemText,
+                contextId,
+                MONACO_STABILIZE_TIMEOUT_MS,
+              );
+              if (selected.clicked) return true;
+              lastError = selected.error ?? lastError;
+            } catch (err) {
+              lastError = errorMessage(err);
+            }
+          }
+          return false;
+        }, {
+          retries: 1,
+          operationTimeoutMs: 2_000,
+          retryOperationTimeouts: false,
+        });
+        if (clicked) return { clicked: true };
+      } catch (err) {
+        lastError = errorMessage(err);
+      }
+    }
+    return { clicked: false, error: lastError };
+  }
+
+  private async getPopupMenuItemsInWebviews(): Promise<string[]> {
+    const items = new Set<string>();
+    let targets: Array<{ id: string; url: string; title: string }> = [];
+    try {
+      targets = await this.getWebviewTargets();
+    } catch {
+      return [];
+    }
+
+    for (const target of targets) {
+      try {
+        await this.withWebviewClient(target.id, async (wv) => {
+          const contextIds = await this.discoverFrameContextIds(wv);
+          for (const contextId of contextIds) {
+            try {
+              const result = await this.withProtocolTimeout(wv.Runtime.evaluate({
+                expression: `(${POPUP_MENU_ITEMS})()`,
+                returnByValue: true,
+                contextId,
+              }), `CDP Runtime.evaluate popup menu items context ${contextId}`, MONACO_STABILIZE_TIMEOUT_MS);
+              for (const item of (result.result.value as string[] | undefined) ?? []) items.add(item);
+            } catch { /* best effort per frame */ }
+          }
+        }, {
+          retries: 1,
+          operationTimeoutMs: 2_000,
+          retryOperationTimeouts: false,
+        });
+      } catch { /* best effort per target */ }
+    }
+    return [...items];
+  }
+
+  private async getPopupMenuItemPoint(
+    client: CDP.Client,
+    itemText: string,
+    contextId?: number,
+    timeoutMs = CDP_PROTOCOL_TIMEOUT_MS,
+  ): Promise<PopupMenuItemPoint | undefined> {
+    const result = await this.withProtocolTimeout(client.Runtime.evaluate({
+      expression: `(${POPUP_MENU_ITEM_POINT})(${JSON.stringify(itemText)})`,
+      returnByValue: true,
+      ...(contextId !== undefined ? { contextId } : {}),
+    }), 'CDP Runtime.evaluate popup menu select', timeoutMs);
+    return result.result.value as PopupMenuItemPoint | undefined;
   }
 
   /**
@@ -1426,6 +1889,28 @@ export class CdpClient {
       return true;
     })()`;
     return this.tryInWebviews(expr);
+  }
+
+  private async evaluateMonacoPopupStabilization(client: CDP.Client): Promise<void> {
+    await this.withProtocolTimeout(client.Runtime.evaluate({
+      expression: MONACO_POPUP_STABILIZE_EXPRESSION,
+      returnByValue: true,
+      awaitPromise: true,
+    }), 'CDP Runtime.evaluate Monaco popup stabilization', MONACO_STABILIZE_TIMEOUT_MS);
+  }
+
+  private async evaluateMonacoPopupStabilizationAcrossFrames(client: CDP.Client): Promise<void> {
+    const contextIds = await this.discoverFrameContextIds(client);
+    for (const contextId of contextIds) {
+      try {
+        await this.withProtocolTimeout(client.Runtime.evaluate({
+          expression: MONACO_POPUP_STABILIZE_EXPRESSION,
+          returnByValue: true,
+          awaitPromise: true,
+          contextId,
+        }), `CDP Runtime.evaluate Monaco popup stabilization context ${contextId}`, MONACO_STABILIZE_TIMEOUT_MS);
+      } catch { /* best effort per frame */ }
+    }
   }
 
   // ─── Diagnostics ──────────────────────────────────────────────────────────
@@ -1664,6 +2149,62 @@ function webviewTextClickExpression(marker: string, options: CdpClickOptions): s
     }
     return true;
   })()`;
+}
+
+function buildWebviewEvidence(args: {
+  kind: WebviewTextEvidence['kind'];
+  titleFilter?: string;
+  selector?: string;
+  expectedText?: string;
+  matched?: boolean;
+  targets: WebviewTextEvidenceTarget[];
+  text?: string;
+  message?: string;
+}): WebviewTextEvidence {
+  const textSummary = args.text !== undefined ? summarizeEvidenceText(args.text, args.expectedText) : {};
+  return {
+    kind: args.kind,
+    ...(args.titleFilter ? { titleFilter: args.titleFilter } : {}),
+    ...(args.selector ? { selector: args.selector } : {}),
+    ...(args.expectedText !== undefined ? { expectedText: args.expectedText } : {}),
+    ...(args.matched !== undefined ? { matched: args.matched } : {}),
+    targetCount: args.targets.length,
+    targets: args.targets,
+    ...textSummary,
+    ...(args.message ? { message: args.message } : {}),
+  };
+}
+
+function summarizeEvidenceText(text: string, expectedText?: string): Pick<WebviewTextEvidenceTarget, 'textSample' | 'textLength' | 'truncated' | 'matchContext'> {
+  const normalized = normalizeEvidenceWhitespace(text);
+  const summary: {
+    textSample?: string;
+    textLength?: number;
+    truncated?: boolean;
+    matchContext?: string;
+  } = {
+    textLength: text.length,
+    textSample: truncateEvidenceText(normalized, WEBVIEW_EVIDENCE_SAMPLE_LIMIT),
+    truncated: normalized.length > WEBVIEW_EVIDENCE_SAMPLE_LIMIT,
+  };
+  if (expectedText) {
+    const index = text.indexOf(expectedText);
+    if (index >= 0) {
+      const start = Math.max(0, index - WEBVIEW_EVIDENCE_CONTEXT_RADIUS);
+      const end = Math.min(text.length, index + expectedText.length + WEBVIEW_EVIDENCE_CONTEXT_RADIUS);
+      summary.matchContext = truncateEvidenceText(normalizeEvidenceWhitespace(text.slice(start, end)), WEBVIEW_EVIDENCE_SAMPLE_LIMIT);
+    }
+  }
+  return summary;
+}
+
+function normalizeEvidenceWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function truncateEvidenceText(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 3))}...`;
 }
 
 function diagnosticError(message: string, diagnostic: AutomationDiagnostic): Error {

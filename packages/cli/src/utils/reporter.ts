@@ -147,6 +147,9 @@ function generateMarkdown(result: TestRunResult, metadataOrScreenshots?: RunMeta
         for (const screenshot of step.artifacts?.screenshots ?? []) {
           lines.push(...formatScreenshotArtifactMarkdown(screenshot, runDirRel));
         }
+        for (const log of step.artifacts?.logs ?? []) {
+          lines.push(...formatLogArtifactMarkdown(log, runDirRel));
+        }
       }
       lines.push('');
     }
@@ -180,6 +183,58 @@ function formatScreenshotArtifactMarkdown(artifact: StepArtifact, runDirRel?: st
 
   const metadata = formatCaptureMetadata(artifact);
   if (metadata) lines.push(`  > Capture metadata: ${metadata}`);
+  return lines;
+}
+
+function formatLogArtifactMarkdown(artifact: StepArtifact, runDirRel?: string): string[] {
+  if (artifact.kind === 'webview-evidence' && artifact.webviewEvidence) {
+    return formatWebviewEvidenceMarkdown(artifact);
+  }
+  if (artifact.path && artifact.label) {
+    return [`  > Log (${escapeMarkdownText(artifact.label)}): \`${formatArtifactPath(artifact.path, runDirRel)}\``];
+  }
+  return [];
+}
+
+function formatWebviewEvidenceMarkdown(artifact: StepArtifact): string[] {
+  const evidence = artifact.webviewEvidence;
+  if (!evidence) return [];
+  const lines: string[] = [];
+  const label = artifact.label ? ` (${escapeMarkdownText(artifact.label)})` : '';
+  const status = evidence.matched === true ? 'matched' : evidence.matched === false ? 'not matched' : 'captured';
+  const scope = evidence.selector ? ` selector \`${escapeMarkdownText(evidence.selector)}\`` : '';
+  const filter = evidence.titleFilter ? ` in webview "${escapeMarkdownText(evidence.titleFilter)}"` : '';
+  const expected = evidence.expectedText !== undefined ? ` expected "${escapeMarkdownText(evidence.expectedText)}"` : '';
+  lines.push(`  > Webview evidence${label}: ${status}${scope}${filter}${expected}; targets ${evidence.targetCount}`);
+  if (evidence.message) lines.push(`  > Evidence note: ${escapeMarkdownText(evidence.message)}`);
+
+  for (const target of evidence.targets.slice(0, 5)) {
+    const title = target.title || '(untitled)';
+    const probed = target.probedTitle ? `; probed "${escapeMarkdownText(target.probedTitle)}"` : '';
+    const matched = target.matched === true ? '; matched' : target.matched === false ? '; not matched' : '';
+    const length = typeof target.textLength === 'number' ? `; text ${target.textLength} chars${target.truncated ? ' (sample truncated)' : ''}` : '';
+    const error = target.error ? `; error "${escapeMarkdownText(target.error)}"` : '';
+    lines.push(`  > Target: "${escapeMarkdownText(title)}"${probed}; url ${escapeMarkdownText(target.url)}${matched}${length}${error}`);
+    const sample = target.matchContext || target.textSample;
+    if (sample) lines.push(...formatEvidenceTextBlock(target.matchContext ? 'Match context' : 'Text sample', sample));
+  }
+
+  if (evidence.targets.length > 5) {
+    lines.push(`  > ${evidence.targets.length - 5} additional webview target(s) omitted from report output.`);
+  }
+  if (evidence.matchContext) {
+    lines.push(...formatEvidenceTextBlock('Combined match context', evidence.matchContext));
+  } else if (evidence.textSample && evidence.targets.length === 0) {
+    lines.push(...formatEvidenceTextBlock('Text sample', evidence.textSample));
+  }
+  return lines;
+}
+
+function formatEvidenceTextBlock(label: string, text: string): string[] {
+  const safe = text.replace(/```/g, "'''");
+  const lines = [`  > ${label}:`, '  > ```text'];
+  for (const line of safe.split('\n')) lines.push(`  > ${line}`);
+  lines.push('  > ```');
   return lines;
 }
 

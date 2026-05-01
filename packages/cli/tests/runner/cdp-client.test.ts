@@ -144,6 +144,117 @@ describe('CdpClient', () => {
     }));
   });
 
+  it('selects popup menu items with real pointer events', async () => {
+    mockClientRef.current.Runtime.evaluate
+      .mockResolvedValueOnce({ result: { value: { text: 'StormEvents', x: 120, y: 240 } } })
+      .mockResolvedValue({ result: { value: { editors: 0, repaired: false } } });
+    await client.connect();
+
+    await client.selectPopupMenuItem('Storm');
+
+    const selectionExpression = mockClientRef.current.Runtime.evaluate.mock.calls[0][0].expression;
+    expect(selectionExpression).toContain('.suggest-widget.visible .monaco-list-row');
+    expect(selectionExpression).toContain('shadowRoot');
+    expect(selectionExpression).not.toContain('.click()');
+    expect(mockClientRef.current.Input.dispatchMouseEvent).toHaveBeenNthCalledWith(1, {
+      type: 'mouseMoved',
+      x: 120,
+      y: 240,
+      button: 'none',
+    });
+    expect(mockClientRef.current.Input.dispatchMouseEvent).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      type: 'mousePressed',
+      x: 120,
+      y: 240,
+      button: 'left',
+      buttons: 1,
+    }));
+  });
+
+  it('rejects blank popup menu item text before clicking', async () => {
+    await client.connect();
+
+    await expect(client.selectPopupMenuItem('   ')).rejects.toThrow('Popup menu item text cannot be empty');
+
+    expect(mockClientRef.current.Runtime.evaluate).not.toHaveBeenCalled();
+    expect(mockClientRef.current.Input.dispatchMouseEvent).not.toHaveBeenCalled();
+  });
+
+  it('falls back to webview frame contexts for popup menu items', async () => {
+    setupSingleWebviewContext(11);
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression, contextId }: { expression: string; contextId?: number }) => {
+      if (expression.includes('data-vscode-ext-test-monaco-focus-repair')) {
+        return Promise.resolve({ result: { value: { editors: 1, repaired: true } } });
+      }
+      if (expression.includes('.suggest-widget.visible .monaco-list-row') && contextId === 11) {
+        return Promise.resolve({ result: { value: { text: 'StormEvents', x: 77, y: 88 } } });
+      }
+      if (expression.includes('.suggest-widget.visible .monaco-list-row')) {
+        return Promise.resolve({ result: { value: { error: 'not in main renderer' } } });
+      }
+      return Promise.resolve({ result: { value: undefined } });
+    });
+    await client.connect();
+
+    await client.selectPopupMenuItem('Storm');
+
+    expect(mockClientRef.current.Runtime.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      expression: expect.stringContaining('.suggest-widget.visible .monaco-list-row'),
+      contextId: 11,
+    }));
+    expect(mockClientRef.current.Input.dispatchMouseEvent).toHaveBeenNthCalledWith(1, {
+      type: 'mouseMoved',
+      x: 77,
+      y: 88,
+      button: 'none',
+    });
+  });
+
+  it('lists popup menu items from webview frame contexts', async () => {
+    setupSingleWebviewContext(13);
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression, contextId }: { expression: string; contextId?: number }) => {
+      if (expression.includes('return Array.from(new Set(items))') && contextId === 13) {
+        return Promise.resolve({ result: { value: ['StormEvents', 'StormEvents'] } });
+      }
+      if (expression.includes('return Array.from(new Set(items))')) {
+        return Promise.resolve({ result: { value: [] } });
+      }
+      return Promise.resolve({ result: { value: undefined } });
+    });
+    await client.connect();
+
+    const items = await client.getPopupMenuItems();
+
+    expect(items).toEqual(['StormEvents']);
+    expect(mockClientRef.current.Runtime.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      expression: expect.stringContaining('return Array.from(new Set(items))'),
+      contextId: 13,
+    }));
+    expect(mockClientRef.current.Runtime.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      expression: expect.stringContaining('shadowRoot'),
+      contextId: 13,
+    }));
+  });
+
+  it('stabilizes Monaco popup focus inside webview frame contexts', async () => {
+    setupSingleWebviewContext(7);
+    mockClientRef.current.Runtime.evaluate.mockResolvedValue({ result: { value: { editors: 1, repaired: true } } });
+    await client.connect();
+
+    await client.stabilizeMonacoAfterPopupSelection();
+
+    expect(mockClientRef.current.Runtime.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      expression: expect.stringContaining('data-vscode-ext-test-monaco-focus-repair'),
+    }));
+    expect(mockClientRef.current.Runtime.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      expression: expect.stringContaining('shadowRoot'),
+    }));
+    expect(mockClientRef.current.Runtime.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      expression: expect.stringContaining('data-vscode-ext-test-monaco-focus-repair'),
+      contextId: 7,
+    }));
+  });
+
   it('maps punctuation keyboard chords to valid CDP codes', async () => {
     await client.connect();
 
@@ -386,5 +497,154 @@ describe('CdpClient', () => {
         candidates: expect.arrayContaining([expect.objectContaining({ name: 'Try In Playground' })]),
       }),
     });
+  });
+
+  it('collects structured webview body text evidence with bounded samples and match context', async () => {
+    setupSingleWebviewContext();
+    const bodyText = `Intro ${'x'.repeat(1200)} Needle value`;
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      if (expression.includes('document.title')) return Promise.resolve({ result: { value: 'Dashboard' } });
+      if (expression.includes('document.body')) return Promise.resolve({ result: { value: bodyText } });
+      return Promise.resolve({ result: { value: undefined } });
+    });
+
+    const result = await client.getWebviewBodyTextEvidence(undefined, 'Needle');
+
+    expect(result.text).toBe(bodyText);
+    expect(result.evidence).toMatchObject({
+      kind: 'webview-body',
+      expectedText: 'Needle',
+      matched: true,
+      targetCount: 1,
+    });
+    expect(result.evidence.targets[0]).toMatchObject({
+      title: 'Kusto Workbench',
+      probedTitle: 'Dashboard',
+      matched: true,
+    });
+    expect(result.evidence.targets[0].textSample!.length).toBeLessThanOrEqual(1000);
+    expect(result.evidence.targets[0].truncated).toBe(true);
+    expect(result.evidence.targets[0].matchContext).toContain('Needle value');
+  });
+
+  it('keeps getWebviewBodyText as a compatibility wrapper', async () => {
+    setupSingleWebviewContext();
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      if (expression.includes('document.title')) return Promise.resolve({ result: { value: 'Dashboard' } });
+      if (expression.includes('document.body')) return Promise.resolve({ result: { value: 'Body text' } });
+      return Promise.resolve({ result: { value: undefined } });
+    });
+
+    await expect(client.getWebviewBodyText()).resolves.toBe('Body text');
+  });
+
+  it('collects structured webview element text evidence', async () => {
+    setupSingleWebviewContext();
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      if (expression.includes('document.title')) return Promise.resolve({ result: { value: 'Settings' } });
+      if (expression.includes('.status')) return Promise.resolve({ result: { value: 'Ready to run' } });
+      return Promise.resolve({ result: { value: undefined } });
+    });
+
+    const result = await client.getElementTextEvidence('.status', undefined, 'Ready');
+
+    expect(result.text).toBe('Ready to run');
+    expect(result.evidence).toMatchObject({
+      kind: 'webview-element',
+      selector: '.status',
+      expectedText: 'Ready',
+      matched: true,
+      targetCount: 1,
+    });
+    expect(result.evidence.targets[0]).toMatchObject({
+      probedTitle: 'Settings',
+      textSample: 'Ready to run',
+    });
+  });
+
+  it('returns selector evidence when an element is missing', async () => {
+    setupSingleWebviewContext();
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      if (expression.includes('document.title')) return Promise.resolve({ result: { value: 'Settings' } });
+      if (expression.includes('.missing')) return Promise.resolve({ result: { value: null } });
+      return Promise.resolve({ result: { value: undefined } });
+    });
+
+    const result = await client.getElementTextEvidence('.missing', undefined, 'Ready');
+
+    expect(result.text).toBeUndefined();
+    expect(result.evidence).toMatchObject({
+      kind: 'webview-element',
+      selector: '.missing',
+      expectedText: 'Ready',
+      matched: false,
+      targetCount: 1,
+    });
+    expect(result.evidence.targets[0]).toMatchObject({ title: 'Kusto Workbench', probedTitle: 'Settings' });
+  });
+
+  it('returns title mismatch evidence for titled selector assertions', async () => {
+    setupSingleWebviewContext();
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      if (expression.includes('document.title')) return Promise.resolve({ result: { value: 'Dashboard' } });
+      return Promise.resolve({ result: { value: undefined } });
+    });
+
+    const result = await client.getElementTextEvidence('.status', 'Definitely Wrong Title', 'Ready');
+
+    expect(result.text).toBeUndefined();
+    expect(result.error).toContain('No webview found matching title "Definitely Wrong Title"');
+    expect(result.evidence).toMatchObject({
+      kind: 'webview-element',
+      titleFilter: 'Definitely Wrong Title',
+      selector: '.status',
+      expectedText: 'Ready',
+      matched: false,
+      targetCount: 1,
+    });
+    expect(result.evidence.targets[0]).toMatchObject({ title: 'Kusto Workbench', probedTitle: 'Dashboard' });
+  });
+
+  it('lists webviews with structured visible text samples', async () => {
+    setupSingleWebviewContext();
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      if (expression.includes('document.title')) return Promise.resolve({ result: { value: 'Dashboard' } });
+      if (expression.includes('document.body')) return Promise.resolve({ result: { value: 'Visible dashboard text' } });
+      return Promise.resolve({ result: { value: undefined } });
+    });
+
+    const evidence = await client.listWebviewTextEvidence();
+
+    expect(evidence).toMatchObject({ kind: 'webview-list', targetCount: 1 });
+    expect(evidence.targets[0]).toMatchObject({
+      title: 'Kusto Workbench',
+      probedTitle: 'Dashboard',
+      textSample: 'Visible dashboard text',
+    });
+  });
+
+  it('bounds title probing while listing webview text evidence', async () => {
+    vi.useFakeTimers();
+    setupSingleWebviewContext();
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      if (expression.includes('document.title')) return new Promise(() => undefined);
+      if (expression.includes('document.body')) return Promise.resolve({ result: { value: 'Visible fallback text' } });
+      return Promise.resolve({ result: { value: undefined } });
+    });
+
+    try {
+      const evidencePromise = client.listWebviewTextEvidence();
+      await vi.advanceTimersByTimeAsync(3_000);
+      const evidence = await evidencePromise;
+
+      expect(evidence).toMatchObject({ kind: 'webview-list', targetCount: 1 });
+      expect(evidence.targets[0]).toMatchObject({
+        title: 'Kusto Workbench',
+        textSample: 'Visible fallback text',
+      });
+      expect(evidence.targets[0].probedTitle).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

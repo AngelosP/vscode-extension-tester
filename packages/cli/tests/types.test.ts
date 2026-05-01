@@ -241,6 +241,36 @@ describe('Types and Constants', () => {
       expect(artifact.capture?.attempts?.[1].strategy).toBe('PrintWindow');
     });
 
+    it('should accept webview text evidence artifacts', () => {
+      const artifact: StepArtifact = {
+        kind: 'webview-evidence',
+        label: 'Webview text assertion',
+        webviewEvidence: {
+          kind: 'webview-body',
+          titleFilter: 'Dashboard',
+          expectedText: '42 rows',
+          matched: true,
+          targetCount: 1,
+          textSample: 'Query results 42 rows',
+          textLength: 21,
+          truncated: false,
+          matchContext: 'Query results 42 rows',
+          targets: [{
+            title: 'Dashboard',
+            url: 'vscode-webview://dashboard',
+            probedTitle: 'Dashboard',
+            matched: true,
+            textSample: 'Query results 42 rows',
+            textLength: 21,
+            truncated: false,
+          }],
+        },
+      };
+
+      expect(artifact.webviewEvidence?.targets[0].matched).toBe(true);
+      expect(artifact.webviewEvidence?.expectedText).toBe('42 rows');
+    });
+
     it('should accept live session summary shape', () => {
       const summary: LiveSessionSummary = {
         sessionId: 'session-1',

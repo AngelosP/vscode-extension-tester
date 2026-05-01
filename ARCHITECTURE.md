@@ -100,7 +100,7 @@ The CLI is built with [Commander.js](https://github.com/tj/commander.js). Each c
   - *Dev mode* (`--attach-devhost`): Connects to a Dev Host that's already running.
   - *CI mode*: Downloads VS Code via `@vscode/test-electron`, launches it with the controller extension, runs tests, and exits.
 - **`tests add`** - The AI-powered test generation command. Analyzes the extension's source code, builds a system prompt, and runs the agent loop to generate `.feature` files. If previous failures exist (`.agent-resume.json`), it self-heals.
-- **`init`** - Scaffolds a new test project: installs the controller extension, creates a `.feature` template, and wires up `launch.json` / `tasks.json`.
+- **`install-into-project`** - Scaffolds a new test project: installs the controller extension, creates a `.feature` template, and wires up `launch.json` / `tasks.json`.
 
 ### 2. AI Agent (`packages/cli/src/agent/`)
 

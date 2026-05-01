@@ -59,7 +59,7 @@ After making changes to the controller extension:
 cd packages/controller-extension
 npm run package                          # creates .vsix
 cp *.vsix ../cli/assets/controller-extension.vsix  # update bundled asset
-node ../cli/bin/vscode-ext-test.js install          # install using this checkout's bundled asset
+node ../cli/bin/vscode-ext-test.js install-testing-extension-to-vscode  # install using this checkout's bundled asset
 ```
 
 ## Running Locally

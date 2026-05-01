@@ -19,7 +19,7 @@ Do not force root, CLI, and controller package versions to match.
 - `CHANGELOG.md`
 
 The version represents the bundled controller extension VSIX installed by
-`vscode-ext-test install` and `vscode-ext-test update`.
+`vscode-ext-test install-testing-extension-to-vscode` and `vscode-ext-test install-testing-extension-to-profiles`.
 
 Whenever a functional change touches `packages/controller-extension/**`, bump
 the controller extension version before final packaging. CLI-only changes do not

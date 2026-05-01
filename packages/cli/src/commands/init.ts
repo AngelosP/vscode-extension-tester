@@ -57,7 +57,7 @@ export async function initCommand(opts: { features?: string }): Promise<void> {
 function ensureControllerInstalled(): void {
   const vsixPath = getVsixPath();
   if (!fs.existsSync(vsixPath)) {
-    console.warn('Warning: controller extension .vsix not found. Run `vscode-ext-test install` manually.');
+    console.warn('Warning: controller extension .vsix not found. Run `vscode-ext-test install-testing-extension-to-vscode` manually.');
     return;
   }
 
@@ -313,7 +313,7 @@ export function scaffoldRepoKnowledge(cwd: string): void {
 
 This file is your persistent knowledge base for E2E testing this specific
 codebase with vscode-extension-tester. Unlike SKILL.md (which is overwritten
-on every \`vscode-ext-test init\` to stay current with framework updates),
+on every \`vscode-ext-test install-into-project\` to stay current with framework updates),
 **this file is never overwritten** — it accumulates knowledge across sessions.
 
 ## How to Use

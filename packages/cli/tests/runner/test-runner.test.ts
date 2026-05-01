@@ -67,6 +67,8 @@ function resetMockNativeUI(): void {
     moveDevHost: vi.fn().mockResolvedValue(undefined),
     captureDevHostScreenshot: vi.fn().mockResolvedValue(undefined),
     getDevHostTree: vi.fn().mockResolvedValue({}),
+    getDevHostPopupItems: vi.fn().mockResolvedValue([]),
+    selectFromDevHostPopup: vi.fn().mockRejectedValue(new Error('Popup item not found')),
   };
 }
 
@@ -108,7 +110,14 @@ function resetMockCdp(): void {
     waitForSelectorInWebview: vi.fn().mockResolvedValue(undefined),
     elementExistsInWebview: vi.fn().mockResolvedValue(false),
     getWebviewBodyText: vi.fn().mockResolvedValue(''),
+    getWebviewBodyTextEvidence: vi.fn().mockResolvedValue({
+      text: '',
+      evidence: { kind: 'webview-body', targetCount: 0, targets: [], textSample: '', textLength: 0, truncated: false },
+    }),
     getTextInWebview: vi.fn().mockResolvedValue(''),
+    getElementTextEvidence: vi.fn().mockResolvedValue({
+      evidence: { kind: 'webview-element', targetCount: 0, targets: [] },
+    }),
     evaluateInWebview: vi.fn().mockResolvedValue(undefined),
     clickInWebviewBySelector: vi.fn().mockResolvedValue(undefined),
     clickInWebviewByAccessibleText: vi.fn().mockResolvedValue(undefined),
@@ -121,12 +130,65 @@ function resetMockCdp(): void {
     selectWorkbenchQuickInputItem: vi.fn().mockResolvedValue({ selected: '', intercepted: false }),
     submitWorkbenchQuickInputText: vi.fn().mockResolvedValue({ entered: '', intercepted: false, accepted: true }),
     listWebviews: vi.fn().mockResolvedValue([]),
+    listWebviewTextEvidence: vi.fn().mockResolvedValue({ kind: 'webview-list', targetCount: 0, targets: [] }),
     listWebviewFrameContexts: vi.fn().mockResolvedValue([]),
+    getPopupMenuItems: vi.fn().mockResolvedValue([]),
+    selectPopupMenuItem: vi.fn().mockResolvedValue(undefined),
+    stabilizeMonacoAfterPopupSelection: vi.fn().mockResolvedValue(undefined),
     insertText: vi.fn().mockResolvedValue(undefined),
     pressKey: vi.fn().mockResolvedValue(undefined),
     moveMouse: vi.fn().mockResolvedValue(undefined),
     clickAt: vi.fn().mockResolvedValue(undefined),
   };
+  mockCdpRef.current.getWebviewBodyTextEvidence = vi.fn(async (titleFilter?: string, expectedText?: string) => {
+    const text = await mockCdpRef.current!.getWebviewBodyText(titleFilter);
+    const matched = expectedText === undefined ? undefined : String(text).includes(expectedText);
+    return {
+      text,
+      evidence: {
+        kind: 'webview-body',
+        ...(titleFilter ? { titleFilter } : {}),
+        ...(expectedText !== undefined ? { expectedText } : {}),
+        ...(matched !== undefined ? { matched } : {}),
+        targetCount: text ? 1 : 0,
+        targets: text ? [{ title: 'Mock Webview', url: 'vscode-webview://mock', matched, textSample: String(text), textLength: String(text).length, truncated: false }] : [],
+        textSample: String(text),
+        textLength: String(text).length,
+        truncated: false,
+      },
+    };
+  });
+  mockCdpRef.current.getElementTextEvidence = vi.fn(async (selector: string, titleFilter?: string, expectedText?: string) => {
+    const text = await mockCdpRef.current!.getTextInWebview(selector, titleFilter);
+    const matched = expectedText === undefined ? undefined : String(text).includes(expectedText);
+    return {
+      text,
+      evidence: {
+        kind: 'webview-element',
+        selector,
+        ...(titleFilter ? { titleFilter } : {}),
+        ...(expectedText !== undefined ? { expectedText } : {}),
+        ...(matched !== undefined ? { matched } : {}),
+        targetCount: 1,
+        targets: [{ title: 'Mock Webview', url: 'vscode-webview://mock', matched, textSample: String(text), textLength: String(text).length, truncated: false }],
+        textSample: String(text),
+        textLength: String(text).length,
+        truncated: false,
+      },
+    };
+  });
+  mockCdpRef.current.listWebviewTextEvidence = vi.fn(async () => {
+    const webviews = await mockCdpRef.current!.listWebviews();
+    return {
+      kind: 'webview-list',
+      targetCount: webviews.length,
+      targets: webviews.map((webview: { title: string; url: string; probedTitle?: string }) => ({
+        title: webview.title,
+        url: webview.url,
+        ...(webview.probedTitle ? { probedTitle: webview.probedTitle } : {}),
+      })),
+    };
+  });
 }
 
 /** Shorthand to access the current mock CDP instance. */
@@ -341,6 +403,48 @@ describe('TestRunner', () => {
         expect(result.status).toBe('failed');
         expect(result.error?.message).toBe('Command failed');
         expect(result.artifacts.warnings.join('\n')).toContain('Screenshot failed');
+      } finally {
+        liveRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should write webview evidence to live step manifests', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-live-'));
+      const liveRunner = new TestRunner(client, {}, artifactsDir);
+      getMockCdp().getWebviewBodyTextEvidence.mockResolvedValue({
+        text: 'Dashboard ready',
+        evidence: {
+          kind: 'webview-body',
+          expectedText: 'Dashboard',
+          matched: true,
+          targetCount: 1,
+          targets: [{ title: 'Dashboard', url: 'vscode-webview://dashboard', matched: true, textSample: 'Dashboard ready', textLength: 15, truncated: false }],
+          textSample: 'Dashboard ready',
+          textLength: 15,
+          truncated: false,
+          matchContext: 'Dashboard ready',
+        },
+      });
+
+      try {
+        const result = await liveRunner.runSingleStep(makeStep('Then ', 'the webview should contain "Dashboard"'), {
+          stepIndex: 1,
+          screenshotPolicy: 'never',
+        });
+
+        expect(result.artifacts.logs[0]).toMatchObject({
+          kind: 'webview-evidence',
+          webviewEvidence: { kind: 'webview-body', matched: true, expectedText: 'Dashboard' },
+        });
+        const liveStepsDir = path.join(artifactsDir, 'live-steps');
+        const stepDir = path.join(liveStepsDir, fs.readdirSync(liveStepsDir)[0]);
+        const manifest = JSON.parse(fs.readFileSync(path.join(stepDir, 'step-result.json'), 'utf-8'));
+        expect(manifest.artifacts.logs[0].webviewEvidence).toMatchObject({
+          kind: 'webview-body',
+          matched: true,
+          expectedText: 'Dashboard',
+        });
       } finally {
         liveRunner.cleanup();
         fs.rmSync(artifactsDir, { recursive: true, force: true });
@@ -595,6 +699,67 @@ describe('TestRunner', () => {
       await runner.runFeature(feature);
 
       expect(client.typeText).toHaveBeenCalledWith('hello');
+    });
+
+    it('should stabilize Monaco after native popup selection succeeds', async () => {
+      getMockNativeUI().selectFromDevHostPopup.mockResolvedValue('StormEvents');
+      const feature = makeFeature('Test', [
+        makeScenario('Popup', [
+          makeStep('When ', 'I select "StormEvents" from the popup menu'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(getMockNativeUI().selectFromDevHostPopup).toHaveBeenCalledWith('StormEvents', 3000);
+      expect(getMockCdp().stabilizeMonacoAfterPopupSelection).toHaveBeenCalled();
+      expect(getMockCdp().selectPopupMenuItem).not.toHaveBeenCalled();
+    });
+
+    it('should keep native popup selection passed when Monaco stabilization fails', async () => {
+      getMockNativeUI().selectFromDevHostPopup.mockResolvedValue('StormEvents');
+      getMockCdp().stabilizeMonacoAfterPopupSelection.mockRejectedValueOnce(new Error('CDP unavailable'));
+      const feature = makeFeature('Test', [
+        makeScenario('Popup repair failure', [
+          makeStep('When ', 'I select "StormEvents" from the popup menu'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(getMockCdp().selectPopupMenuItem).not.toHaveBeenCalled();
+    });
+
+    it('should use CDP popup selection when native popup selection fails', async () => {
+      getMockNativeUI().selectFromDevHostPopup.mockRejectedValue(new Error('not native'));
+      const feature = makeFeature('Test', [
+        makeScenario('Popup CDP fallback', [
+          makeStep('When ', 'I select "StormEvents" from the popup menu'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(getMockCdp().selectPopupMenuItem).toHaveBeenCalledWith('StormEvents');
+    });
+
+    it('should list popup menu items with CDP when native listing is empty', async () => {
+      getMockNativeUI().getDevHostPopupItems.mockResolvedValue([]);
+      getMockCdp().getPopupMenuItems.mockResolvedValue(['StormEvents']);
+      const feature = makeFeature('Test', [
+        makeScenario('Popup list fallback', [
+          makeStep('When ', 'I list the popup menu items'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(result.scenarios[0].steps[0].outputLog).toContain('StormEvents');
+      expect(getMockCdp().getPopupMenuItems).toHaveBeenCalled();
     });
 
     it('should handle notification assertion step', async () => {
@@ -1337,7 +1502,20 @@ describe('TestRunner', () => {
 
   describe('webview text assertions', () => {
     it('should pass when webview contains expected text', async () => {
-      getMockCdp().getWebviewBodyText.mockResolvedValue('Welcome to my extension dashboard');
+      getMockCdp().getWebviewBodyTextEvidence.mockResolvedValue({
+        text: 'Welcome to my extension dashboard',
+        evidence: {
+          kind: 'webview-body',
+          expectedText: 'dashboard',
+          matched: true,
+          targetCount: 1,
+          targets: [{ title: 'My Webview', url: 'vscode-webview://abcd1234', matched: true, textSample: 'Welcome to my extension dashboard', textLength: 33, truncated: false }],
+          textSample: 'Welcome to my extension dashboard',
+          textLength: 33,
+          truncated: false,
+          matchContext: 'Welcome to my extension dashboard',
+        },
+      });
 
       const feature = makeFeature('Test', [
         makeScenario('Contains', [
@@ -1347,11 +1525,28 @@ describe('TestRunner', () => {
 
       const result = await runner.runFeature(feature);
       expect(result.scenarios[0].status).toBe('passed');
-      expect(getMockCdp().getWebviewBodyText).toHaveBeenCalledWith(undefined);
+      expect(getMockCdp().getWebviewBodyTextEvidence).toHaveBeenCalledWith(undefined, 'dashboard');
+      expect(result.scenarios[0].steps[0].artifacts?.logs[0]).toMatchObject({
+        kind: 'webview-evidence',
+        webviewEvidence: { kind: 'webview-body', matched: true, expectedText: 'dashboard' },
+      });
+      expect(result.scenarios[0].steps[0].artifacts?.screenshots).toEqual([]);
     });
 
     it('should fail when webview does not contain expected text', async () => {
-      getMockCdp().getWebviewBodyText.mockResolvedValue('Welcome to my extension');
+      getMockCdp().getWebviewBodyTextEvidence.mockResolvedValue({
+        text: 'Welcome to my extension',
+        evidence: {
+          kind: 'webview-body',
+          expectedText: 'dashboard',
+          matched: false,
+          targetCount: 1,
+          targets: [{ title: 'My Webview', url: 'vscode-webview://abcd1234', matched: false, textSample: 'Welcome to my extension', textLength: 23, truncated: false }],
+          textSample: 'Welcome to my extension',
+          textLength: 23,
+          truncated: false,
+        },
+      });
 
       const feature = makeFeature('Test', [
         makeScenario('Not Found', [
@@ -1362,11 +1557,29 @@ describe('TestRunner', () => {
       const result = await runner.runFeature(feature);
       expect(result.scenarios[0].status).toBe('failed');
       expect(result.scenarios[0].steps[0].error?.message).toContain('not found in any webview');
-      expect(getMockCdp().getWebviewBodyText).toHaveBeenCalledWith(undefined);
+      expect(getMockCdp().getWebviewBodyTextEvidence).toHaveBeenCalledWith(undefined, 'dashboard');
+      expect(result.scenarios[0].steps[0].artifacts?.logs[0].webviewEvidence).toMatchObject({
+        matched: false,
+        textSample: 'Welcome to my extension',
+      });
     });
 
     it('should pass with titled webview containing text', async () => {
-      getMockCdp().getWebviewBodyText.mockResolvedValue('Query results: 42 rows');
+      getMockCdp().getWebviewBodyTextEvidence.mockResolvedValue({
+        text: 'Query results: 42 rows',
+        evidence: {
+          kind: 'webview-body',
+          titleFilter: 'Results Panel',
+          expectedText: '42 rows',
+          matched: true,
+          targetCount: 1,
+          targets: [{ title: 'Results Panel', url: 'vscode-webview://results', matched: true, textSample: 'Query results: 42 rows', textLength: 22, truncated: false }],
+          textSample: 'Query results: 42 rows',
+          textLength: 22,
+          truncated: false,
+          matchContext: 'Query results: 42 rows',
+        },
+      });
 
       const feature = makeFeature('Test', [
         makeScenario('Titled', [
@@ -1376,11 +1589,24 @@ describe('TestRunner', () => {
 
       const result = await runner.runFeature(feature);
       expect(result.scenarios[0].status).toBe('passed');
-      expect(getMockCdp().getWebviewBodyText).toHaveBeenCalledWith('Results Panel');
+      expect(getMockCdp().getWebviewBodyTextEvidence).toHaveBeenCalledWith('Results Panel', '42 rows');
     });
 
     it('should fail with titled webview not containing text', async () => {
-      getMockCdp().getWebviewBodyText.mockResolvedValue('Query results: 0 rows');
+      getMockCdp().getWebviewBodyTextEvidence.mockResolvedValue({
+        text: 'Query results: 0 rows',
+        evidence: {
+          kind: 'webview-body',
+          titleFilter: 'Results Panel',
+          expectedText: '42 rows',
+          matched: false,
+          targetCount: 1,
+          targets: [{ title: 'Results Panel', url: 'vscode-webview://results', matched: false, textSample: 'Query results: 0 rows', textLength: 21, truncated: false }],
+          textSample: 'Query results: 0 rows',
+          textLength: 21,
+          truncated: false,
+        },
+      });
 
       const feature = makeFeature('Test', [
         makeScenario('Titled Fail', [
@@ -1394,7 +1620,20 @@ describe('TestRunner', () => {
     });
 
     it('should fail when no webviews are open (empty body text)', async () => {
-      getMockCdp().getWebviewBodyText.mockResolvedValue('');
+      getMockCdp().getWebviewBodyTextEvidence.mockResolvedValue({
+        text: '',
+        evidence: {
+          kind: 'webview-body',
+          expectedText: 'anything',
+          matched: false,
+          targetCount: 0,
+          targets: [],
+          textSample: '',
+          textLength: 0,
+          truncated: false,
+          message: 'No webviews are currently open.',
+        },
+      });
 
       const feature = makeFeature('Test', [
         makeScenario('No Webview', [
@@ -1405,13 +1644,23 @@ describe('TestRunner', () => {
       const result = await runner.runFeature(feature);
       expect(result.scenarios[0].status).toBe('failed');
       expect(result.scenarios[0].steps[0].error?.message).toContain('not found in any webview');
-      expect(getMockCdp().getWebviewBodyText).toHaveBeenCalledWith(undefined);
+      expect(getMockCdp().getWebviewBodyTextEvidence).toHaveBeenCalledWith(undefined, 'anything');
     });
 
     it('should throw with title mismatch when titled webview not found', async () => {
-      getMockCdp().getWebviewBodyText.mockRejectedValue(
-        new Error('No webview found matching title "My Panel". Available webviews: none.'),
-      );
+      getMockCdp().getWebviewBodyTextEvidence.mockResolvedValue({
+        text: '',
+        error: 'No webview found matching title "My Panel". Available webviews: none.',
+        evidence: {
+          kind: 'webview-body',
+          titleFilter: 'My Panel',
+          expectedText: 'anything',
+          matched: false,
+          targetCount: 0,
+          targets: [],
+          message: 'No webview found matching title "My Panel". Available webviews: none.',
+        },
+      });
 
       const feature = makeFeature('Test', [
         makeScenario('Title Mismatch', [
@@ -1422,14 +1671,27 @@ describe('TestRunner', () => {
       const result = await runner.runFeature(feature);
       expect(result.scenarios[0].status).toBe('failed');
       expect(result.scenarios[0].steps[0].error?.message).toContain('No webview found matching title "My Panel"');
+      expect(result.scenarios[0].steps[0].artifacts?.logs[0].webviewEvidence).toMatchObject({
+        titleFilter: 'My Panel',
+        matched: false,
+      });
     });
   });
 
   describe('list webviews step', () => {
     it('should pass when listing webviews', async () => {
-      getMockCdp().listWebviews.mockResolvedValue([
-        { title: 'My Webview', url: 'vscode-webview://abcd1234' },
-      ]);
+      getMockCdp().listWebviewTextEvidence.mockResolvedValue({
+        kind: 'webview-list',
+        targetCount: 1,
+        targets: [{
+          title: 'My Webview',
+          url: 'vscode-webview://abcd1234',
+          probedTitle: 'Dashboard',
+          textSample: 'Welcome dashboard',
+          textLength: 17,
+          truncated: false,
+        }],
+      });
 
       const feature = makeFeature('Test', [
         makeScenario('List', [
@@ -1439,11 +1701,21 @@ describe('TestRunner', () => {
 
       const result = await runner.runFeature(feature);
       expect(result.scenarios[0].status).toBe('passed');
-      expect(getMockCdp().listWebviews).toHaveBeenCalled();
+      expect(getMockCdp().listWebviewTextEvidence).toHaveBeenCalled();
+      expect(result.scenarios[0].steps[0].outputLog).toContain('text="Welcome dashboard"');
+      expect(result.scenarios[0].steps[0].artifacts?.logs[0]).toMatchObject({
+        kind: 'webview-evidence',
+        webviewEvidence: { kind: 'webview-list', targetCount: 1 },
+      });
     });
 
     it('should pass when no webviews are open', async () => {
-      getMockCdp().listWebviews.mockResolvedValue([]);
+      getMockCdp().listWebviewTextEvidence.mockResolvedValue({
+        kind: 'webview-list',
+        targetCount: 0,
+        targets: [],
+        message: 'No webviews are currently open.',
+      });
 
       const feature = makeFeature('Test', [
         makeScenario('Empty', [
@@ -1453,6 +1725,7 @@ describe('TestRunner', () => {
 
       const result = await runner.runFeature(feature);
       expect(result.scenarios[0].status).toBe('passed');
+      expect(result.scenarios[0].steps[0].outputLog).toContain('No webviews are currently open');
     });
   });
 
@@ -1657,7 +1930,21 @@ describe('TestRunner', () => {
 
   describe('element text assertions', () => {
     it('should pass when element text contains expected substring', async () => {
-      getMockCdp().getTextInWebview.mockResolvedValue('Total: 42 items found');
+      getMockCdp().getElementTextEvidence.mockResolvedValue({
+        text: 'Total: 42 items found',
+        evidence: {
+          kind: 'webview-element',
+          selector: '.result-count',
+          expectedText: '42 items',
+          matched: true,
+          targetCount: 1,
+          targets: [{ title: 'Results', url: 'vscode-webview://results', matched: true, textSample: 'Total: 42 items found', textLength: 21, truncated: false }],
+          textSample: 'Total: 42 items found',
+          textLength: 21,
+          truncated: false,
+          matchContext: 'Total: 42 items found',
+        },
+      });
 
       const feature = makeFeature('Test', [
         makeScenario('Text Match', [
@@ -1667,10 +1954,29 @@ describe('TestRunner', () => {
 
       const result = await runner.runFeature(feature);
       expect(result.scenarios[0].status).toBe('passed');
+      expect(getMockCdp().getElementTextEvidence).toHaveBeenCalledWith('.result-count', undefined, '42 items');
+      expect(result.scenarios[0].steps[0].artifacts?.logs[0].webviewEvidence).toMatchObject({
+        kind: 'webview-element',
+        selector: '.result-count',
+        matched: true,
+      });
     });
 
     it('should fail when element text does not contain expected substring', async () => {
-      getMockCdp().getTextInWebview.mockResolvedValue('Total: 0 items found');
+      getMockCdp().getElementTextEvidence.mockResolvedValue({
+        text: 'Total: 0 items found',
+        evidence: {
+          kind: 'webview-element',
+          selector: '.result-count',
+          expectedText: '42 items',
+          matched: false,
+          targetCount: 1,
+          targets: [{ title: 'Results', url: 'vscode-webview://results', matched: false, textSample: 'Total: 0 items found', textLength: 20, truncated: false }],
+          textSample: 'Total: 0 items found',
+          textLength: 20,
+          truncated: false,
+        },
+      });
 
       const feature = makeFeature('Test', [
         makeScenario('Text Mismatch', [
@@ -1681,12 +1987,20 @@ describe('TestRunner', () => {
       const result = await runner.runFeature(feature);
       expect(result.scenarios[0].status).toBe('failed');
       expect(result.scenarios[0].steps[0].error?.message).toContain('does not contain');
+      expect(result.scenarios[0].steps[0].artifacts?.logs[0].webviewEvidence).toMatchObject({ matched: false });
     });
 
     it('should fail when element is not found', async () => {
-      getMockCdp().getTextInWebview.mockRejectedValue(
-        new Error('Element not found in webview: .missing'),
-      );
+      getMockCdp().getElementTextEvidence.mockResolvedValue({
+        evidence: {
+          kind: 'webview-element',
+          selector: '.missing',
+          expectedText: 'anything',
+          matched: false,
+          targetCount: 1,
+          targets: [{ title: 'Results', url: 'vscode-webview://results' }],
+        },
+      });
 
       const feature = makeFeature('Test', [
         makeScenario('Not Found', [
@@ -1697,10 +2011,28 @@ describe('TestRunner', () => {
       const result = await runner.runFeature(feature);
       expect(result.scenarios[0].status).toBe('failed');
       expect(result.scenarios[0].steps[0].error?.message).toContain('Element not found');
+      expect(result.scenarios[0].steps[0].artifacts?.logs[0].webviewEvidence).toMatchObject({
+        selector: '.missing',
+        matched: false,
+      });
     });
 
     it('should pass with titled webview', async () => {
-      getMockCdp().getTextInWebview.mockResolvedValue('Connected');
+      getMockCdp().getElementTextEvidence.mockResolvedValue({
+        text: 'Connected',
+        evidence: {
+          kind: 'webview-element',
+          titleFilter: 'Settings',
+          selector: '.status',
+          expectedText: 'Connected',
+          matched: true,
+          targetCount: 1,
+          targets: [{ title: 'Settings', url: 'vscode-webview://settings', matched: true, textSample: 'Connected', textLength: 9, truncated: false }],
+          textSample: 'Connected',
+          textLength: 9,
+          truncated: false,
+        },
+      });
 
       const feature = makeFeature('Test', [
         makeScenario('Titled Text', [
@@ -1710,11 +2042,56 @@ describe('TestRunner', () => {
 
       const result = await runner.runFeature(feature);
       expect(result.scenarios[0].status).toBe('passed');
-      expect(getMockCdp().getTextInWebview).toHaveBeenCalledWith('.status', 'Settings');
+      expect(getMockCdp().getElementTextEvidence).toHaveBeenCalledWith('.status', 'Settings', 'Connected');
+    });
+
+    it('should fail with title mismatch evidence for titled element text assertions', async () => {
+      getMockCdp().getElementTextEvidence.mockResolvedValue({
+        error: 'No webview found matching title "Missing Panel". Available webviews: "Dashboard" (vscode-webview://dashboard).',
+        evidence: {
+          kind: 'webview-element',
+          titleFilter: 'Missing Panel',
+          selector: '.status',
+          expectedText: 'Ready',
+          matched: false,
+          targetCount: 1,
+          targets: [{ title: 'Dashboard', url: 'vscode-webview://dashboard', probedTitle: 'Dashboard' }],
+          message: 'No webview found matching title "Missing Panel". Available webviews: "Dashboard" (vscode-webview://dashboard).',
+        },
+      });
+
+      const feature = makeFeature('Test', [
+        makeScenario('Titled Element Mismatch', [
+          makeStep('Then ', 'element ".status" should have text "Ready" in the webview "Missing Panel"'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+      expect(result.scenarios[0].status).toBe('failed');
+      expect(result.scenarios[0].steps[0].error?.message).toContain('No webview found matching title "Missing Panel"');
+      expect(result.scenarios[0].steps[0].artifacts?.logs[0].webviewEvidence).toMatchObject({
+        kind: 'webview-element',
+        titleFilter: 'Missing Panel',
+        selector: '.status',
+        matched: false,
+      });
     });
 
     it('should pass without explicit webview title', async () => {
-      getMockCdp().getTextInWebview.mockResolvedValue('Ready');
+      getMockCdp().getElementTextEvidence.mockResolvedValue({
+        text: 'Ready',
+        evidence: {
+          kind: 'webview-element',
+          selector: '.status',
+          expectedText: 'Ready',
+          matched: true,
+          targetCount: 1,
+          targets: [{ title: 'Settings', url: 'vscode-webview://settings', matched: true, textSample: 'Ready', textLength: 5, truncated: false }],
+          textSample: 'Ready',
+          textLength: 5,
+          truncated: false,
+        },
+      });
 
       const feature = makeFeature('Test', [
         makeScenario('No Title', [
@@ -1724,7 +2101,7 @@ describe('TestRunner', () => {
 
       const result = await runner.runFeature(feature);
       expect(result.scenarios[0].status).toBe('passed');
-      expect(getMockCdp().getTextInWebview).toHaveBeenCalledWith('.status', undefined);
+      expect(getMockCdp().getElementTextEvidence).toHaveBeenCalledWith('.status', undefined, 'Ready');
     });
   });
 

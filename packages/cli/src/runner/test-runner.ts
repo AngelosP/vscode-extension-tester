@@ -14,6 +14,7 @@ import type {
   ScreenshotCaptureResult,
   StepArtifact,
   StepResult,
+  WebviewTextEvidence,
 } from '../types.js';
 import { CDP_PORT, STEP_TIMEOUT_MS } from '../types.js';
 import { NativeUIClient } from './native-ui-client.js';
@@ -36,8 +37,9 @@ export class TestRunner {
   private cdp?: CdpClient;
   private screenshotCounter = 0;
   private diagnosticCounter = 0;
+  private dispatchGeneration = 0;
   private currentScenarioName: string | undefined;
-  private dispatchArtifacts: StepArtifact[] = [];
+  private dispatchArtifacts: MutableLiveStepArtifacts = createMutableArtifacts();
   /** Per-channel byte offsets recorded before each scenario starts. */
   private scenarioStartOffsets = new Map<string, number>();
 
@@ -194,7 +196,8 @@ export class TestRunner {
     const startTime = Date.now();
     const resolvedText = this.resolveEnvVars(step.text);
     const docString = step.docString ? this.resolveEnvVars(step.docString) : undefined;
-    this.dispatchArtifacts = [];
+    const dispatchGeneration = ++this.dispatchGeneration;
+    this.dispatchArtifacts = createMutableArtifacts();
 
     // Snapshot output channels before the step
     let outputBefore = '';
@@ -202,7 +205,7 @@ export class TestRunner {
 
     try {
       const dispatchLog = await this.withStepTimeout(
-        this.dispatch(resolvedText, docString),
+        this.dispatch(resolvedText, docString, dispatchGeneration),
         resolvedText,
       );
 
@@ -219,7 +222,11 @@ export class TestRunner {
         outputLog = outputLog ? `${outputLog}\n${dispatchLog}` : dispatchLog;
       }
 
-      const artifacts = this.buildArtifacts(this.dispatchArtifacts);
+      const artifacts = this.buildArtifacts(
+        this.dispatchArtifacts.screenshots,
+        this.dispatchArtifacts.logs,
+        this.dispatchArtifacts.warnings,
+      );
       return { keyword: step.keyword, text: step.text, status: 'passed', durationMs: Date.now() - startTime, outputLog, artifacts };
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
@@ -233,7 +240,8 @@ export class TestRunner {
       } catch { /* best effort */ }
 
       const warnings: string[] = [];
-      const screenshots = [...this.dispatchArtifacts];
+      const screenshots = [...this.dispatchArtifacts.screenshots];
+      const logs = [...this.dispatchArtifacts.logs, ...diagnosticArtifacts];
       if (options.captureFailureScreenshot !== false && this.artifactsDir) {
         try {
           screenshots.push(await this.captureArtifactScreenshot(
@@ -244,7 +252,7 @@ export class TestRunner {
           warnings.push(`Could not capture failure screenshot: ${errorMessage(screenshotError)}`);
         }
       }
-      const artifacts = this.buildArtifacts(screenshots, diagnosticArtifacts, warnings);
+      const artifacts = this.buildArtifacts(screenshots, logs, [...this.dispatchArtifacts.warnings, ...warnings]);
       return { keyword: step.keyword, text: step.text, status: 'failed', durationMs: Date.now() - startTime, error: { message: error.message, stack: error.stack }, outputLog, artifacts };
     }
   }
@@ -280,7 +288,7 @@ export class TestRunner {
     }
   }
 
-  private async dispatch(text: string, docString?: string): Promise<string | void> {
+  private async dispatch(text: string, docString?: string, dispatchGeneration = this.dispatchGeneration): Promise<string | void> {
     let match: RegExpMatchArray | null;
 
     // ─── Reset state ───
@@ -573,11 +581,16 @@ export class TestRunner {
     if (match) {
       const label = match[1];
       // Strategy 1: FlaUI (OS-level, works when popup steals focus from webview)
+      let selectedWithNativePopup = false;
       try {
         await (await this.requireNativeUI()).selectFromDevHostPopup(label, 3000);
-        return;
+        selectedWithNativePopup = true;
       } catch { /* fall through to CDP */ }
-      // Strategy 2: CDP DOM click (works for monaco-list overlays)
+      if (selectedWithNativePopup) {
+        await this.tryStabilizeMonacoAfterPopupSelection();
+        return;
+      }
+      // Strategy 2: CDP pointer click (works for monaco-list overlays)
       const cdp = await this.requireCdp();
       await cdp.selectPopupMenuItem(label);
       return;
@@ -587,11 +600,12 @@ export class TestRunner {
     if (/^I list the popup menu items$/.test(text)) {
       try {
         const items = await (await this.requireNativeUI()).getDevHostPopupItems();
-        return items.map((i) => i.name).join(', ');
+        if (items.length > 0) return items.map((i) => i.name).join(', ');
+      } catch { /* fall through to CDP */ }
+      try {
+        return (await (await this.requireCdp()).getPopupMenuItems()).join(', ');
       } catch {
-        const cdp = await this.requireCdp();
-        const items = await cdp.getPopupMenuItems();
-        return items.join(', ');
+        return '';
       }
     }
 
@@ -611,7 +625,7 @@ export class TestRunner {
 
     // ─── Screenshot ───
     match = text.match(/^I take a screenshot(?: "([^"]+)")?$/);
-    if (match) { await this.takeScreenshot(match[1]); return; }
+    if (match) { await this.takeScreenshot(match[1], dispatchGeneration); return; }
 
     // ─── Wait ───
     match = text.match(/^I wait (\d+) seconds?$/);
@@ -740,17 +754,11 @@ export class TestRunner {
 
     // ─── Webview: list open webviews (debugging aid) ───
     if (/^I list the webviews$/.test(text)) {
-      const webviews = await (await this.requireCdp()).listWebviews();
-      if (webviews.length === 0) {
-        console.log('[webviews] No webviews are currently open.');
-      } else {
-        console.log(`[webviews] Found ${webviews.length} webview(s):`);
-        for (const wv of webviews) {
-          const probed = wv.probedTitle ? ` probedTitle="${wv.probedTitle}"` : '';
-          console.log(`  title="${wv.title}"${probed} url=${wv.url}`);
-        }
-      }
-      return;
+      const evidence = await (await this.requireCdp()).listWebviewTextEvidence();
+      this.addWebviewEvidence(evidence, 'Open webviews', dispatchGeneration);
+      const output = formatWebviewListOutput(evidence);
+      for (const line of output.split('\n')) console.log(line);
+      return output;
     }
 
     // ─── Webview: list frame contexts (debugging aid) ───
@@ -778,10 +786,14 @@ export class TestRunner {
     // ─── Webview assertions ───
     match = text.match(/^the webview(?: "([^"]+)")? should contain "([^"]+)"$/);
     if (match) {
-      const body = await (await this.requireCdp()).getWebviewBodyText(match[1]);
-      if (!body.includes(match[2])) {
-        const where = match[1] ? `webview "${match[1]}"` : 'any webview';
-        throw new Error(`Text "${match[2]}" not found in ${where}.`);
+      const titleFilter = match[1];
+      const expectedText = match[2];
+      const result = await (await this.requireCdp()).getWebviewBodyTextEvidence(titleFilter, expectedText);
+      this.addWebviewEvidence(result.evidence, 'Webview text assertion', dispatchGeneration);
+      if (result.error) throw new Error(result.error);
+      if (!result.text.includes(expectedText)) {
+        const where = titleFilter ? `webview "${titleFilter}"` : 'any webview';
+        throw new Error(`Text "${expectedText}" not found in ${where}.`);
       }
       return;
     }
@@ -803,9 +815,17 @@ export class TestRunner {
 
     match = text.match(/^element "([^"]+)" should have text "([^"]+)"(?: in the webview(?: "([^"]+)")?)?$/);
     if (match) {
-      const got = await (await this.requireCdp()).getTextInWebview(match[1], match[3]);
-      if (!got.includes(match[2])) {
-        throw new Error(`Element "${match[1]}" text "${got}" does not contain "${match[2]}".`);
+      const selector = match[1];
+      const expectedText = match[2];
+      const titleFilter = match[3];
+      const result = await (await this.requireCdp()).getElementTextEvidence(selector, titleFilter, expectedText);
+      this.addWebviewEvidence(result.evidence, 'Webview element text assertion', dispatchGeneration);
+      if (result.error) throw new Error(result.error);
+      if (result.text === undefined) {
+        throw new Error(`Element not found in webview: ${selector}`);
+      }
+      if (!result.text.includes(expectedText)) {
+        throw new Error(`Element "${selector}" text "${result.text}" does not contain "${expectedText}".`);
       }
       return;
     }
@@ -1499,9 +1519,30 @@ export class TestRunner {
     };
   }
 
-  private async takeScreenshot(label?: string): Promise<void> {
+  private async takeScreenshot(label?: string, dispatchGeneration = this.dispatchGeneration): Promise<void> {
     const artifact = await this.captureArtifactScreenshot(label);
-    this.dispatchArtifacts.push(artifact);
+    if (dispatchGeneration === this.dispatchGeneration) {
+      this.dispatchArtifacts.screenshots.push(artifact);
+    }
+  }
+
+  private addWebviewEvidence(
+    evidence: WebviewTextEvidence,
+    label: string,
+    dispatchGeneration = this.dispatchGeneration,
+  ): void {
+    if (dispatchGeneration !== this.dispatchGeneration) return;
+    this.dispatchArtifacts.logs.push({
+      kind: 'webview-evidence',
+      label,
+      webviewEvidence: evidence,
+    });
+  }
+
+  private async tryStabilizeMonacoAfterPopupSelection(): Promise<void> {
+    try {
+      await (await this.requireCdp()).stabilizeMonacoAfterPopupSelection();
+    } catch { /* best effort after successful popup selection */ }
   }
 
   private buildArtifacts(screenshots: StepArtifact[] = [], logs: StepArtifact[] = [], warnings: string[] = []): LiveStepArtifacts | undefined {
@@ -1608,6 +1649,27 @@ interface MutableLiveStepArtifacts extends LiveStepArtifacts {
   logs: StepArtifact[];
   warnings: string[];
   manifestPath?: string;
+}
+
+function createMutableArtifacts(): MutableLiveStepArtifacts {
+  return { screenshots: [], logs: [], warnings: [] };
+}
+
+function formatWebviewListOutput(evidence: WebviewTextEvidence): string {
+  if (evidence.targets.length === 0) return '[webviews] No webviews are currently open.';
+  const lines = [`[webviews] Found ${evidence.targets.length} webview(s):`];
+  for (const target of evidence.targets) {
+    const probed = target.probedTitle ? ` probedTitle="${target.probedTitle}"` : '';
+    const sample = target.textSample ? ` text="${truncateForLog(target.textSample, 160)}"` : '';
+    const error = target.error ? ` error="${truncateForLog(target.error, 160)}"` : '';
+    lines.push(`  title="${target.title}"${probed} url=${target.url}${sample}${error}`);
+  }
+  return lines.join('\n');
+}
+
+function truncateForLog(value: string, limit: number): string {
+  const cleaned = value.replace(/\s+/g, ' ').trim();
+  return cleaned.length > limit ? `${cleaned.slice(0, Math.max(0, limit - 3))}...` : cleaned;
 }
 
 function buildScreenshotCaptureMetadata(result: ScreenshotCaptureResult | undefined): ScreenshotArtifactCaptureMetadata | undefined {

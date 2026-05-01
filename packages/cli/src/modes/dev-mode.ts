@@ -82,7 +82,7 @@ export async function attachDevHostSession(options: RunOptions, expectedUserData
   if (!connected) {
     throw new Error(
       `Could not connect to controller extension on port ${options.controllerPort} within 60s.\n` +
-      'Make sure the controller extension is installed: vscode-ext-test install'
+      'Make sure the controller extension is installed: vscode-ext-test install-testing-extension-to-vscode'
     );
   }
 
@@ -167,7 +167,7 @@ export async function runFeatures(
   // Find all .feature files
   const featuresDir = path.resolve(options.extensionPath, options.features);
   if (!fs.existsSync(featuresDir)) {
-    throw new Error(`Features directory not found: ${featuresDir}\nRun 'vscode-ext-test init' to create example tests.`);
+    throw new Error(`Features directory not found: ${featuresDir}\nRun 'vscode-ext-test install-into-project' to create example tests.`);
   }
 
   const featureFiles = fs.readdirSync(featuresDir)

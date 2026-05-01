@@ -12,10 +12,10 @@ applyTo: "tests/vscode-extension-tester/**"
 
 Use this skill to create, run, and verify E2E tests for a VS Code extension.
 
-This file is installed into extension repos by `vscode-ext-test init` at
-`.github/skills/e2e-test-extension/SKILL.md`. Rerun `vscode-ext-test init`
+This file is installed into extension repos by `vscode-ext-test install-into-project` at
+`.github/skills/e2e-test-extension/SKILL.md`. Rerun `vscode-ext-test install-into-project`
 after upgrading the CLI to refresh these framework instructions; repo-specific
-knowledge belongs in `repo-knowledge.md`, which init preserves.
+knowledge belongs in `repo-knowledge.md`, which the command preserves.
 
 ## Execution Modes
 
@@ -249,7 +249,7 @@ profile.
    `e2e/default/<test-id>/`, and writes artifacts to `runs/default/<test-id>/<timestamp>/`.
    Each run uses a unique timestamp so previous results are preserved.
 
-3. **Review artifacts** - artifacts are in `tests/vscode-extension-tester/runs/default/<test-id>/<timestamp>/` (gitignored). Read `report.md` first because it lists all results, screenshot file paths, capture metadata, and warnings. Use `results.json` for structured results with per-screenshot capture metadata, `console.log` for scenario/step output and warnings, and `*.png` for the screenshot images. Check the step artifact metadata when native capture fell back or the wrong window may have been captured.
+3. **Review artifacts** - artifacts are in `tests/vscode-extension-tester/runs/default/<test-id>/<timestamp>/` (gitignored). Read `report.md` first because it lists all results, screenshot file paths, screenshot capture metadata, webview text evidence, and warnings. Use `results.json` for structured results with per-screenshot capture metadata and per-webview text evidence, `console.log` for scenario/step output and warnings, and `*.png` for the screenshot images. Check the step artifact metadata when native capture fell back, the wrong window may have been captured, or a webview assertion needs text evidence beyond screenshots.
 
 4. **Verify screenshots** - use `view_image` on each .png listed in `report.md`. Do NOT skip this step.
 
@@ -476,14 +476,16 @@ in the extension source is part of the testing process.
 | `When I scroll "<sel>" to the (top\\|bottom\\|left\\|right)` | Jump to an edge |
 | `When I scroll "<sel>" into view` | Scroll the element itself into view |
 | `When I evaluate "<js>" in the webview` | Run arbitrary JS (escape hatch) |
-| `When I list the webviews` | Log all open webview titles, probed DOM titles, and URLs (debugging aid) |
+| `When I list the webviews` | Log all open webview titles, probed DOM titles, URLs, and bounded visible text evidence (debugging aid) |
 | `When I list the frame contexts` | Log all execution contexts (frames) inside webview targets — shows context IDs, origins, frame IDs, and the frame tree. Use to diagnose when evaluate/click steps can't find elements inside nested iframes. |
 | `When I list the frame contexts in the webview "<title>"` | Same, but restricted to a specific webview |
-| `Then the webview should contain "<text>"` | Substring match in body text |
-| `Then the webview "<title>" should contain "<text>"` | Restrict to a webview |
+| `Then the webview should contain "<text>"` | Substring match in body text; records bounded webview text evidence in `results.json` and `report.md` |
+| `Then the webview "<title>" should contain "<text>"` | Restrict to a webview and record target-attributed text evidence |
 | `Then element "<sel>" should exist` | Existence assertion |
 | `Then element "<sel>" should not exist` | Negative existence |
-| `Then element "<sel>" should have text "<text>"` | Text content assertion |
+| `Then element "<sel>" should have text "<text>"` | Text content assertion; records selector-scoped webview text evidence |
+| `Then element "<sel>" should have text "<text>" in the webview` | Text content assertion; records selector-scoped webview text evidence |
+| `Then element "<sel>" should have text "<text>" in the webview "<title>"` | Restrict selector text assertion to a specific webview and record target-attributed evidence |
 
 **Webview targeting.** When multiple webviews are open at once (walkthroughs,
 panels, sidebar views), pass a `<title>` substring to disambiguate. The
@@ -689,9 +691,9 @@ and closes panels/sidebars. This ensures each scenario starts from the same base
 
 ## Repo-Specific Knowledge
 
-When you run `vscode-ext-test init`, a `repo-knowledge.md` file is created in
+When you run `vscode-ext-test install-into-project`, a `repo-knowledge.md` file is created in
 `.github/skills/e2e-test-extension/` alongside this SKILL.md. Unlike SKILL.md
-(which is overwritten on every `init` to stay current with framework updates),
+(which is overwritten on every `install-into-project` to stay current with framework updates),
 **`repo-knowledge.md` is never overwritten** — it is your persistent,
 repo-specific knowledge base.
 

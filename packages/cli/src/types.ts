@@ -81,6 +81,7 @@ export type StepArtifactKind =
   | 'output-log'
   | 'log-manifest'
   | 'host-log'
+  | 'webview-evidence'
   | 'warning';
 
 export interface StepArtifact {
@@ -89,6 +90,7 @@ export interface StepArtifact {
   readonly label?: string;
   readonly message?: string;
   readonly capture?: ScreenshotArtifactCaptureMetadata;
+  readonly webviewEvidence?: WebviewTextEvidence;
 }
 
 export interface LiveStepArtifacts {
@@ -112,6 +114,35 @@ export interface AutomationDiagnostic {
   readonly subject?: string;
   readonly entries: AutomationDiagnosticEntry[];
   readonly candidates?: unknown[];
+}
+
+export type WebviewTextEvidenceKind = 'webview-list' | 'webview-body' | 'webview-element';
+
+export interface WebviewTextEvidenceTarget {
+  readonly title: string;
+  readonly url: string;
+  readonly probedTitle?: string;
+  readonly matched?: boolean;
+  readonly textSample?: string;
+  readonly textLength?: number;
+  readonly truncated?: boolean;
+  readonly matchContext?: string;
+  readonly error?: string;
+}
+
+export interface WebviewTextEvidence {
+  readonly kind: WebviewTextEvidenceKind;
+  readonly titleFilter?: string;
+  readonly selector?: string;
+  readonly expectedText?: string;
+  readonly matched?: boolean;
+  readonly targetCount: number;
+  readonly targets: WebviewTextEvidenceTarget[];
+  readonly textSample?: string;
+  readonly textLength?: number;
+  readonly truncated?: boolean;
+  readonly matchContext?: string;
+  readonly message?: string;
 }
 
 export interface ExtensionHostScriptError {

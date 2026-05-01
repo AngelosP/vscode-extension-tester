@@ -101,6 +101,7 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 | `When I double click "<sel>" in the webview` | Double-click a webview element by CSS selector |
 | `When I click the webview element "<text>"` | Click a webview control by visible text, aria-label, title, or role text |
 | `When I evaluate "<js>" in the webview for <N> seconds` | Run diagnostic JavaScript in a webview with an explicit timeout budget |
+| `When I list the webviews` | Log open webview titles, probed DOM titles, URLs, and bounded visible text evidence |
 | `When I move the mouse to <x>, <y>` | Move the OS cursor to coordinates; live sessions use Dev Host window/screenshot-relative coordinates, normal batch runs use absolute screen coordinates |
 | `When I click` | Click at the current mouse position |
 | `When I right click` | Right-click at the current mouse position |
@@ -131,8 +132,8 @@ coordinates. Stabilize the Dev Host window with resize/move steps first. To use 
 right-click to open it, then select the item with the popup menu step.
 Prefer QuickInput, progress, and notification wait/assertion steps over fixed waits.
 
-`vscode-ext-test init` also installs these instructions into downstream repos
-as `.github/skills/e2e-test-extension/SKILL.md`. Rerun init after upgrading the
+`vscode-ext-test install-into-project` also installs these instructions into downstream repos
+as `.github/skills/e2e-test-extension/SKILL.md`. Rerun `install-into-project` after upgrading the
 CLI to refresh that generated skill file; `repo-knowledge.md` is preserved.
 
 ### Assertions (Then)
@@ -155,6 +156,11 @@ CLI to refresh that generated skill file; `repo-knowledge.md` is preserved.
 | `Then the output channel "<name>" should contain "<text>"` | Assert output channel content |
 | `Then the output channel "<name>" should not contain "<text>"` | Assert output channel does NOT contain text |
 | `Then the output channel "<name>" should have been captured` | Assert that any content was captured for the channel |
+| `Then the webview should contain "<text>"` | Assert visible webview text and record bounded webview evidence in `results.json` and `report.md` |
+| `Then the webview "<title>" should contain "<text>"` | Assert a specific webview and record target-attributed text evidence |
+| `Then element "<sel>" should have text "<text>"` | Assert selector text in a webview and record bounded text evidence |
+| `Then element "<sel>" should have text "<text>" in the webview` | Assert selector text in a webview and record selector-scoped evidence |
+| `Then element "<sel>" should have text "<text>" in the webview "<title>"` | Assert selector text in a specific webview and record target-attributed evidence |
 | `Then setting "<key>" should be "<value>"` | Assert a VS Code setting has the expected value (JSON-parsed comparison) |
 | `Then the status bar should show "<text>"` | Assert status bar text |
 
