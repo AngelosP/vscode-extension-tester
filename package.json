@@ -1,6 +1,6 @@
 {
   "name": "vscode-extension-tester",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Copilot CLI-powered agent for testing VS Code extensions like a real user",
   "workspaces": [

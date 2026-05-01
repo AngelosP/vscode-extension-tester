@@ -46,7 +46,17 @@ before rebuilding the VSIX.
    ```powershell
    node packages/cli/bin/vscode-ext-test.js --version
    ```
-5. Verify the local release tarball exists and includes the expected assets:
+5. Install the freshly packed tarball into the CLI source that local/manual
+   smoke tests will use, then verify the PATH-resolved command is the fresh
+   version. Do not use `node packages/cli/bin/vscode-ext-test.js` as a
+   substitute for this check when validating local/global use.
+   ```powershell
+   $manifest = Get-Content release-artifacts/release-manifest.json | ConvertFrom-Json
+   npm install -g ".\release-artifacts\$($manifest.tarball)"
+   vscode-ext-test --version
+   vscode-ext-test --help
+   ```
+6. Verify the local release tarball exists and includes the expected assets:
    ```powershell
    Get-Content release-artifacts/release-manifest.json
    Get-Content release-artifacts/SHA256SUMS.txt
@@ -63,10 +73,12 @@ these two behaviors before answering yes:
   `packages/cli/assets/controller-extension.vsix` into VS Code and every named
   vscode-extension-tester profile.
 
-For a local package smoke test, install the freshly packed tarball first:
+For a local package smoke test, install the freshly packed tarball first using
+the tarball name from `release-artifacts/release-manifest.json`:
 
 ```powershell
-npm install -g .\release-artifacts\vscode-ext-test-0.1.1.tgz
+$manifest = Get-Content release-artifacts/release-manifest.json | ConvertFrom-Json
+npm install -g ".\release-artifacts\$($manifest.tarball)"
 ```
 
 Then run the user-facing commands from a separate test project:
@@ -76,8 +88,9 @@ vscode-ext-test install-into-project
 vscode-ext-test install-testing-extension-to-profiles
 ```
 
-If the version has been bumped, use the tarball name from
-`release-artifacts/release-manifest.json` instead of assuming `0.1.1`.
+If `vscode-ext-test --version` still reports an older version after install,
+inspect `Get-Command vscode-ext-test -All` and refresh the executable source
+that appears first on PATH before running smoke tests.
 
 ## Final Answer Checklist
 
@@ -86,6 +99,7 @@ Before telling the user the CLI is ready, report:
 - which build commands ran
 - which tests ran
 - whether `release-artifacts/*.tgz` was regenerated
+- whether the PATH-resolved `vscode-ext-test` was refreshed from that tarball
 - whether the install-into-project skill and profile-install VSIX smoke contract was verified or not
 
 Do not say other projects will get the latest until the global/package install
