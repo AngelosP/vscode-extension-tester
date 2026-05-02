@@ -38,6 +38,56 @@ The framework has three execution modes:
   a final screenshot before shutting VS Code down; ending an attached session
   only disconnects.
 
+### Live JSONL Protocol
+
+Use `vscode-ext-test live` when you need to keep one VS Code session open while
+trying steps one at a time. The command reads one JSON object per line from
+stdin and writes one JSON object per line to stdout. Operational logs go to
+stderr, so do not parse stderr as protocol output.
+
+Start a session:
+
+```bash
+vscode-ext-test live --mode auto
+```
+
+Send requests in this shape:
+
+```json
+{"id":1,"method":"runStep","params":{"step":"When I execute command \"workbench.action.showCommands\""}}
+```
+
+Supported request methods:
+
+| Method | Params | Purpose |
+| ------ | ------ | ------- |
+| `runStep` | `{ "step": "<single Gherkin step>" }` | Run one Gherkin step |
+| `runScript` | `{ "script": "<multi-line Gherkin steps>", "stopOnFailure": true }` | Run a block of Gherkin steps |
+| `runExtensionHostScript` | `{ "script": "<JavaScript>", "timeoutMs": 5000 }` | Run diagnostic JavaScript in the VS Code extension host with the `vscode` API available |
+| `reset` | `{ "mode": "cleanState" }` or `{ "mode": "reload" }` | Reset state or reload the Dev Host |
+| `state` | `{}` | Read current VS Code state |
+| `summary` | `{}` | Read live session summary |
+| `end` | `{}` | Close the live session |
+
+Common examples:
+
+```jsonl
+{"id":1,"method":"runStep","params":{"step":"When I execute command \"workbench.action.showCommands\""}}
+{"id":2,"method":"runScript","params":{"script":"Then I wait 1 second\nWhen I press \"Escape\""}}
+{"id":3,"method":"runExtensionHostScript","params":{"script":"return vscode.window.activeTextEditor?.document.uri.toString();","timeoutMs":5000}}
+{"id":4,"method":"state","params":{}}
+{"id":5,"method":"end","params":{}}
+```
+
+Responses are JSONL envelopes. Session lifecycle messages look like
+`{"type":"session_started","summary":{...}}` and
+`{"type":"session_ended","summary":{...}}`. Request responses look like
+`{"type":"response","id":1,"ok":true,"result":{...}}` or
+`{"type":"response","id":1,"ok":false,"error":"..."}`.
+
+Use `runScript` for Gherkin step blocks. Use `runExtensionHostScript` only for
+diagnostic JavaScript that must run inside the extension host.
+
 ## Build Lifecycle
 
 **The extension is always built automatically before every test run.** You do
