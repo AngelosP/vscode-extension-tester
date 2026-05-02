@@ -234,6 +234,15 @@ function buildPrompt(ctx: ExtensionContext, memories: string, userData: string, 
   const stepDefs = `
 AVAILABLE STEP DEFINITIONS (you MUST only use these exact patterns):
 
+Given steps (setup):
+  Given the extension is in a clean state
+  Given a file "<path>" exists
+  Given a file "<path>" exists with content "<text>"
+  Given a file "<path>" exists with content:
+  Given a temp file "<name>" exists
+  Given a temp file "<name>" exists with content "<text>"
+  Given a temp file "<name>" exists with content:
+
 When steps (actions):
   When I execute command "<commandId>"
   When I start command "<commandId>"
@@ -243,9 +252,12 @@ When steps (actions):
   When I select "<label>" from the QuickPick
   When I select "<label>" from the popup menu
   When I enter "<value>" in the QuickInput
+  When I enter text in the QuickInput:
   When I type "<value>" into the InputBox
+  When I type text into the InputBox:
   When I click "<action>" on notification "<text>"
   When I type "<text>"
+  When I type:
   When I press "<key>"
   When I click "<button>" on the dialog
   When I click the element "<accessible name>"
@@ -283,7 +295,14 @@ Then steps (assertions):
   Then progress "<title>" should be active
   Then progress "<title>" should be completed
   Then the editor should contain "<text>"
+  Then the editor should contain:
   Then the output channel "<name>" should contain "<text>"
+  Then the output channel "<name>" should contain:
+  Then the output channel "<name>" should not contain "<text>"
+  Then the output channel "<name>" should not contain:
+  Then I wait for output channel "<name>" to contain:
+  Then I wait for output channel "<name>" to contain for <N> seconds:
+  Then the file "<path>" should contain:
   Then the webview should contain "<text>"
   Then the webview "<title>" should contain "<text>"
   Then element "<css selector>" should have text "<text>"
@@ -294,6 +313,7 @@ Then steps (assertions):
 
 RULES:
 - ONLY use the step patterns listed above. Do not invent new ones.
+- For multiline text, code blocks, JSON, or strings with many quotes, use the colon-ended doc-string forms such as \`When I type:\` and \`Then the editor should contain:\`. Do not put literal newlines inside quoted step arguments.
 - NEVER test commands that open file pickers, folder pickers, or system dialogs (they hang waiting for user input).
 - NEVER test destructive commands (delete, remove, clear, reset, drop, purge, uninstall, disconnect, sign out).
 - NEVER test commands that require authentication or network connections unless handling auth explicitly.

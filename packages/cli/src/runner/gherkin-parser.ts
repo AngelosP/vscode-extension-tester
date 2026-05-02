@@ -153,6 +153,8 @@ export class GherkinParser {
         const expandedSteps = templateSteps.map((step) => ({
           ...step,
           text: this.substituteVars(step.text, subs),
+          ...(step.docString !== undefined ? { docString: this.substituteVars(step.docString, subs) } : {}),
+          ...(step.dataTable ? { dataTable: step.dataTable.map((row) => row.map((cell) => this.substituteVars(cell, subs))) } : {}),
         }));
 
         result.push({

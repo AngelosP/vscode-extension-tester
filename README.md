@@ -159,13 +159,36 @@ The command emits JSONL on stdout and reads JSONL requests from stdin. All opera
 ```jsonl
 {"id":1,"method":"runStep","params":{"step":"When I execute command \"workbench.action.showCommands\""}}
 {"id":2,"method":"runScript","params":{"script":"Then I wait 1 second\nWhen I press \"Escape\""}}
-{"id":3,"method":"runExtensionHostScript","params":{"script":"return vscode.window.activeTextEditor?.document.uri.toString();","timeoutMs":5000}}
-{"id":4,"method":"end"}
+{"id":3,"method":"runScript","params":{"script":"When I type:\n  \"\"\"\n  first line\n  second line\n  \"\"\"\nThen the editor should contain:\n  \"\"\"\n  first line\n  second line\n  \"\"\""}}
+{"id":4,"method":"runExtensionHostScript","params":{"script":"return vscode.window.activeTextEditor?.document.uri.toString();","timeoutMs":5000}}
+{"id":5,"method":"end"}
 ```
 
 Live mode supports `auto`, `launch`, and `attach`. Launch/auto mode also accepts `--reuse-named-profile`, `--reuse-or-create-named-profile`, and `--clone-named-profile`; auto attach only reuses an existing Dev Host when its detected user-data directory matches the requested profile. Each step returns pass/fail status, output/log artifact paths, current VS Code state, and screenshots according to `--screenshot-policy` (`always`, `onFailure`, or `never`). Screenshot artifacts include capture metadata such as the intended Dev Host process id, captured window process id, title, bounds, and capture method so stale or wrong-window captures are easier to spot. Screenshot capture warnings are included in the step artifacts and reports. A final screenshot is captured before shutdown unless `--no-final-screenshot` is set. In attach mode, ending a session only disconnects from the existing Dev Host.
 
-Use `runScript` for Gherkin step blocks. Use `runExtensionHostScript` only for explicit diagnostic JavaScript that must run inside the VS Code extension host with the `vscode` API available.
+Use `runScript` for Gherkin step blocks, doc strings, and multiline text. JSONL
+requires one JSON object per physical line, so embedded Gherkin newlines must be
+escaped as `\n` inside the JSON string; do not send pretty-printed or literal
+multi-line JSON requests. Use `runExtensionHostScript` only for explicit
+diagnostic JavaScript that must run inside the VS Code extension host with the
+`vscode` API available.
+
+For multiline editor text, code blocks, JSON, or strings with many quotes, use
+Gherkin doc strings instead of putting literal newlines inside quoted step
+arguments:
+
+```gherkin
+When I type:
+  """
+  first line
+  second line
+  """
+Then the editor should contain:
+  """
+  first line
+  second line
+  """
+```
 
 `tests add` uses live probing by default when exploration is enabled. Control it with `--live-mode auto|launch|attach|off`.
 

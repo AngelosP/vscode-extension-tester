@@ -194,8 +194,12 @@ function resetMockCdp(): void {
 /** Shorthand to access the current mock CDP instance. */
 function getMockCdp() { return mockCdpRef.current!; }
 
-function makeStep(keyword: string, text: string): ParsedStep {
-  return { keyword, text };
+function makeStep(
+  keyword: string,
+  text: string,
+  extras: Omit<Partial<ParsedStep>, 'keyword' | 'text'> = {},
+): ParsedStep {
+  return { keyword, text, ...extras };
 }
 
 function makeScenario(name: string, steps: ParsedStep[], tags: string[] = []): ParsedScenario {
@@ -513,6 +517,22 @@ describe('TestRunner', () => {
       expect(client.submitQuickInputText).toHaveBeenCalledWith('hello world');
     });
 
+    it('should handle multiline QuickInput and InputBox text from doc strings', async () => {
+      const quickInputText = 'line one\nline two';
+      const inputBoxText = 'first\nsecond';
+      const feature = makeFeature('Test', [
+        makeScenario('Multiline Inputs', [
+          makeStep('When ', 'I enter text in the QuickInput:', { docString: quickInputText }),
+          makeStep('When ', 'I type text into the InputBox:', { docString: inputBoxText }),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(client.submitQuickInputText).toHaveBeenNthCalledWith(1, quickInputText);
+      expect(client.submitQuickInputText).toHaveBeenNthCalledWith(2, inputBoxText);
+    });
+
     it('should handle explicit QuickInput selection step', async () => {
       const feature = makeFeature('Test', [
         makeScenario('QuickInput', [
@@ -646,6 +666,46 @@ describe('TestRunner', () => {
 
       expect(getMockCdp().insertText).toHaveBeenCalledWith('hello');
       expect(client.typeText).not.toHaveBeenCalled();
+    });
+
+    it('should type multiline text from a doc string', async () => {
+      const multilineText = 'alpha\nbeta\ngamma';
+      const feature = makeFeature('Test', [
+        makeScenario('Type Multiline Text', [
+          makeStep('When ', 'I type:', { docString: multilineText }),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(getMockCdp().insertText).toHaveBeenCalledWith(multilineText);
+    });
+
+    it('should preserve empty doc strings for multiline text steps', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Type Empty Text', [
+          makeStep('When ', 'I type:', { docString: '' }),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(getMockCdp().insertText).toHaveBeenCalledWith('');
+    });
+
+    it('should fail clearly when a doc-string text step has no doc string', async () => {
+      const feature = makeFeature('Test', [
+        makeScenario('Missing Doc String', [
+          makeStep('When ', 'I type:'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('failed');
+      expect(result.scenarios[0].steps[0].error?.message).toContain('requires a Gherkin doc string payload');
     });
 
     it('should handle "I press" step (press key)', async () => {
@@ -891,6 +951,24 @@ describe('TestRunner', () => {
       expect(result.scenarios[0].status).toBe('passed');
     });
 
+    it('should handle editor content assertions from doc strings', async () => {
+      const expectedText = 'line one\nline two';
+      (client.getState as any).mockResolvedValue({
+        activeEditor: { fileName: 'test.ts', languageId: 'typescript', content: 'before\r\nline one\r\nline two\r\nafter', isDirty: false },
+        terminals: [],
+        notifications: [],
+      });
+      const feature = makeFeature('Test', [
+        makeScenario('Editor', [
+          makeStep('Then ', 'the editor should contain:', { docString: expectedText }),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+    });
+
     it('should fail editor content assertion when no editor', async () => {
       (client.getState as any).mockResolvedValue({
         activeEditor: undefined,
@@ -919,6 +997,22 @@ describe('TestRunner', () => {
       const feature = makeFeature('Test', [
         makeScenario('Output', [
           makeStep('Then ', 'the output channel "Test Channel" should contain "port 3000"'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+    });
+
+    it('should handle output channel assertions from doc strings', async () => {
+      const expectedText = 'line one\nline two';
+      getMockCdp().readOutputChannelContent.mockResolvedValue('before\r\nline one\r\nline two\r\nafter');
+      const feature = makeFeature('Test', [
+        makeScenario('Output', [
+          makeStep('Then ', 'the output channel "Test Channel" should contain:', { docString: expectedText }),
+          makeStep('Then ', 'the output channel "Test Channel" should not contain:', { docString: 'missing\ntext' }),
+          makeStep('Then ', 'I wait for output channel "Test Channel" to contain for 1 second:', { docString: expectedText }),
         ]),
       ]);
 
@@ -1412,6 +1506,27 @@ describe('TestRunner', () => {
 
       const result = await runner.runFeature(feature);
       expect(result.scenarios[0].status).toBe('passed');
+    });
+  });
+
+  describe('file content assertions', () => {
+    it('should handle file content assertions from doc strings', async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-file-'));
+      const filePath = path.join(tempDir, 'output.txt');
+      const expectedText = 'line one\nline two';
+      fs.writeFileSync(filePath, 'prefix\r\nline one\r\nline two\r\nsuffix', 'utf-8');
+      const feature = makeFeature('Test', [
+        makeScenario('File Contains', [
+          makeStep('Then ', `the file "${filePath}" should contain:`, { docString: expectedText }),
+        ]),
+      ]);
+
+      try {
+        const result = await runner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('passed');
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
     });
   });
 

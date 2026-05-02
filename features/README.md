@@ -70,6 +70,10 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 | `Given the extension is in a clean state` | Reset UI: close all editors, dismiss notifications, clear output channels |
 | `Given a file "<path>" exists` | Create an empty file for test setup |
 | `Given a file "<path>" exists with content "<text>"` | Create a file with content |
+| `Given a file "<path>" exists with content:` | Create a file with multiline doc-string content |
+| `Given a temp file "<name>" exists` | Create an empty file in the OS temp directory |
+| `Given a temp file "<name>" exists with content "<text>"` | Create a temp file with content |
+| `Given a temp file "<name>" exists with content:` | Create a temp file with multiline doc-string content |
 | `Given I capture the output channel "<name>"` | Declare an output channel to capture |
 
 ### Actions (When)
@@ -86,10 +90,13 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 | `When I select "<label>" from the QuickInput` | Choose an item from the captured QuickInput model or visible workbench widget |
 | `When I select "<label>" from the QuickPick` | Compatibility alias for choosing an item from the QuickPick |
 | `When I enter "<text>" in the QuickInput` | Enter and accept QuickInput text after validation clears |
+| `When I enter text in the QuickInput:` | Enter and accept multiline doc-string QuickInput text |
 | `When I type "<text>" into the InputBox` | Compatibility alias for entering text in the InputBox |
+| `When I type text into the InputBox:` | Compatibility alias for entering multiline doc-string InputBox text |
 | `When I click "<action>" on notification "<text>"` | Click/resolve a captured notification action |
 | `When I click "<button>" on the dialog` | Click a dialog button |
 | `When I type "<text>"` | Type text into the focused editor/input using real input with fallback |
+| `When I type:` | Type multiline doc-string text into the focused editor/input |
 | `When I press "<key>"` | Press a key or combo such as Enter, Escape, Ctrl+S, Shift+Tab |
 | `When I click the element "<name>"` | Click an element by accessible name/text |
 | `When I right click the element "<name>"` | Right-click an element by accessible name/text |
@@ -132,6 +139,33 @@ coordinates. Stabilize the Dev Host window with resize/move steps first. To use 
 right-click to open it, then select the item with the popup menu step.
 Prefer QuickInput, progress, and notification wait/assertion steps over fixed waits.
 
+### Multiline Text
+
+Do not put literal newlines inside quoted step arguments. Quoted arguments are for
+single-line values. For multiline text, code blocks, JSON, strings with many
+quotes, or text that must preserve line breaks, use a Gherkin doc string on the
+colon-ended form of the step:
+
+```gherkin
+When I type:
+  """
+  first line
+  second line
+  third line
+  """
+Then the editor should contain:
+  """
+  first line
+  second line
+  """
+```
+
+Doc-string payloads are also supported for `Given a file "<path>" exists with
+content:`, `When I enter text in the QuickInput:`, `When I type text into the
+InputBox:`, `Then the output channel "<name>" should contain:`, `Then the output
+channel "<name>" should not contain:`, `Then I wait for output channel "<name>"
+to contain:`, and `Then the file "<path>" should contain:`.
+
 `vscode-ext-test install-into-project` also installs these instructions into downstream repos
 as `.github/skills/e2e-test-extension/SKILL.md`. Rerun `install-into-project` after upgrading the
 CLI to refresh that generated skill file; `repo-knowledge.md` is preserved.
@@ -153,8 +187,14 @@ CLI to refresh that generated skill file; `repo-knowledge.md` is preserved.
 | `Then progress "<title>" should be active` | Assert tracked progress is active |
 | `Then progress "<title>" should be completed` | Assert tracked progress completed |
 | `Then the editor should contain "<text>"` | Assert editor content |
+| `Then the editor should contain:` | Assert editor content includes multiline doc-string text |
+| `Then I wait for output channel "<name>" to contain:` | Wait for output channel content to include multiline doc-string text |
+| `Then I wait for output channel "<name>" to contain for <N> seconds:` | Wait up to N seconds for output channel content to include multiline doc-string text |
 | `Then the output channel "<name>" should contain "<text>"` | Assert output channel content |
+| `Then the output channel "<name>" should contain:` | Assert output channel content includes multiline doc-string text |
 | `Then the output channel "<name>" should not contain "<text>"` | Assert output channel does NOT contain text |
+| `Then the output channel "<name>" should not contain:` | Assert output channel does NOT include multiline doc-string text |
+| `Then the file "<path>" should contain:` | Assert file content includes multiline doc-string text |
 | `Then the output channel "<name>" should have been captured` | Assert that any content was captured for the channel |
 | `Then the webview should contain "<text>"` | Assert visible webview text and record bounded webview evidence in `results.json` and `report.md` |
 | `Then the webview "<title>" should contain "<text>"` | Assert a specific webview and record target-attributed text evidence |

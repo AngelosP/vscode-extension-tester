@@ -415,11 +415,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'run_gherkin_step',
-      description: 'Run one Gherkin step in the active live VS Code session. Returns pass/fail, screenshot paths, log artifacts, and current VS Code state.',
+      description: 'Run one single-line Gherkin step in the active live VS Code session. Use run_gherkin_script for doc strings or multiline text. Returns pass/fail, screenshot paths, log artifacts, and current VS Code state.',
       parameters: {
         type: 'object',
         properties: {
-          step: { type: 'string', description: 'One Gherkin step, for example: When I execute command "my.command"' },
+          step: { type: 'string', description: 'One single-line Gherkin step, for example: When I execute command "my.command"' },
         },
         required: ['step'],
       },
@@ -429,11 +429,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'run_gherkin_script',
-      description: 'Run multiple Gherkin steps in the active live VS Code session. Stops at the first failure by default and returns per-step artifacts.',
+      description: 'Run one or more Gherkin steps in the active live VS Code session, including doc-string and multiline text blocks. Stops at the first failure by default and returns per-step artifacts.',
       parameters: {
         type: 'object',
         properties: {
-          script: { type: 'string', description: 'Gherkin step block or feature/scenario fragment to run.' },
+          script: { type: 'string', description: 'Gherkin step block or feature/scenario fragment to run. Use this for colon-ended doc-string forms such as When I type: followed by triple quotes.' },
           stopOnFailure: { type: 'boolean', description: 'Whether to stop at the first failed step. Defaults to true.' },
         },
         required: ['script'],

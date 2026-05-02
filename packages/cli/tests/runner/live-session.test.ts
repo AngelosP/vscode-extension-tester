@@ -149,6 +149,24 @@ describe('LiveTestSession', () => {
     expect(session.getSummary().stepsRun).toBe(1);
   });
 
+  it('should run inline scripts with doc strings through the test runner', async () => {
+    const session = await LiveTestSession.start({ mode: 'launch', runOptions: runOptions(), finalScreenshot: false });
+
+    await session.runScript(`
+When I type:
+  """
+  alpha
+  beta
+  """
+`);
+
+    expect(mocks.runSingleStep).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'I type:', docString: 'alpha\nbeta' }),
+      expect.objectContaining({ stepIndex: 1, screenshotPolicy: 'always' }),
+    );
+    expect(session.getSummary().stepsRun).toBe(1);
+  });
+
   it('should capture final screenshot before closing a launched session', async () => {
     const session = await LiveTestSession.start({ mode: 'launch', runOptions: runOptions(), finalScreenshot: true });
 

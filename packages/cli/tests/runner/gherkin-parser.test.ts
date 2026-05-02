@@ -182,6 +182,29 @@ Feature: Multi-example outline
       expect(result.scenarios[1].tags).toContain('@slow');
     });
 
+    it('should expand Scenario Outline variables in doc strings and data tables', () => {
+      const content = `
+Feature: Scenario outline payloads
+  Scenario Outline: Payload <name>
+    When I type:
+      """
+      <greeting>, <name>!
+      """
+    Then the following files exist:
+      | path       | content    |
+      | <name>.txt | <greeting> |
+
+    Examples:
+      | greeting | name  |
+      | Hello    | World |
+`;
+      const result = parser.parse(content);
+
+      expect(result.scenarios).toHaveLength(1);
+      expect(result.scenarios[0].steps[0].docString).toBe('Hello, World!');
+      expect(result.scenarios[0].steps[1].dataTable?.[1]).toEqual(['World.txt', 'Hello']);
+    });
+
     it('should preserve step keywords (Given, When, Then, And, But)', () => {
       const content = `
 Feature: Keywords

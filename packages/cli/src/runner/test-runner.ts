@@ -195,7 +195,7 @@ export class TestRunner {
   private async runStep(step: ParsedStep, options: { captureFailureScreenshot?: boolean } = {}): Promise<StepResult> {
     const startTime = Date.now();
     const resolvedText = this.resolveEnvVars(step.text);
-    const docString = step.docString ? this.resolveEnvVars(step.docString) : undefined;
+    const docString = step.docString !== undefined ? this.resolveEnvVars(step.docString) : undefined;
     const dispatchGeneration = ++this.dispatchGeneration;
     this.dispatchArtifacts = createMutableArtifacts();
 
@@ -304,7 +304,7 @@ export class TestRunner {
 
     // ─── Utility: create file with content (doc string) ───
     match = text.match(/^a file "([^"]+)" exists with content:?$/);
-    if (match && docString !== undefined) { this.createFile(match[1], docString); return; }
+    if (match) { this.createFile(match[1], this.requireDocString(text, docString)); return; }
 
     // ─── Utility: create empty file ───
     match = text.match(/^a file "([^"]+)" exists$/);
@@ -316,7 +316,7 @@ export class TestRunner {
 
     // ─── Utility: create temp file with content (doc string) ───
     match = text.match(/^a temp file "([^"]+)" exists with content:?$/);
-    if (match && docString !== undefined) { this.createTempFile(match[1], docString); return; }
+    if (match) { this.createTempFile(match[1], this.requireDocString(text, docString)); return; }
 
     // ─── Utility: create empty temp file ───
     match = text.match(/^a temp file "([^"]+)" exists$/);
@@ -394,6 +394,16 @@ export class TestRunner {
       return;
     }
 
+    match = text.match(/^the file "([^"]+)" should contain:$/);
+    if (match) {
+      const expectedText = this.requireDocString(text, docString);
+      const p = this.resolveFilePath(match[1]);
+      if (!fs.existsSync(p)) throw new Error(`File not found: ${p}`);
+      const content = fs.readFileSync(p, 'utf-8');
+      if (!this.containsText(content, expectedText, true)) throw new Error(`File "${p}" does not contain "${expectedText}"`);
+      return;
+    }
+
     // ─── Commands ───
     match = text.match(/^I wait for command "([^"]+)"(?: for (\d+) seconds?)?$/);
     if (match) { await this.waitForCommand(match[1], match[2]); return; }
@@ -451,9 +461,19 @@ export class TestRunner {
     match = text.match(/^I (?:enter|type) "([^"]*)" (?:in|into) the QuickInput$/);
     if (match) { await this.submitQuickInputText(match[1]); return; }
 
+    if (/^I (?:enter|type) text (?:in|into) the QuickInput:$/.test(text)) {
+      await this.submitQuickInputText(this.requireDocString(text, docString));
+      return;
+    }
+
     match = text.match(/^I type "([^"]+)" into the InputBox$/);
     if (match) {
       await this.submitQuickInputText(match[1]);
+      return;
+    }
+
+    if (/^I type text into the InputBox:$/.test(text)) {
+      await this.submitQuickInputText(this.requireDocString(text, docString));
       return;
     }
 
@@ -487,20 +507,39 @@ export class TestRunner {
     match = text.match(/^the editor should contain "([^"]+)"$/);
     if (match) { await this.assertEditorContent(match[1]); return; }
 
+    if (/^the editor should contain:$/.test(text)) {
+      await this.assertEditorContent(this.requireDocString(text, docString), true);
+      return;
+    }
+
     // ─── Output channel assertion ───
     match = text.match(/^I wait for output channel "([^"]+)" to contain "([^"]+)"(?: for (\d+) seconds?)?$/);
     if (match) { await this.waitForOutputContains(match[1], match[2], match[3]); return; }
 
+    match = text.match(/^I wait for output channel "([^"]+)" to contain(?: for (\d+) seconds?)?:$/);
+    if (match) { await this.waitForOutputContains(match[1], this.requireDocString(text, docString), match[2], true); return; }
+
     match = text.match(/^the output channel "([^"]+)" should contain "([^"]+)"$/);
     if (match) { await this.assertOutputContains(match[1], match[2]); return; }
+
+    match = text.match(/^the output channel "([^"]+)" should contain:$/);
+    if (match) { await this.assertOutputContains(match[1], this.requireDocString(text, docString), true); return; }
 
     // ─── Negative output channel assertion ───
     match = text.match(/^the output channel "([^"]+)" should not contain "([^"]+)"$/);
     if (match) { await this.assertOutputNotContains(match[1], match[2]); return; }
 
+    match = text.match(/^the output channel "([^"]+)" should not contain:$/);
+    if (match) { await this.assertOutputNotContains(match[1], this.requireDocString(text, docString), true); return; }
+
     // ─── Type text (via controller - always available) ───
     match = text.match(/^I type "([^"]+)"$/);
     if (match) { await this.typeText(match[1]); return; }
+
+    if (/^I type:$/.test(text)) {
+      await this.typeText(this.requireDocString(text, docString));
+      return;
+    }
 
     // ─── Press key ───
     match = text.match(/^I press "([^"]+)"$/);
@@ -1034,52 +1073,52 @@ export class TestRunner {
     }
   }
 
-  private async assertEditorContent(expectedText: string): Promise<void> {
+  private async assertEditorContent(expectedText: string, normalizeNewlines = false): Promise<void> {
     const state = await this.client.getState();
     if (!state.activeEditor) throw new Error('No active editor');
-    if (!state.activeEditor.content.includes(expectedText)) {
+    if (!this.containsText(state.activeEditor.content, expectedText, normalizeNewlines)) {
       throw new Error(`Editor does not contain "${expectedText}"`);
     }
   }
 
-  private async assertOutputContains(channelName: string, expectedText: string): Promise<void> {
+  private async assertOutputContains(channelName: string, expectedText: string, normalizeNewlines = false): Promise<void> {
     // Try CDP first (can read ALL extensions' channels), fall back to controller
     const content = await this.tryReadOutputViaCdp(channelName);
     if (content !== undefined) {
-      if (!content.includes(expectedText)) {
+      if (!this.containsText(content, expectedText, normalizeNewlines)) {
         throw new Error(`Output channel "${channelName}" does not contain "${expectedText}"`);
       }
       return;
     }
     const output = await this.client.getOutputChannel(channelName);
-    if (!output.content.includes(expectedText)) {
+    if (!this.containsText(output.content, expectedText, normalizeNewlines)) {
       throw new Error(`Output channel "${channelName}" does not contain "${expectedText}"`);
     }
   }
 
-  private async waitForOutputContains(channelName: string, expectedText: string, timeoutSeconds?: string): Promise<void> {
+  private async waitForOutputContains(channelName: string, expectedText: string, timeoutSeconds?: string, normalizeNewlines = false): Promise<void> {
     const timeoutMs = timeoutSeconds ? parseInt(timeoutSeconds, 10) * 1000 : 10_000;
     const deadline = Date.now() + timeoutMs;
     let lastContent: string | undefined;
     while (Date.now() < deadline) {
       lastContent = await this.tryReadOutputViaCdp(channelName);
-      if (lastContent?.includes(expectedText)) return;
+      if (lastContent !== undefined && this.containsText(lastContent, expectedText, normalizeNewlines)) return;
       await delay(500);
     }
     const preview = lastContent ? lastContent.slice(-1000) : '<not found>';
     throw new Error(`Output channel "${channelName}" did not contain "${expectedText}" within ${timeoutMs}ms. Last content tail: ${preview}`);
   }
 
-  private async assertOutputNotContains(channelName: string, text: string): Promise<void> {
+  private async assertOutputNotContains(channelName: string, text: string, normalizeNewlines = false): Promise<void> {
     const content = await this.tryReadOutputViaCdp(channelName);
     if (content !== undefined) {
-      if (content.includes(text)) {
+      if (this.containsText(content, text, normalizeNewlines)) {
         throw new Error(`Output channel "${channelName}" unexpectedly contains "${text}"`);
       }
       return;
     }
     const output = await this.client.getOutputChannel(channelName);
-    if (output.content.includes(text)) {
+    if (this.containsText(output.content, text, normalizeNewlines)) {
       throw new Error(`Output channel "${channelName}" unexpectedly contains "${text}"`);
     }
   }
@@ -1585,6 +1624,22 @@ export class TestRunner {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, JSON.stringify(diagnostic, null, 2), 'utf-8');
     return [{ kind: 'log-manifest', path: filePath, label: `${diagnostic.kind} diagnostic` }];
+  }
+
+  private requireDocString(stepText: string, docString: string | undefined): string {
+    if (docString === undefined) {
+      throw new Error(`Step "${stepText}" requires a Gherkin doc string payload`);
+    }
+    return docString;
+  }
+
+  private containsText(content: string, expectedText: string, normalizeNewlines = false): boolean {
+    if (!normalizeNewlines) return content.includes(expectedText);
+    return this.normalizeNewlines(content).includes(this.normalizeNewlines(expectedText));
+  }
+
+  private normalizeNewlines(value: string): string {
+    return value.replace(/\r\n?/g, '\n');
   }
 
   // ─── File utility helpers ───────────────────────────────────────
