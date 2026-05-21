@@ -275,6 +275,9 @@ live stepping before editing the final feature file:
 when exploration is enabled. Use `--live-mode off` only when you want code-only
 test drafting.
 
+Live session artifacts are written under `tests/vscode-extension-tester/live/<timestamp>/`
+by default.
+
 When a live session should use an authenticated or prepared profile, pass
 `reuseNamedProfile` or `reuseOrCreateNamedProfile` to `start_live_session`.
 Auto mode only attaches to an existing Dev Host when its detected user-data
@@ -334,6 +337,23 @@ Prepare a profile first with:
 ```bash
 vscode-ext-test profile open <profile-name>
 ```
+
+If an authenticated profile stops behaving correctly after a VS Code update or
+install change, diagnose it before deleting it:
+
+```bash
+vscode-ext-test profile doctor <profile-name>
+vscode-ext-test profile doctor <profile-name> --fix
+```
+
+`profile doctor` reports the VS Code install/version associated with the
+profile, whether the controller extension is present, and whether GitHub/Copilot
+auth state is visible without printing secrets. It also detects VS Code
+secret-storage decrypt failures, which can make GitHub/Copilot sign-in succeed
+once and disappear on the next launch. `--fix` creates missing profile folders,
+stamps the current VS Code install metadata, and when secret storage is corrupt,
+backs up then resets the profile storage so you can sign in to GitHub once with
+a clean Copilot auth store.
 
 ## Available Gherkin Steps
 
@@ -804,7 +824,7 @@ anything new you learned.
 ## Tips
 
 - Test IDs are disposable - create a new one for each investigation.
-- The `runs/` directory is gitignored; artifacts are ephemeral.
+- The `runs/` and `live/` directories are gitignored; artifacts are ephemeral.
 - By default, each run launches a fresh isolated VS Code instance.
   All steps always work - no prerequisites, no extra flags needed.
 - Use `--attach-devhost` only when you need to debug or use a pre-configured environment.

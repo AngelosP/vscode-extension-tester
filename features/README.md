@@ -25,16 +25,15 @@ tests/vscode-extension-tester/
         20260419-213200/
           report.md
           results.json
-  .vscode-ext-test/
-    live/                       # Live step artifacts from vscode-ext-test live/tests add
-      2026-04-19T21-32-00-000Z/
-        live-steps/
-        final/
+  live/                         # Live step artifacts from vscode-ext-test live/tests add
+    2026-04-19T21-32-00-000Z/
+      live-steps/
+      final/
 ```
 
 The reserved folder name `default` is used when no `--reuse-named-profile`, `--reuse-or-create-named-profile`, or `--clone-named-profile` flag is passed.
 
-Live authoring sessions keep one VS Code window open and write per-step screenshots, output-channel deltas, copied host logs, and `step-result.json` manifests under `.vscode-ext-test/live/<timestamp>/`. Screenshot artifacts include the intended Dev Host process id, captured window process id, title, bounds, and capture method; use that metadata with the PNG to catch wrong-window or stale-window captures. Screenshot capture warnings are copied into step artifacts and reports. This is what `vscode-ext-test live` and `vscode-ext-test tests add --live-mode auto` use while probing steps before committing a full `.feature` file. Live launch/auto sessions accept the same named profile flags as normal runs; auto attach only attaches to an existing Dev Host when the detected user-data directory matches the requested profile.
+Live authoring sessions keep one VS Code window open and write per-step screenshots, output-channel deltas, copied host logs, and `step-result.json` manifests under `tests/vscode-extension-tester/live/<timestamp>/`. Screenshot artifacts include the intended Dev Host process id, captured window process id, title, bounds, and capture method; use that metadata with the PNG to catch wrong-window or stale-window captures. Screenshot capture warnings are copied into step artifacts and reports. This is what `vscode-ext-test live` and `vscode-ext-test tests add --live-mode auto` use while probing steps before committing a full `.feature` file. Live launch/auto sessions accept the same named profile flags as normal runs; auto attach only attaches to an existing Dev Host when the detected user-data directory matches the requested profile.
 
 ## Running Tests
 

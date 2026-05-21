@@ -45,8 +45,9 @@ export async function initCommand(opts: { features?: string }): Promise<void> {
   // 5. Scaffold repo-knowledge.md (only if it doesn't already exist)
   scaffoldRepoKnowledge(cwd);
 
-  // 6. Gitignore runs directory
+  // 6. Gitignore generated artifact directories
   addToGitignore(cwd, 'tests/vscode-extension-tester/runs/');
+  addToGitignore(cwd, 'tests/vscode-extension-tester/live/');
 
   console.log('\nDone! You can now:');
   console.log('  1. Run tests: vscode-ext-test run --features tests/vscode-extension-tester/e2e');

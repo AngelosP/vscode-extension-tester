@@ -7,8 +7,9 @@ import { VSCODE_LAUNCH_TIMEOUT_MS } from '../types.js';
 import { ControllerClient } from '../runner/controller-client.js';
 import { runFeatures } from './dev-mode.js';
 import { getVsixPath } from '../commands/install.js';
-import { getProfileDir, getProfileUserDataDir, getProfileExtensionsDir } from '../profile.js';
+import { getProfileDir, getProfileUserDataDir, getProfileExtensionsDir, getProfilePreferredVSCodeExecutable } from '../profile.js';
 import { isPortInUse, findFreePort } from '../utils/port.js';
+import { resolveVSCodeCli, resolveVSCodeExecutablePath } from '../utils/vscode-cli.js';
 
 export interface LaunchDevHostSession {
   mode: 'launch';
@@ -51,22 +52,33 @@ export async function launchMode(options: RunOptions, artifactsDir?: string): Pr
 }
 
 export async function createLaunchDevHostSession(options: RunOptions): Promise<LaunchDevHostSession> {
-  // 1. Download VS Code
-  console.log(`Downloading VS Code (${options.vscodeVersion})...`);
-  const { download } = await import('@vscode/test-electron');
-  const vscPath = await download({
-    version: options.vscodeVersion === 'stable' ? undefined : options.vscodeVersion,
-  });
-  console.log('VS Code downloaded.');
+  const extensionPath = path.resolve(options.extensionPath);
+  const profileName = options.reuseNamedProfile ?? options.reuseOrCreateNamedProfile ?? options.cloneNamedProfile;
+
+  // 1. Resolve VS Code executable. Named profiles are stateful, so by default
+  // use the installed VS Code executable that `profile open` uses. This avoids
+  // preparing auth state in one VS Code build and running tests in another.
+  const installedVSCodePath = resolveNamedProfileVSCodeExecutable(profileName, extensionPath, options.vscodeVersion);
+  let vscPath: string;
+  if (installedVSCodePath) {
+    vscPath = installedVSCodePath;
+    console.log(`Using installed VS Code for named profile: ${vscPath}`);
+  } else {
+    console.log(`Downloading VS Code (${options.vscodeVersion})...`);
+    const { download } = await import('@vscode/test-electron');
+    vscPath = await download({
+      version: options.vscodeVersion === 'stable' ? undefined : options.vscodeVersion,
+    });
+    console.log('VS Code downloaded.');
+  }
 
   // 2. Resolve user-data and extensions directories
-  const profileName = options.reuseNamedProfile ?? options.reuseOrCreateNamedProfile ?? options.cloneNamedProfile;
   const isEphemeral = !profileName;
   let userDataDir: string;
   let extensionsDir: string | undefined;
 
   if (profileName) {
-    const profileDir = getProfileDir(profileName, path.resolve(options.extensionPath));
+    const profileDir = getProfileDir(profileName, extensionPath);
     userDataDir = getProfileUserDataDir(profileDir);
     extensionsDir = getProfileExtensionsDir(profileDir);
     clearWindowRestoreState(userDataDir);
@@ -77,7 +89,6 @@ export async function createLaunchDevHostSession(options: RunOptions): Promise<L
 
   // 3. Build launch args
   const controllerVsix = getVsixPath();
-  const extensionPath = path.resolve(options.extensionPath);
 
   // For ephemeral runs, use a temp extensions directory so VS Code doesn't
   // reuse a cached (stale) version of the controller extension.
@@ -179,6 +190,16 @@ export async function createLaunchDevHostSession(options: RunOptions): Promise<L
       await closeLaunchedProcess(vscProcess, isEphemeral, userDataDir);
     },
   };
+}
+
+function resolveNamedProfileVSCodeExecutable(profileName: string | undefined, cwd: string, vscodeVersion: string): string | undefined {
+  if (!profileName || vscodeVersion !== 'stable') return undefined;
+
+  const profileExecutable = getProfilePreferredVSCodeExecutable(profileName, cwd);
+  if (profileExecutable) return profileExecutable;
+
+  const codeCli = resolveVSCodeCli();
+  return codeCli ? resolveVSCodeExecutablePath(codeCli) ?? undefined : undefined;
 }
 
 async function closeLaunchedProcess(vscProcess: cp.ChildProcess, isEphemeral: boolean, userDataDir: string): Promise<void> {

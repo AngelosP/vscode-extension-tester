@@ -34,12 +34,14 @@ describe('CLI command registration', () => {
   it('keeps install-into-project options visible in help', () => {
     const program = createProgram();
     const installIntoProject = program.commands.find((command) => command.name() === 'install-into-project');
+    const profile = program.commands.find((command) => command.name() === 'profile');
     const help = program.helpInformation();
 
     expect(installIntoProject?.options.some((option) => option.long === '--features')).toBe(true);
     expect(help).toContain('install-into-project');
     expect(help).toContain('install-testing-extension-to-vscode');
     expect(help).toContain('install-testing-extension-to-profiles');
+    expect(profile?.commands.some((command) => command.name() === 'doctor')).toBe(true);
     expect(help).not.toMatch(/\n\s+init(?:\s|$)/);
     expect(help).not.toMatch(/\n\s+install(?:\s|$)/);
     expect(help).not.toMatch(/\n\s+update(?:\s|$)/);

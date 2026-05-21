@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { mockExecFileSync, mockSpawn, mockExistsSync } = vi.hoisted(() => ({
+const { mockExecFileSync, mockSpawn, mockExistsSync, mockReadFileSync } = vi.hoisted(() => ({
   mockExecFileSync: vi.fn(),
   mockSpawn: vi.fn(),
   mockExistsSync: vi.fn(),
+  mockReadFileSync: vi.fn(),
 }));
 
 vi.mock('node:child_process', () => ({
@@ -13,12 +14,15 @@ vi.mock('node:child_process', () => ({
 
 vi.mock('node:fs', () => ({
   existsSync: mockExistsSync,
+  readFileSync: mockReadFileSync,
 }));
 
 const {
   execVSCodeCliSync,
   formatVSCodeCliMissingMessage,
+  getVSCodeCliMetadata,
   resolveVSCodeCli,
+  resolveVSCodeExecutablePath,
   spawnVSCodeCli,
 } = await import('../../src/utils/vscode-cli.js');
 
@@ -27,7 +31,9 @@ describe('vscode-cli utilities', () => {
     mockExecFileSync.mockReset();
     mockSpawn.mockReset();
     mockExistsSync.mockReset();
+    mockReadFileSync.mockReset();
     mockExistsSync.mockReturnValue(false);
+    mockReadFileSync.mockImplementation(() => { throw new Error('not readable'); });
     mockSpawn.mockReturnValue({ unref: vi.fn() });
   });
 
@@ -233,6 +239,54 @@ describe('vscode-cli utilities', () => {
       ['code.cmd'],
       expect.objectContaining({ env: customEnv }),
     );
+  });
+
+  it('resolves the real Code executable behind a Windows code.cmd wrapper', () => {
+    const cli = {
+      command: 'C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code\\bin\\code.cmd',
+      displayName: 'VS Code',
+      source: 'path',
+      variant: 'stable',
+      requiresShell: true,
+    } as const;
+    mockReadFileSync.mockReturnValue('@echo off\n"%~dp0..\\Code.exe" "%~dp0..\\abc123\\resources\\app\\out\\cli.js" %*\n');
+    mockExistsSync.mockReturnValue(true);
+
+    expect(resolveVSCodeExecutablePath(cli)).toBe('C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe');
+  });
+
+  it('captures VS Code CLI metadata without exposing credentials', () => {
+    const cli = {
+      command: 'C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code\\bin\\code.cmd',
+      displayName: 'VS Code',
+      source: 'path',
+      variant: 'stable',
+      requiresShell: true,
+    } as const;
+    mockReadFileSync.mockReturnValue('@echo off\n"%~dp0..\\Code.exe" "%~dp0..\\abc123\\resources\\app\\out\\cli.js" %*\n');
+    mockExistsSync.mockReturnValue(true);
+    mockExecFileSync.mockReturnValue('1.121.0\nf6cfa2\nx64\n');
+
+    expect(getVSCodeCliMetadata(cli)).toEqual(expect.objectContaining({
+      command: cli.command,
+      version: '1.121.0',
+      commit: 'f6cfa2',
+      architecture: 'x64',
+      executablePath: 'C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe',
+    }));
+  });
+
+  it('does not treat POSIX code shims as long-lived VS Code executables', () => {
+    const cli = {
+      command: '/usr/bin/code',
+      displayName: 'VS Code',
+      source: 'path',
+      variant: 'stable',
+      requiresShell: false,
+    } as const;
+    mockExistsSync.mockReturnValue(true);
+
+    expect(resolveVSCodeExecutablePath(cli)).toBeNull();
   });
 
   it('returns null and guidance when no CLI can be found', () => {

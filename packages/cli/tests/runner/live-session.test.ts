@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ControllerClient } from '../../src/runner/controller-client.js';
 import type { RunOptions } from '../../src/types.js';
 
@@ -59,10 +62,12 @@ vi.mock('../../src/runner/test-runner.js', () => ({
 
 const { LiveTestSession } = await import('../../src/runner/live-session.js');
 
-function runOptions(): RunOptions {
+let extensionRoot = '';
+
+function runOptions(extensionPath = extensionRoot): RunOptions {
   return {
     attachDevhost: false,
-    extensionPath: '.',
+    extensionPath,
     features: 'tests/vscode-extension-tester/e2e',
     vscodeVersion: 'stable',
     xvfb: false,
@@ -81,6 +86,7 @@ function runOptions(): RunOptions {
 
 describe('LiveTestSession', () => {
   beforeEach(() => {
+    extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-live-session-'));
     vi.clearAllMocks();
     mocks.events.length = 0;
     mocks.runnerCtorArgs.length = 0;
@@ -126,6 +132,33 @@ describe('LiveTestSession', () => {
       };
     });
     mocks.cleanup.mockImplementation(() => { mocks.events.push('cleanup'); });
+  });
+
+  afterEach(() => {
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+  });
+
+  it('should default live artifacts under the extension test live folder', async () => {
+    const session = await LiveTestSession.start({ mode: 'launch', runOptions: runOptions(), finalScreenshot: false });
+
+    const liveRoot = path.join(extensionRoot, 'tests', 'vscode-extension-tester', 'live');
+    expect(session.artifactsDir).toMatch(new RegExp(`^${escapeRegExp(liveRoot)}${escapeRegExp(path.sep)}`));
+    expect(path.basename(session.artifactsDir)).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(fs.existsSync(session.artifactsDir)).toBe(true);
+  });
+
+  it('should keep an explicit live artifacts directory override', async () => {
+    const artifactsDir = path.join(extensionRoot, 'custom-live-artifacts');
+
+    const session = await LiveTestSession.start({
+      mode: 'launch',
+      runOptions: runOptions(),
+      artifactsDir,
+      finalScreenshot: false,
+    });
+
+    expect(session.artifactsDir).toBe(artifactsDir);
+    expect(fs.existsSync(artifactsDir)).toBe(true);
   });
 
   it('should launch in auto mode when no Dev Host is detected', async () => {
@@ -226,7 +259,7 @@ When I type:
 
     expect(mocks.runFeatures).toHaveBeenCalledWith(
       mocks.client,
-      expect.objectContaining({ extensionPath: '.' }),
+      expect.objectContaining({ extensionPath: extensionRoot }),
       expect.any(Number),
       expect.any(String),
       'user-data',
@@ -255,3 +288,7 @@ When I type:
     expect(mocks.events).toEqual(['cleanup', 'close']);
   });
 });
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

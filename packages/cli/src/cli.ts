@@ -8,7 +8,7 @@ import { updateCommand } from './commands/update.js';
 import { uninstallCommand } from './commands/uninstall.js';
 import { initCommand } from './commands/init.js';
 import { testsAddCommand } from './commands/tests-add.js';
-import { openProfile, deleteProfile, listProfiles } from './profile.js';
+import { collectProfileDoctorReports, openProfile, deleteProfile, listProfiles, printProfileDoctorReports } from './profile.js';
 
 export function createProgram(): Command {
   const program = new Command();
@@ -60,7 +60,7 @@ export function createProgram(): Command {
   .option('--no-build', 'Skip building the extension before starting')
   .option('--screenshot-policy <policy>', 'Screenshot policy: always, onFailure, never', 'always')
   .option('--no-final-screenshot', 'Skip final screenshot before shutdown')
-  .option('--artifacts-dir <dir>', 'Directory for live artifacts')
+  .option('--artifacts-dir <dir>', 'Directory for live artifacts (default: tests/vscode-extension-tester/live/<timestamp>)')
   .action(liveCommand);
 
   program
@@ -151,6 +151,24 @@ export function createProgram(): Command {
       for (const p of profiles) {
         console.log(`  - ${p}`);
       }
+    }
+  });
+
+  profileCmd
+  .command('doctor [name]')
+  .description('Diagnose named profile VS Code install, controller, and authentication state')
+  .option('--json', 'Print machine-readable JSON', false)
+  .option('--fix', 'Create missing profile folders and stamp current VS Code metadata', false)
+  .action((name: string | undefined, opts: { json?: boolean; fix?: boolean }) => {
+    try {
+      const reports = collectProfileDoctorReports(name ? [name] : undefined, process.cwd(), opts.fix === true);
+      printProfileDoctorReports(reports, opts.json === true);
+      if (reports.some((report) => report.errors.length > 0)) {
+        process.exitCode = 1;
+      }
+    } catch (err: unknown) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
     }
   });
 

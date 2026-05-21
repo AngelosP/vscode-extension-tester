@@ -40,12 +40,7 @@ export class LiveTestSession {
   readonly artifactsDir: string;
 
   constructor(private readonly options: LiveSessionOptions) {
-    this.artifactsDir = options.artifactsDir ?? path.resolve(
-      options.runOptions.extensionPath,
-      '.vscode-ext-test',
-      'live',
-      timestampForPath(this.startedAt),
-    );
+    this.artifactsDir = options.artifactsDir ?? defaultLiveArtifactsDir(options.runOptions.extensionPath, this.startedAt);
     fs.mkdirSync(this.artifactsDir, { recursive: true });
   }
 
@@ -326,6 +321,16 @@ export class LiveTestSession {
 
 function timestampForPath(date: Date): string {
   return date.toISOString().replace(/[:.]/g, '-');
+}
+
+function defaultLiveArtifactsDir(extensionPath: string, startedAt: Date): string {
+  return path.resolve(
+    extensionPath,
+    'tests',
+    'vscode-extension-tester',
+    'live',
+    timestampForPath(startedAt),
+  );
 }
 
 function errorMessage(error: unknown): string {

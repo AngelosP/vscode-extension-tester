@@ -13,6 +13,20 @@ export interface ResolvedVSCodeCli {
   requiresShell: boolean;
 }
 
+export interface VSCodeCliVersionInfo {
+  version?: string;
+  commit?: string;
+  architecture?: string;
+}
+
+export interface VSCodeCliMetadata extends VSCodeCliVersionInfo {
+  command: string;
+  displayName: string;
+  source: VSCodeCliSource;
+  variant: VSCodeCliVariant;
+  executablePath?: string;
+}
+
 export interface ResolveVSCodeCliOptions {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
@@ -117,6 +131,62 @@ export function spawnVSCodeCli(
     ...options,
     shell: options.shell ?? false,
   });
+}
+
+export function getVSCodeCliVersion(cli: ResolvedVSCodeCli): VSCodeCliVersionInfo {
+  try {
+    const output = String(execVSCodeCliSync(cli, ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 10000,
+    }));
+    const [version, commit, architecture] = output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    return { version, commit, architecture };
+  } catch {
+    return {};
+  }
+}
+
+export function getVSCodeCliMetadata(cli: ResolvedVSCodeCli): VSCodeCliMetadata {
+  return {
+    command: cli.command,
+    displayName: cli.displayName,
+    source: cli.source,
+    variant: cli.variant,
+    executablePath: resolveVSCodeExecutablePath(cli) ?? undefined,
+    ...getVSCodeCliVersion(cli),
+  };
+}
+
+export function resolveVSCodeExecutablePath(cli: ResolvedVSCodeCli): string | null {
+  const pathApi = getPathApi(cli.command);
+  const basename = pathApi.basename(cli.command);
+
+  if (process.platform === 'win32' || isWindowsPathLike(cli.command)) {
+    const nodeCli = resolveVSCodeNodeCli(cli.command);
+    if (nodeCli) return nodeCli.executable;
+
+    if (/Code(?: - Insiders)?\.exe$/i.test(basename) && fs.existsSync(cli.command)) {
+      return cli.command;
+    }
+
+    if (/^code(?:-insiders)?\.(?:cmd|bat)$/i.test(basename)) {
+      const executableName = cli.variant === 'insiders' ? 'Code - Insiders.exe' : 'Code.exe';
+      const candidate = pathApi.resolve(pathApi.dirname(cli.command), '..', executableName);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+
+  if (!cli.requiresShell && fs.existsSync(cli.command)) {
+    const basename = getPathApi(cli.command).basename(cli.command);
+    if (/^code(?:-insiders)?$/i.test(basename)) return null;
+    return cli.command;
+  }
+
+  return null;
 }
 
 export function formatVSCodeCliMissingMessage(platform: NodeJS.Platform = process.platform): string {
@@ -245,7 +315,8 @@ function preferWindowsBatchSibling(command: string): string {
 }
 
 function resolveVSCodeNodeCli(command: string): VSCodeNodeCli | null {
-  if (!/^code(?:-insiders)?\.cmd$/i.test(path.basename(command))) return null;
+  const pathApi = getPathApi(command);
+  if (!/^code(?:-insiders)?\.cmd$/i.test(pathApi.basename(command))) return null;
 
   let content: string;
   try {
@@ -267,9 +338,18 @@ function resolveVSCodeNodeCli(command: string): VSCodeNodeCli | null {
 }
 
 function resolveCodeCmdToken(command: string, token: string): string {
-  const commandDir = path.dirname(command);
-  const expanded = token.replace(/%~dp0/ig, commandDir + path.sep);
-  return path.resolve(commandDir, expanded);
+  const pathApi = getPathApi(command);
+  const commandDir = pathApi.dirname(command);
+  const expanded = token.replace(/%~dp0/ig, commandDir + pathApi.sep);
+  return pathApi.resolve(commandDir, expanded);
+}
+
+function getPathApi(value: string): typeof path.win32 | typeof path.posix {
+  return isWindowsPathLike(value) ? path.win32 : path.posix;
+}
+
+function isWindowsPathLike(value: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(value) || value.includes('\\');
 }
 
 function buildVSCodeNodeCliEnv(env: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {

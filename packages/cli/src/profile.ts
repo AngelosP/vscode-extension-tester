@@ -2,11 +2,55 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getVsixPath } from './commands/install.js';
 import { buildExtension } from './build.js';
-import { execVSCodeCliSync, formatVSCodeCliMissingMessage, resolveVSCodeCli, spawnVSCodeCli } from './utils/vscode-cli.js';
-import type { RunOptions } from './types.js';
+import { execVSCodeCliSync, formatVSCodeCliMissingMessage, getVSCodeCliMetadata, resolveVSCodeCli, spawnVSCodeCli, type VSCodeCliMetadata } from './utils/vscode-cli.js';
+import { CONTROLLER_EXTENSION_ID, type RunOptions } from './types.js';
 
 /** Root directory for CLI-owned named profiles, relative to cwd. */
 const PROFILES_DIR = 'tests/vscode-extension-tester/profiles';
+
+export interface ProfileManifest {
+  name: string;
+  created: string;
+  lastOpened?: string;
+  vscodeCli?: VSCodeCliMetadata;
+  authStorageResetAt?: string;
+  schemaVersion?: number;
+}
+
+export interface ProfileDoctorReport {
+  name: string;
+  profileDir: string;
+  exists: boolean;
+  userDataDir: string;
+  userDataDirExists: boolean;
+  extensionsDir: string;
+  extensionsDirExists: boolean;
+  controllerInstalled: boolean;
+  manifest?: ProfileManifest;
+  currentVSCode?: VSCodeCliMetadata;
+  auth: ProfileAuthStateSummary;
+  repairs: string[];
+  warnings: string[];
+  errors: string[];
+}
+
+export interface ProfileAuthStateSummary {
+  stateDbPath: string;
+  stateDbExists: boolean;
+  githubAuthSecretMarkers: number;
+  githubAuthMentions: number;
+  loginAccountMentions: number;
+  githubAuthLogPath?: string;
+  githubAuthLogLastSessionCount?: number;
+  githubAuthLogLoginSuccess: boolean;
+  copilotChatLogPath?: string;
+  copilotTokenSeen: boolean;
+  copilotNotSignedInSeen: boolean;
+  copilotPermissiveAuthErrorSeen: boolean;
+  safeStorageDecryptErrors: number;
+  safeStorageDecryptLogPath?: string;
+  safeStorageDecryptErrorMtimeMs?: number;
+}
 
 /**
  * Resolve the on-disk root for a named profile.
@@ -35,6 +79,26 @@ export function getProfileUserDataDir(profileDir: string): string {
  */
 export function getProfileExtensionsDir(profileDir: string): string {
   return path.join(profileDir, 'extensions');
+}
+
+export function getProfileManifestPath(profileDir: string): string {
+  return path.join(profileDir, 'profile.json');
+}
+
+export function readProfileManifest(profileDir: string): ProfileManifest | undefined {
+  const manifestPath = getProfileManifestPath(profileDir);
+  try {
+    if (!fs.existsSync(manifestPath)) return undefined;
+    const value = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Partial<ProfileManifest>;
+    if (typeof value.name !== 'string' || typeof value.created !== 'string') return undefined;
+    return value as ProfileManifest;
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeProfileManifest(profileDir: string, manifest: ProfileManifest): void {
+  fs.writeFileSync(getProfileManifestPath(profileDir), `${JSON.stringify(manifest, null, 2)}\n`, 'utf-8');
 }
 
 /**
@@ -141,11 +205,13 @@ export function normalizeProfilePath(value: string): string {
  * immediately so the user can interact with the VS Code window.
  */
 export function openProfile(name: string, extensionPath?: string): void {
-  const profileDir = getProfileDir(name);
+  const cwd = path.resolve(extensionPath ?? '.');
+  const profileDir = getProfileDir(name, cwd);
   const codeCli = resolveVSCodeCli();
   if (!codeCli) {
     throw new Error(formatVSCodeCliMissingMessage());
   }
+  const vscodeCli = getVSCodeCliMetadata(codeCli);
 
   const userDataDir = getProfileUserDataDir(profileDir);
 
@@ -155,14 +221,16 @@ export function openProfile(name: string, extensionPath?: string): void {
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.mkdirSync(extensionsDir, { recursive: true });
 
-  // Write a small manifest so we can identify this profile later
-  const manifestPath = path.join(profileDir, 'profile.json');
-  if (!fs.existsSync(manifestPath)) {
-    fs.writeFileSync(manifestPath, JSON.stringify({
-      name,
-      created: new Date().toISOString(),
-    }, null, 2), 'utf-8');
-  }
+  const manifest = readProfileManifest(profileDir);
+  warnForVSCodeDrift(manifest, vscodeCli);
+  writeProfileManifest(profileDir, {
+    name,
+    created: manifest?.created ?? new Date().toISOString(),
+    lastOpened: new Date().toISOString(),
+    authStorageResetAt: manifest?.authStorageResetAt,
+    vscodeCli,
+    schemaVersion: 2,
+  });
 
   // Install controller extension into this profile's user-data-dir
   const vsixPath = getVsixPath();
@@ -254,8 +322,398 @@ export function listProfiles(): string[] {
   });
 }
 
+export function collectProfileDoctorReports(names?: string[], cwd = process.cwd(), fix = false): ProfileDoctorReport[] {
+  const currentCli = resolveVSCodeCli();
+  const currentVSCode = currentCli ? getVSCodeCliMetadata(currentCli) : undefined;
+  const profileNames = names && names.length > 0 ? names : listProfilesForCwd(cwd);
+
+  return profileNames.map((name) => {
+    const profileDir = getProfileDir(name, cwd);
+    const userDataDir = getProfileUserDataDir(profileDir);
+    const extensionsDir = getProfileExtensionsDir(profileDir);
+
+    if (fix) {
+      fs.mkdirSync(userDataDir, { recursive: true });
+      fs.mkdirSync(extensionsDir, { recursive: true });
+    }
+
+    const exists = fs.existsSync(profileDir);
+
+    let manifest = readProfileManifest(profileDir);
+    if (fix && currentVSCode) {
+      writeProfileManifest(profileDir, {
+        name,
+        created: manifest?.created ?? new Date().toISOString(),
+        lastOpened: manifest?.lastOpened,
+        authStorageResetAt: manifest?.authStorageResetAt,
+        vscodeCli: currentVSCode,
+        schemaVersion: 2,
+      });
+      manifest = readProfileManifest(profileDir) ?? manifest;
+    }
+
+    let auth = inspectProfileAuthState(userDataDir);
+    const repairs: string[] = [];
+    if (fix && shouldRepairSecretStorage(auth, manifest, userDataDir)) {
+      const resetAt = new Date().toISOString();
+      repairs.push(...repairProfileSecretStorage(profileDir, userDataDir, resetAt));
+      writeProfileManifest(profileDir, {
+        name,
+        created: manifest?.created ?? new Date().toISOString(),
+        lastOpened: manifest?.lastOpened,
+        authStorageResetAt: resetAt,
+        vscodeCli: currentVSCode ?? manifest?.vscodeCli,
+        schemaVersion: 2,
+      });
+      manifest = readProfileManifest(profileDir) ?? manifest;
+      auth = inspectProfileAuthState(userDataDir);
+    }
+
+    const report: ProfileDoctorReport = {
+      name,
+      profileDir,
+      exists,
+      userDataDir,
+      userDataDirExists: fs.existsSync(userDataDir),
+      extensionsDir,
+      extensionsDirExists: fs.existsSync(extensionsDir),
+      controllerInstalled: hasControllerExtension(extensionsDir),
+      manifest: readProfileManifest(profileDir) ?? manifest,
+      currentVSCode,
+      auth,
+      repairs,
+      warnings: [],
+      errors: [],
+    };
+
+    populateDoctorFindings(report);
+    return report;
+  });
+}
+
+export function printProfileDoctorReports(reports: ProfileDoctorReport[], json = false): void {
+  if (json) {
+    console.log(JSON.stringify(reports, null, 2));
+    return;
+  }
+
+  if (reports.length === 0) {
+    console.log('No named profiles found.');
+    return;
+  }
+
+  for (const report of reports) {
+    console.log(`Profile: ${report.name}`);
+    console.log(`  Path: ${report.profileDir}`);
+    console.log(`  User data: ${report.userDataDirExists ? 'present' : 'missing'} (${report.userDataDir})`);
+    console.log(`  Extensions: ${report.extensionsDirExists ? 'present' : 'missing'} (${report.extensionsDir})`);
+    console.log(`  Controller extension: ${report.controllerInstalled ? 'present' : 'missing'}`);
+    console.log(`  Current VS Code: ${formatVSCodeSummary(report.currentVSCode)}`);
+    console.log(`  Profile VS Code: ${formatVSCodeSummary(report.manifest?.vscodeCli)}`);
+    console.log(
+      `  GitHub auth markers: secret=${report.auth.githubAuthSecretMarkers}, ` +
+      `github=${report.auth.githubAuthMentions}, loginAccount=${report.auth.loginAccountMentions}`
+    );
+    console.log(
+      `  GitHub runtime auth: sessions=${report.auth.githubAuthLogLastSessionCount ?? 'unknown'}, ` +
+      `loginSuccess=${report.auth.githubAuthLogLoginSuccess ? 'yes' : 'no'}, ` +
+      `copilotToken=${report.auth.copilotTokenSeen ? 'yes' : 'no'}`
+    );
+    console.log(
+      `  VS Code secret storage: decryptErrors=${report.auth.safeStorageDecryptErrors}` +
+      `${report.auth.safeStorageDecryptLogPath ? ` (${report.auth.safeStorageDecryptLogPath})` : ''}`
+    );
+    for (const repair of report.repairs) {
+      console.log(`  Fixed: ${repair}`);
+    }
+    for (const warning of report.warnings) {
+      console.log(`  Warning: ${warning}`);
+    }
+    for (const error of report.errors) {
+      console.log(`  Error: ${error}`);
+    }
+    console.log('');
+  }
+}
+
+export function listProfilesForCwd(cwd = process.cwd()): string[] {
+  const dir = path.resolve(cwd, PROFILES_DIR);
+  if (!fs.existsSync(dir)) return [];
+
+  return fs.readdirSync(dir).filter((entry) => {
+    const full = path.join(dir, entry);
+    return fs.statSync(full).isDirectory() && fs.existsSync(path.join(full, 'user-data'));
+  });
+}
+
+export function getProfilePreferredVSCodeExecutable(name: string, cwd = process.cwd()): string | undefined {
+  const manifest = readProfileManifest(getProfileDir(name, cwd));
+  const executablePath = manifest?.vscodeCli?.executablePath;
+  return executablePath && fs.existsSync(executablePath) ? executablePath : undefined;
+}
+
 function isValidProfileName(name: string): boolean {
   return /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(name);
+}
+
+function inspectProfileAuthState(userDataDir: string): ProfileAuthStateSummary {
+  const stateDbPath = path.join(userDataDir, 'User', 'globalStorage', 'state.vscdb');
+  if (!fs.existsSync(stateDbPath)) {
+    return {
+      stateDbPath,
+      stateDbExists: false,
+      githubAuthSecretMarkers: 0,
+      githubAuthMentions: 0,
+      loginAccountMentions: 0,
+      ...inspectGitHubRuntimeAuth(userDataDir),
+    };
+  }
+
+  const text = fs.readFileSync(stateDbPath).toString('utf-8');
+  return {
+    stateDbPath,
+    stateDbExists: true,
+    githubAuthSecretMarkers: countAuthSecretMarkers(text, 'vscode.github-authentication'),
+    githubAuthMentions: countRegex(text, /github(?:-authentication|\.auth)/g),
+    loginAccountMentions: countOccurrences(text, 'loginAccount'),
+    ...inspectGitHubRuntimeAuth(userDataDir),
+  };
+}
+
+function populateDoctorFindings(report: ProfileDoctorReport): void {
+  if (!report.exists) report.errors.push('Profile directory is missing.');
+  if (!report.userDataDirExists) report.errors.push('Profile user-data directory is missing.');
+  if (!report.extensionsDirExists) report.errors.push('Profile extensions directory is missing.');
+  if (!report.currentVSCode) report.errors.push(formatVSCodeCliMissingMessage());
+  if (!report.manifest?.vscodeCli) report.warnings.push('Profile has legacy metadata; run `vscode-ext-test profile doctor --fix` to stamp the current VS Code install.');
+  if (report.manifest?.vscodeCli?.executablePath && !fs.existsSync(report.manifest.vscodeCli.executablePath)) {
+    report.warnings.push(`Profile VS Code executable no longer exists: ${report.manifest.vscodeCli.executablePath}`);
+  }
+  if (report.currentVSCode && report.manifest?.vscodeCli) {
+    if (normalizePath(report.currentVSCode.command) !== normalizePath(report.manifest.vscodeCli.command)) {
+      report.warnings.push(`Profile was last opened with a different VS Code CLI: ${report.manifest.vscodeCli.command}`);
+    }
+    if (report.currentVSCode.version && report.manifest.vscodeCli.version && report.currentVSCode.version !== report.manifest.vscodeCli.version) {
+      report.warnings.push(`Profile was last opened with VS Code ${report.manifest.vscodeCli.version}; current VS Code is ${report.currentVSCode.version}.`);
+    }
+  }
+  if (!report.controllerInstalled) report.warnings.push('Controller extension is not installed in this profile extensions directory.');
+  if (report.repairs.length > 0) {
+    report.warnings.push('VS Code secret storage was reset for this profile. Open the profile and sign in to GitHub once so Copilot auth can be stored cleanly.');
+  } else if (hasCurrentSafeStorageDecryptErrors(report)) {
+    report.warnings.push('VS Code secret storage decrypt errors were found. GitHub/Copilot auth may not persist; run `vscode-ext-test profile doctor <name> --fix` to back up and reset this profile auth storage.');
+  }
+  if (report.auth.copilotPermissiveAuthErrorSeen) {
+    report.warnings.push('Copilot reported that permissive GitHub authentication is required. Open the profile and accept the Copilot/GitHub permission prompt after signing in.');
+  } else if (report.auth.copilotNotSignedInSeen) {
+    report.warnings.push('Copilot reported that GitHub sign-in is missing for this profile.');
+  }
+  if (!hasGitHubAuthEvidence(report.auth, report.manifest)) {
+    report.warnings.push('No GitHub/Copilot authentication session found for this profile. If this profile should use Copilot, open it and sign in to GitHub.');
+  }
+}
+
+function countAuthSecretMarkers(text: string, extensionId: string): number {
+  return countOccurrences(text, `secret://{"extensionId":"${extensionId}"`) +
+    countOccurrences(text, `secret://{\\"extensionId\\":\\"${extensionId}\\"`);
+}
+
+function hasGitHubAuthEvidence(auth: ProfileAuthStateSummary, manifest?: ProfileManifest): boolean {
+  if (hasCurrentSafeStorageDecryptErrors({ auth, manifest })) return false;
+  if (auth.copilotNotSignedInSeen || auth.copilotPermissiveAuthErrorSeen) return false;
+  if (auth.githubAuthLogLastSessionCount !== undefined) return auth.githubAuthLogLastSessionCount > 0 || auth.copilotTokenSeen;
+  return auth.githubAuthSecretMarkers > 0 || auth.copilotTokenSeen;
+}
+
+function inspectGitHubRuntimeAuth(userDataDir: string): Pick<ProfileAuthStateSummary,
+  'githubAuthLogPath' |
+  'githubAuthLogLastSessionCount' |
+  'githubAuthLogLoginSuccess' |
+  'copilotChatLogPath' |
+  'copilotTokenSeen' |
+  'copilotNotSignedInSeen' |
+  'copilotPermissiveAuthErrorSeen' |
+  'safeStorageDecryptErrors' |
+  'safeStorageDecryptLogPath' |
+  'safeStorageDecryptErrorMtimeMs'
+> {
+  const githubAuthLogPath = findLatestLogFile(userDataDir, 'GitHub Authentication.log');
+  const copilotChatLogPath = findLatestLogFile(userDataDir, 'GitHub Copilot Chat.log');
+  const githubAuthLogText = githubAuthLogPath ? readTailText(githubAuthLogPath) : '';
+  const copilotChatLogText = copilotChatLogPath ? readTailText(copilotChatLogPath) : '';
+  const safeStorage = inspectSafeStorageDecryptErrors(userDataDir);
+
+  return {
+    githubAuthLogPath,
+    githubAuthLogLastSessionCount: getLastGitHubSessionCount(githubAuthLogText),
+    githubAuthLogLoginSuccess: githubAuthLogText.includes('Login success!'),
+    copilotChatLogPath,
+    copilotTokenSeen: copilotChatLogText.includes('Got Copilot token') || copilotChatLogText.includes('Has token: true'),
+    copilotNotSignedInSeen: copilotChatLogText.includes('You are not signed in to GitHub'),
+    copilotPermissiveAuthErrorSeen: copilotChatLogText.includes('PermissiveAuthRequiredError') || copilotChatLogText.includes('Permissive authentication is required'),
+    safeStorageDecryptErrors: safeStorage.count,
+    safeStorageDecryptLogPath: safeStorage.path,
+    safeStorageDecryptErrorMtimeMs: safeStorage.mtimeMs,
+  };
+}
+
+function shouldRepairSecretStorage(auth: ProfileAuthStateSummary, manifest: ProfileManifest | undefined, userDataDir: string): boolean {
+  if (!hasCurrentSafeStorageDecryptErrors({ auth, manifest })) return false;
+  return fs.existsSync(path.join(userDataDir, 'Local State')) || fs.existsSync(auth.stateDbPath);
+}
+
+function hasCurrentSafeStorageDecryptErrors(report: Pick<ProfileDoctorReport, 'auth' | 'manifest'>): boolean {
+  if (report.auth.safeStorageDecryptErrors === 0) return false;
+  const resetAt = report.manifest?.authStorageResetAt ? Date.parse(report.manifest.authStorageResetAt) : Number.NaN;
+  if (!Number.isFinite(resetAt)) return true;
+  const errorMtime = report.auth.safeStorageDecryptErrorMtimeMs ?? 0;
+  return errorMtime > resetAt;
+}
+
+function repairProfileSecretStorage(profileDir: string, userDataDir: string, resetAt: string): string[] {
+  const backupRoot = path.join(profileDir, '.doctor-backups', resetAt.replace(/[:.]/g, '-'));
+  const files = [
+    path.join(userDataDir, 'Local State'),
+    path.join(userDataDir, 'User', 'globalStorage', 'state.vscdb'),
+    path.join(userDataDir, 'User', 'globalStorage', 'state.vscdb.backup'),
+  ];
+
+  const repairs: string[] = [];
+  for (const filePath of files) {
+    if (!fs.existsSync(filePath)) continue;
+    const relative = path.relative(userDataDir, filePath);
+    const backupPath = path.join(backupRoot, relative);
+    fs.mkdirSync(path.dirname(backupPath), { recursive: true });
+    fs.copyFileSync(filePath, backupPath);
+    fs.rmSync(filePath, { force: true });
+    repairs.push(`Backed up and reset ${relative}`);
+  }
+  return repairs;
+}
+
+function inspectSafeStorageDecryptErrors(userDataDir: string): { count: number; path?: string; mtimeMs?: number } {
+  const logsDir = path.join(userDataDir, 'logs');
+  if (!fs.existsSync(logsDir)) return { count: 0 };
+
+  const logRoot = getLatestLogRoot(logsDir);
+
+  let count = 0;
+  let latest: { path: string; mtimeMs: number } | undefined;
+  const visit = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(full);
+        continue;
+      }
+      if (!entry.isFile() || (entry.name !== 'main.log' && entry.name !== 'renderer.log')) continue;
+      const text = readTailText(full);
+      const matches = countOccurrences(text, 'safeStorage.decryptString');
+      if (matches === 0) continue;
+      count += matches;
+      const mtimeMs = fs.statSync(full).mtimeMs;
+      if (!latest || mtimeMs > latest.mtimeMs) latest = { path: full, mtimeMs };
+    }
+  };
+  visit(logRoot);
+  return { count, path: latest?.path, mtimeMs: latest?.mtimeMs };
+}
+
+function getLatestLogRoot(logsDir: string): string {
+  const roots = fs.readdirSync(logsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(logsDir, entry.name))
+    .sort((a, b) => path.basename(b).localeCompare(path.basename(a)));
+  return roots[0] ?? logsDir;
+}
+
+function findLatestLogFile(userDataDir: string, fileName: string): string | undefined {
+  const logsDir = path.join(userDataDir, 'logs');
+  if (!fs.existsSync(logsDir)) return undefined;
+
+  let latest: { path: string; mtimeMs: number } | undefined;
+  const visit = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(full);
+      } else if (entry.isFile() && entry.name === fileName) {
+        const mtimeMs = fs.statSync(full).mtimeMs;
+        if (!latest || mtimeMs > latest.mtimeMs) latest = { path: full, mtimeMs };
+      }
+    }
+  };
+  visit(logsDir);
+  return latest?.path;
+}
+
+function readTailText(filePath: string): string {
+  try {
+    const maxBytes = 512 * 1024;
+    const stat = fs.statSync(filePath);
+    const start = Math.max(0, stat.size - maxBytes);
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const buffer = Buffer.alloc(stat.size - start);
+      fs.readSync(fd, buffer, 0, buffer.length, start);
+      return buffer.toString('utf-8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return '';
+  }
+}
+
+function getLastGitHubSessionCount(logText: string): number | undefined {
+  let last: number | undefined;
+  for (const match of logText.matchAll(/Got (\d+) (?:verified )?sessions? for/g)) {
+    last = parseInt(match[1], 10);
+  }
+  return last;
+}
+
+function hasControllerExtension(extensionsDir: string): boolean {
+  try {
+    if (!fs.existsSync(extensionsDir)) return false;
+    return fs.readdirSync(extensionsDir).some((entry) => {
+      const packageJsonPath = path.join(extensionsDir, entry, 'package.json');
+      try {
+        const manifest = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as { publisher?: string; name?: string };
+        return `${manifest.publisher}.${manifest.name}` === CONTROLLER_EXTENSION_ID;
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
+}
+
+function warnForVSCodeDrift(manifest: ProfileManifest | undefined, current: VSCodeCliMetadata): void {
+  if (!manifest?.vscodeCli) return;
+  if (normalizePath(manifest.vscodeCli.command) !== normalizePath(current.command)) {
+    console.warn(`Warning: profile was last opened with a different VS Code CLI: ${manifest.vscodeCli.command}`);
+    console.warn(`Current VS Code CLI: ${current.command}`);
+  }
+  if (manifest.vscodeCli.version && current.version && manifest.vscodeCli.version !== current.version) {
+    console.warn(`Warning: profile was last opened with VS Code ${manifest.vscodeCli.version}; current VS Code is ${current.version}.`);
+  }
+}
+
+function formatVSCodeSummary(value: VSCodeCliMetadata | undefined): string {
+  if (!value) return '<unknown>';
+  const version = value.version ? ` ${value.version}` : '';
+  return `${value.displayName}${version} (${value.command})`;
+}
+
+function countOccurrences(text: string, needle: string): number {
+  if (!needle) return 0;
+  return text.split(needle).length - 1;
+}
+
+function countRegex(text: string, pattern: RegExp): number {
+  return Array.from(text.matchAll(pattern)).length;
 }
 
 function getProfileFlagNames(options: Pick<RunOptions, 'reuseNamedProfile' | 'reuseOrCreateNamedProfile' | 'cloneNamedProfile'>): string[] {
