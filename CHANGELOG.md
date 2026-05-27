@@ -10,6 +10,7 @@ file together.
 
 | Version | Date | Kind | Notes |
 | ------- | ---- | ---- | ----- |
+| 0.2.3 | 2026-05-27 | explicit | Restore reliable named profile auth on VS Code 1.120+ |
 | 0.2.0 | 2026-04-30 | minor | Add extension-host diagnostic script RPC for live sessions |
 | 0.1.1 | 2026-04-29 | patch | Add automated extension build versioning workflow. |
 | 0.1.0 | 2026-04-29 | baseline | Baseline before automated extension build versioning. |

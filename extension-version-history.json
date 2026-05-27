@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "currentVersion": "0.2.0",
-  "updatedAt": "2026-04-30",
+  "currentVersion": "0.2.3",
+  "updatedAt": "2026-05-27",
   "packages": [
     "packages/controller-extension/package.json"
   ],
@@ -25,6 +25,13 @@
       "kind": "minor",
       "previousVersion": "0.1.1",
       "notes": "Add extension-host diagnostic script RPC for live sessions"
+    },
+    {
+      "version": "0.2.3",
+      "date": "2026-05-27",
+      "kind": "explicit",
+      "previousVersion": "0.2.0",
+      "notes": "Restore reliable named profile auth on VS Code 1.120+"
     }
   ]
 }
