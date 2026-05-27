@@ -7,7 +7,7 @@ import { VSCODE_LAUNCH_TIMEOUT_MS } from '../types.js';
 import { ControllerClient } from '../runner/controller-client.js';
 import { runFeatures } from './dev-mode.js';
 import { getVsixPath } from '../commands/install.js';
-import { getProfileDir, getProfileUserDataDir, getProfileExtensionsDir } from '../profile.js';
+import { getProfileDir, getProfileUserDataDir, getProfileExtensionsDir, getProfileSharedDataDir, ensureProfileAuthLocalState } from '../profile.js';
 import { isPortInUse, findFreePort } from '../utils/port.js';
 
 export interface LaunchDevHostSession {
@@ -64,15 +64,21 @@ export async function createLaunchDevHostSession(options: RunOptions): Promise<L
   const isEphemeral = !profileName;
   let userDataDir: string;
   let extensionsDir: string | undefined;
+  let sharedDataDir: string;
 
   if (profileName) {
     const profileDir = getProfileDir(profileName, path.resolve(options.extensionPath));
     userDataDir = getProfileUserDataDir(profileDir);
     extensionsDir = getProfileExtensionsDir(profileDir);
+    sharedDataDir = getProfileSharedDataDir(profileDir);
+    fs.mkdirSync(sharedDataDir, { recursive: true });
+    ensureProfileAuthLocalState(profileDir, userDataDir);
     clearWindowRestoreState(userDataDir);
     console.log(`Using named profile "${profileName}"`);
   } else {
     userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-'));
+    sharedDataDir = path.join(userDataDir, 'shared-data');
+    fs.mkdirSync(sharedDataDir, { recursive: true });
   }
 
   // 3. Build launch args
@@ -122,6 +128,7 @@ export async function createLaunchDevHostSession(options: RunOptions): Promise<L
     '--new-window',
     `--user-data-dir=${userDataDir}`,
     `--extensions-dir=${extensionsDir}`,
+    `--shared-data-dir=${sharedDataDir}`,
     `--remote-debugging-port=${cdpPort}`,
     '--disable-telemetry',
     '--skip-welcome',

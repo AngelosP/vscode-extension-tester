@@ -5,6 +5,7 @@ import {
   getProfileDir,
   getProfileUserDataDir,
   getProfileExtensionsDir,
+  getProfileSharedDataDir,
   getEffectiveProfileName,
   getProfileUserDataDirForName,
   validateProfileOptions,
@@ -71,6 +72,14 @@ describe('profile', () => {
     it('should return extensions subdirectory', () => {
       const dir = getProfileExtensionsDir('/some/profile');
       expect(dir).toBe(path.join('/some/profile', 'extensions'));
+    });
+  });
+
+  describe('getProfileSharedDataDir()', () => {
+    it('should return the project shared auth-data subdirectory', () => {
+      const profileDir = path.join('/repo', 'tests', 'vscode-extension-tester', 'profiles', 'some-profile');
+      const dir = getProfileSharedDataDir(profileDir);
+      expect(dir).toBe(path.join('/repo', 'tests', 'vscode-extension-tester', 'auth-shared', 'shared-data'));
     });
   });
 

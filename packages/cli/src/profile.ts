@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as os from 'node:os';
 import { getVsixPath } from './commands/install.js';
 import { buildExtension } from './build.js';
 import { execVSCodeCliSync, formatVSCodeCliMissingMessage, resolveVSCodeCli, spawnVSCodeCli } from './utils/vscode-cli.js';
@@ -7,6 +8,7 @@ import type { RunOptions } from './types.js';
 
 /** Root directory for CLI-owned named profiles, relative to cwd. */
 const PROFILES_DIR = 'tests/vscode-extension-tester/profiles';
+const AUTH_SHARED_DIR = 'tests/vscode-extension-tester/auth-shared';
 
 /**
  * Resolve the on-disk root for a named profile.
@@ -35,6 +37,72 @@ export function getProfileUserDataDir(profileDir: string): string {
  */
 export function getProfileExtensionsDir(profileDir: string): string {
   return path.join(profileDir, 'extensions');
+}
+
+/**
+ * Get the shared-data-dir used by every named profile in this project.
+ * VS Code 1.120+ stores some application-scoped secrets in shared storage;
+ * keeping one CLI-owned store and one matching Local State key lets named
+ * profiles reuse the same GitHub/Copilot auth without touching global VS Code.
+ */
+export function getProfileSharedDataDir(profileDir: string): string {
+  return path.join(getProfileAuthSharedDir(profileDir), 'shared-data');
+}
+
+function getProfileAuthSharedDir(profileDir: string): string {
+  return path.join(path.dirname(path.dirname(profileDir)), 'auth-shared');
+}
+
+function getProfileAuthLocalStatePath(profileDir: string): string {
+  return path.join(getProfileAuthSharedDir(profileDir), 'Local State');
+}
+
+export function ensureProfileAuthLocalState(profileDir: string, userDataDir: string): void {
+  const authSharedDir = getProfileAuthSharedDir(profileDir);
+  const sharedLocalStatePath = getProfileAuthLocalStatePath(profileDir);
+  const profileLocalStatePath = path.join(userDataDir, 'Local State');
+
+  fs.mkdirSync(authSharedDir, { recursive: true });
+
+  if (!fs.existsSync(sharedLocalStatePath)) {
+    const source = findExistingLocalState(profileDir, userDataDir);
+    if (source) {
+      fs.copyFileSync(source, sharedLocalStatePath);
+    }
+  }
+
+  if (fs.existsSync(sharedLocalStatePath)) {
+    fs.mkdirSync(userDataDir, { recursive: true });
+    fs.copyFileSync(sharedLocalStatePath, profileLocalStatePath);
+  }
+}
+
+function findExistingLocalState(profileDir: string, userDataDir: string): string | undefined {
+  const currentProfileLocalState = path.join(userDataDir, 'Local State');
+  if (fs.existsSync(currentProfileLocalState)) return currentProfileLocalState;
+
+  const profilesRoot = path.dirname(profileDir);
+  if (fs.existsSync(profilesRoot)) {
+    const candidates = fs.readdirSync(profilesRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(profilesRoot, entry.name, 'user-data', 'Local State'))
+      .filter((candidate) => fs.existsSync(candidate))
+      .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs);
+    if (candidates.length > 0) return candidates[0];
+  }
+
+  const defaultLocalState = getDefaultVSCodeLocalStatePath();
+  return defaultLocalState && fs.existsSync(defaultLocalState) ? defaultLocalState : undefined;
+}
+
+function getDefaultVSCodeLocalStatePath(): string | undefined {
+  if (process.platform === 'win32') {
+    return process.env.APPDATA ? path.join(process.env.APPDATA, 'Code', 'Local State') : undefined;
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'Code', 'Local State');
+  }
+  return path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'Code', 'Local State');
 }
 
 /**
@@ -150,10 +218,13 @@ export function openProfile(name: string, extensionPath?: string): void {
   const userDataDir = getProfileUserDataDir(profileDir);
 
   const extensionsDir = getProfileExtensionsDir(profileDir);
+  const sharedDataDir = getProfileSharedDataDir(profileDir);
 
   const isNew = !fs.existsSync(userDataDir);
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.mkdirSync(extensionsDir, { recursive: true });
+  fs.mkdirSync(sharedDataDir, { recursive: true });
+  ensureProfileAuthLocalState(profileDir, userDataDir);
 
   // Write a small manifest so we can identify this profile later
   const manifestPath = path.join(profileDir, 'profile.json');
@@ -171,6 +242,7 @@ export function openProfile(name: string, extensionPath?: string): void {
     execVSCodeCliSync(codeCli, [
       `--user-data-dir=${userDataDir}`,
       `--extensions-dir=${extensionsDir}`,
+      `--shared-data-dir=${sharedDataDir}`,
       '--install-extension', vsixPath,
     ], { stdio: 'inherit' });
   } catch {
@@ -187,6 +259,7 @@ export function openProfile(name: string, extensionPath?: string): void {
     '--new-window',
     `--user-data-dir=${userDataDir}`,
     `--extensions-dir=${extensionsDir}`,
+    `--shared-data-dir=${sharedDataDir}`,
     '--disable-workspace-trust',
   ];
 

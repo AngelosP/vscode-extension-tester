@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getVsixPath } from './install.js';
-import { listProfiles, getProfileDir, getProfileExtensionsDir, getProfileUserDataDir } from '../profile.js';
+import { listProfiles, getProfileDir, getProfileExtensionsDir, getProfileUserDataDir, getProfileSharedDataDir, ensureProfileAuthLocalState } from '../profile.js';
 import { CONTROLLER_EXTENSION_ID } from '../types.js';
 import { execVSCodeCliSync, formatVSCodeCliMissingMessage, resolveVSCodeCli, type ResolvedVSCodeCli } from '../utils/vscode-cli.js';
 
@@ -53,10 +53,13 @@ export async function updateCommand(): Promise<void> {
       const profileDir = getProfileDir(name);
       const userDataDir = getProfileUserDataDir(profileDir);
       const extensionsDir = getProfileExtensionsDir(profileDir);
+      const sharedDataDir = getProfileSharedDataDir(profileDir);
 
       if (!fs.existsSync(extensionsDir)) {
         fs.mkdirSync(extensionsDir, { recursive: true });
       }
+      fs.mkdirSync(sharedDataDir, { recursive: true });
+      ensureProfileAuthLocalState(profileDir, userDataDir);
 
       // Reinstall
       try {
@@ -64,7 +67,7 @@ export async function updateCommand(): Promise<void> {
         const backup = quarantineControllerExtensionFolders(extensionsDir);
         try {
           cleanStaleControllerMetadata(extensionsDir);
-          execVSCodeCliSync(codeCli, ['--user-data-dir', userDataDir, '--extensions-dir', extensionsDir, '--install-extension', vsixPath, '--force'], {
+          execVSCodeCliSync(codeCli, ['--user-data-dir', userDataDir, '--extensions-dir', extensionsDir, '--shared-data-dir', sharedDataDir, '--install-extension', vsixPath, '--force'], {
             stdio: 'pipe',
           });
           if (!hasControllerExtension(extensionsDir)) {
@@ -123,8 +126,9 @@ function verifyControllerInstallInTempDir(codeCli: ResolvedVSCodeCli, vsixPath: 
   const probeRoot = fs.mkdtempSync(path.join(path.dirname(extensionsDir), '.controller-probe-'));
   const probeUserDataDir = path.join(probeRoot, 'user-data');
   const probeExtensionsDir = path.join(probeRoot, 'extensions');
+  const probeSharedDataDir = path.join(probeRoot, 'shared-data');
   try {
-    execVSCodeCliSync(codeCli, ['--user-data-dir', probeUserDataDir, '--extensions-dir', probeExtensionsDir, '--install-extension', vsixPath, '--force'], {
+    execVSCodeCliSync(codeCli, ['--user-data-dir', probeUserDataDir, '--extensions-dir', probeExtensionsDir, '--shared-data-dir', probeSharedDataDir, '--install-extension', vsixPath, '--force'], {
       stdio: 'pipe',
     });
     if (!hasControllerExtension(probeExtensionsDir)) {
