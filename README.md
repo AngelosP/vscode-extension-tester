@@ -52,6 +52,8 @@ vscode-ext-test run
 
 This launches a fresh, isolated VS Code instance with your extension loaded, executes every `.feature` file found under the features directory, and reports results to the console. Because no profile is specified, VS Code starts with a clean, ephemeral user-data directory -- no saved settings, no logged-in accounts, and no extra extensions beyond the controller and your extension under test. Use this mode for tests that don't need any pre-existing state (e.g. verifying commands, UI elements, or default behavior).
 
+When you run a profile-aware test with `--test-id` and `tests/vscode-extension-tester/profiles/default/` exists, the CLI automatically reuses that prepared `default` named profile for `e2e/default/<test-id>/`. This keeps older suite scripts that omit `--reuse-named-profile default` aligned with the prepared default auth/settings state. Runs without `--test-id` still use a fresh ephemeral profile unless you pass an explicit profile flag.
+
 ### Run with a named profile
 
 ```bash

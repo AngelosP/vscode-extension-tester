@@ -242,6 +242,10 @@ profile.
    This launches a fresh VS Code, executes all .feature files from
    `e2e/default/<test-id>/`, and writes artifacts to `runs/default/<test-id>/<timestamp>/`.
    Each run uses a unique timestamp so previous results are preserved.
+  If `tests/vscode-extension-tester/profiles/default/` exists, `--test-id` runs
+  for `e2e/default/<test-id>/` automatically reuse that prepared `default` named
+  profile. This preserves authenticated/default setup for existing suite scripts
+  that do not pass `--reuse-named-profile default` explicitly.
 
 3. **Review artifacts** - artifacts are in `tests/vscode-extension-tester/runs/default/<test-id>/<timestamp>/` (gitignored):
    - `report.md` - read this FIRST. It lists all results AND screenshot file paths.

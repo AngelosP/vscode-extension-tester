@@ -5,7 +5,7 @@ import { CONTROLLER_WS_PORT, CDP_PORT, STEP_TIMEOUT_MS, DEFAULT_FEATURES_DIR } f
 import { launchMode } from '../modes/ci-mode.js';
 import { attachMode } from '../modes/dev-mode.js';
 import { printResults, writeReportFile, writeRunArtifacts, toFileTimestamp } from '../utils/reporter.js';
-import { getEffectiveProfileName, validateProfileOptions } from '../profile.js';
+import { getEffectiveProfileName, profileExists, validateProfileOptions } from '../profile.js';
 import { buildExtension } from '../build.js';
 
 export async function runCommand(opts: Record<string, string | boolean>): Promise<void> {
@@ -33,11 +33,17 @@ export async function runCommand(opts: Record<string, string | boolean>): Promis
   };
 
   try {
+    const cwd = path.resolve(options.extensionPath);
+    const explicitProfile = getEffectiveProfileName(options);
+    if (!options.attachDevhost && options.testId && !explicitProfile && profileExists('default', cwd)) {
+      options.reuseNamedProfile = 'default';
+      console.log('Using existing named profile "default" for e2e/default test selection.');
+    }
+
     // ─── Validate flag combinations ───
-    validateFlags(options, path.resolve(options.extensionPath));
+    validateFlags(options, cwd);
 
     // ─── Resolve paths ───
-    const cwd = path.resolve(options.extensionPath);
     const effectiveProfile = getEffectiveProfileName(options) ?? 'default';
     const timestamp = new Date().toISOString();
     const { featuresDir, runDir, artifactRunId } = resolvePaths(cwd, options, effectiveProfile, timestamp);
