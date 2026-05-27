@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "currentVersion": "0.2.0",
-  "updatedAt": "2026-04-30",
+  "currentVersion": "0.2.2",
+  "updatedAt": "2026-05-27",
   "packages": [
     "packages/controller-extension/package.json"
   ],
@@ -25,6 +25,19 @@
       "kind": "minor",
       "previousVersion": "0.1.1",
       "notes": "Add extension-host diagnostic script RPC for live sessions"
+    },
+    {
+      "version": "0.2.1",
+      "date": "2026-05-27",
+      "kind": "baseline",
+      "notes": "Baseline before automated controller extension versioning."
+    },
+    {
+      "version": "0.2.2",
+      "date": "2026-05-27",
+      "kind": "patch",
+      "previousVersion": "0.2.1",
+      "notes": "Harden isolated profile controller startup and restart behavior"
     }
   ]
 }

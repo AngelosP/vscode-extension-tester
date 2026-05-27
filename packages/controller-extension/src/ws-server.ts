@@ -11,6 +11,7 @@ interface Services {
   stateReader: StateReader;
   outputMonitor: OutputMonitor;
   authHandler: AuthHandler;
+  onCloseWindow?: () => void;
 }
 
 interface JsonRpcRequest {
@@ -64,7 +65,12 @@ export class WSServer {
         const request = JSON.parse(data.toString()) as JsonRpcRequest;
         const result = await this.dispatch(request);
         ws.send(
-          JSON.stringify({ jsonrpc: '2.0', id: request.id, result })
+          JSON.stringify({ jsonrpc: '2.0', id: request.id, result }),
+          () => {
+            if (request.method === 'closeWindow') {
+              this.services.onCloseWindow?.();
+            }
+          },
         );
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
@@ -224,7 +230,7 @@ export class WSServer {
         setTimeout(() => {
           const vscode = require('vscode');
           vscode.commands.executeCommand('workbench.action.closeWindow');
-        }, 500);
+        }, 50);
         return { status: 'closing' };
 
       // ─── Reset to clean state ───

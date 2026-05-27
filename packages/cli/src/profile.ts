@@ -1,8 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { getVsixPath } from './commands/install.js';
+import * as os from 'node:os';
+import * as cp from 'node:child_process';
 import { buildExtension } from './build.js';
-import { execVSCodeCliSync, formatVSCodeCliMissingMessage, getVSCodeCliMetadata, resolveVSCodeCli, spawnVSCodeCli, type VSCodeCliMetadata } from './utils/vscode-cli.js';
+import { formatVSCodeCliMissingMessage, getVSCodeCliMetadata, resolveVSCodeCli, type VSCodeCliMetadata } from './utils/vscode-cli.js';
 import { CONTROLLER_EXTENSION_ID, type RunOptions } from './types.js';
 
 /** Root directory for CLI-owned named profiles, relative to cwd. */
@@ -14,6 +15,8 @@ export interface ProfileManifest {
   lastOpened?: string;
   vscodeCli?: VSCodeCliMetadata;
   authStorageResetAt?: string;
+  nativeProfileName?: string;
+  storageKind?: 'native-vscode-profile' | 'legacy-user-data-dir';
   schemaVersion?: number;
 }
 
@@ -28,6 +31,8 @@ export interface ProfileDoctorReport {
   controllerInstalled: boolean;
   manifest?: ProfileManifest;
   currentVSCode?: VSCodeCliMetadata;
+  nativeProfileName: string;
+  storageKind: 'native-vscode-profile' | 'legacy-user-data-dir';
   auth: ProfileAuthStateSummary;
   repairs: string[];
   warnings: string[];
@@ -81,6 +86,27 @@ export function getProfileExtensionsDir(profileDir: string): string {
   return path.join(profileDir, 'extensions');
 }
 
+export function getNativeVSCodeProfileName(name: string): string {
+  if (!isValidProfileName(name)) {
+    throw new Error(
+      `Invalid profile name: "${name}"\n` +
+      'Profile names must be alphanumeric with hyphens/underscores (e.g. sql-authenticated).'
+    );
+  }
+  return `vscode-ext-test-${name}`;
+}
+
+export function getVSCodeUserDataDir(vscodeCli?: Pick<VSCodeCliMetadata, 'variant'>): string | undefined {
+  const appName = vscodeCli?.variant === 'insiders' ? 'Code - Insiders' : 'Code';
+  if (process.platform === 'win32') {
+    return process.env.APPDATA ? path.join(process.env.APPDATA, appName) : undefined;
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', appName);
+  }
+  return path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), appName);
+}
+
 export function getProfileManifestPath(profileDir: string): string {
   return path.join(profileDir, 'profile.json');
 }
@@ -106,7 +132,50 @@ export function writeProfileManifest(profileDir: string, manifest: ProfileManife
  */
 export function profileExists(name: string, cwd = process.cwd()): boolean {
   const dir = getProfileDir(name, cwd);
-  return fs.existsSync(dir) && fs.existsSync(getProfileUserDataDir(dir));
+  return fs.existsSync(dir) && (fs.existsSync(getProfileManifestPath(dir)) || fs.existsSync(getProfileUserDataDir(dir)));
+}
+
+export function markProfileAsNative(name: string, cwd = process.cwd(), vscodeCli?: VSCodeCliMetadata, lastOpened?: string): ProfileManifest {
+  const profileDir = getProfileDir(name, cwd);
+  const userDataDir = getProfileUserDataDir(profileDir);
+  const extensionsDir = getProfileExtensionsDir(profileDir);
+  fs.mkdirSync(userDataDir, { recursive: true });
+  fs.mkdirSync(extensionsDir, { recursive: true });
+
+  const manifest = readProfileManifest(profileDir);
+  const next: ProfileManifest = {
+    name,
+    created: manifest?.created ?? new Date().toISOString(),
+    lastOpened: lastOpened ?? manifest?.lastOpened,
+    authStorageResetAt: manifest?.authStorageResetAt,
+    nativeProfileName: getNativeVSCodeProfileName(name),
+    storageKind: 'native-vscode-profile',
+    vscodeCli: vscodeCli ?? manifest?.vscodeCli,
+    schemaVersion: 3,
+  };
+  writeProfileManifest(profileDir, next);
+  return next;
+}
+
+export function markProfileAsUserDataDir(name: string, cwd = process.cwd(), vscodeCli?: VSCodeCliMetadata, lastOpened?: string): ProfileManifest {
+  const profileDir = getProfileDir(name, cwd);
+  const userDataDir = getProfileUserDataDir(profileDir);
+  const extensionsDir = getProfileExtensionsDir(profileDir);
+  fs.mkdirSync(userDataDir, { recursive: true });
+  fs.mkdirSync(extensionsDir, { recursive: true });
+
+  const manifest = readProfileManifest(profileDir);
+  const next: ProfileManifest = {
+    name,
+    created: manifest?.created ?? new Date().toISOString(),
+    lastOpened: lastOpened ?? manifest?.lastOpened,
+    authStorageResetAt: manifest?.authStorageResetAt,
+    storageKind: 'legacy-user-data-dir',
+    vscodeCli: vscodeCli ?? (manifest?.storageKind === 'legacy-user-data-dir' ? manifest.vscodeCli : undefined),
+    schemaVersion: 3,
+  };
+  writeProfileManifest(profileDir, next);
+  return next;
 }
 
 export function getEffectiveProfileName(options: Pick<RunOptions, 'reuseNamedProfile' | 'reuseOrCreateNamedProfile' | 'cloneNamedProfile'>): string | undefined {
@@ -204,50 +273,25 @@ export function normalizeProfilePath(value: string): string {
  * user-data directory and the controller extension installed, then returns
  * immediately so the user can interact with the VS Code window.
  */
-export function openProfile(name: string, extensionPath?: string): void {
+export async function openProfile(name: string, extensionPath?: string, vscodeVersion = 'stable'): Promise<void> {
   const cwd = path.resolve(extensionPath ?? '.');
   const profileDir = getProfileDir(name, cwd);
-  const codeCli = resolveVSCodeCli();
-  if (!codeCli) {
-    throw new Error(formatVSCodeCliMissingMessage());
-  }
-  const vscodeCli = getVSCodeCliMetadata(codeCli);
-
+  const isNew = !fs.existsSync(profileDir);
   const userDataDir = getProfileUserDataDir(profileDir);
-
   const extensionsDir = getProfileExtensionsDir(profileDir);
-
-  const isNew = !fs.existsSync(userDataDir);
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.mkdirSync(extensionsDir, { recursive: true });
 
+  const vscodeCli = await resolveProfileRuntimeMetadata(vscodeVersion);
+
   const manifest = readProfileManifest(profileDir);
   warnForVSCodeDrift(manifest, vscodeCli);
-  writeProfileManifest(profileDir, {
-    name,
-    created: manifest?.created ?? new Date().toISOString(),
-    lastOpened: new Date().toISOString(),
-    authStorageResetAt: manifest?.authStorageResetAt,
-    vscodeCli,
-    schemaVersion: 2,
-  });
-
-  // Install controller extension into this profile's user-data-dir
-  const vsixPath = getVsixPath();
-  console.log(`Installing controller extension into profile "${name}"...`);
-  try {
-    execVSCodeCliSync(codeCli, [
-      `--user-data-dir=${userDataDir}`,
-      `--extensions-dir=${extensionsDir}`,
-      '--install-extension', vsixPath,
-    ], { stdio: 'inherit' });
-  } catch {
-    console.warn('Warning: could not install controller extension into profile.');
-  }
+  const profileManifest = markProfileAsUserDataDir(name, cwd, vscodeCli, new Date().toISOString());
 
   // If an extension path is provided, build it first so the profile gets the latest code
   if (extensionPath) {
-    buildExtension(path.resolve(extensionPath));
+    const resolved = path.resolve(extensionPath);
+    buildExtension(resolved);
   }
 
   // Build launch args
@@ -256,25 +300,28 @@ export function openProfile(name: string, extensionPath?: string): void {
     `--user-data-dir=${userDataDir}`,
     `--extensions-dir=${extensionsDir}`,
     '--disable-workspace-trust',
+    '--skip-welcome',
+    '--skip-release-notes',
   ];
 
-  // If an extension path is provided, load the extension under test
   if (extensionPath) {
     const resolved = path.resolve(extensionPath);
     args.push(`--extensionDevelopmentPath=${resolved}`);
   }
 
   if (isNew) {
-    console.log(`\nCreated new profile "${name}" at:`);
+    console.log(`\nCreated new profile "${name}":`);
   } else {
-    console.log(`\nOpening existing profile "${name}" from:`);
+    console.log(`\nOpening existing profile "${name}":`);
   }
   console.log(`  ${profileDir}\n`);
+  console.log(`Using VS Code test runtime: ${profileManifest.vscodeCli?.displayName ?? vscodeVersion} (${profileManifest.vscodeCli?.executablePath ?? profileManifest.vscodeCli?.command})`);
 
   // Launch VS Code - detached so the CLI can exit while VS Code stays open
-  const proc = spawnVSCodeCli(codeCli, args, {
+  const proc = cp.spawn(vscodeCli.executablePath ?? vscodeCli.command, args, {
     stdio: 'ignore',
     detached: true,
+    shell: false,
   });
   proc.unref();
 
@@ -282,6 +329,30 @@ export function openProfile(name: string, extensionPath?: string): void {
   console.log('preparation you need, then close the window when you\'re done.');
   console.log(`\nTo run tests with this profile later:`);
   console.log(`  vscode-ext-test run --test-id <slug> --reuse-named-profile ${name}\n`);
+}
+
+async function resolveProfileRuntimeMetadata(vscodeVersion: string): Promise<VSCodeCliMetadata> {
+  const { download } = await import('@vscode/test-electron');
+  const executablePath = await download({ version: vscodeVersion === 'stable' ? undefined : vscodeVersion });
+  const versionInfo = getExecutableMetadata(executablePath);
+  return {
+    command: executablePath,
+    displayName: vscodeVersion === 'insiders' ? 'VS Code Insiders Test Runtime' : 'VS Code Test Runtime',
+    source: 'env',
+    variant: vscodeVersion === 'insiders' ? 'insiders' : vscodeVersion === 'stable' ? 'stable' : 'custom',
+    executablePath,
+    ...versionInfo,
+  };
+}
+
+function getExecutableMetadata(executablePath: string): { version?: string; commit?: string; architecture?: string } {
+  try {
+    const productJsonPath = path.join(path.dirname(executablePath), 'resources', 'app', 'product.json');
+    const productJson = JSON.parse(fs.readFileSync(productJsonPath, 'utf-8')) as { version?: string; commit?: string };
+    return { version: productJson.version, commit: productJson.commit, architecture: process.arch };
+  } catch {
+    return { architecture: process.arch };
+  }
 }
 
 /**
@@ -318,7 +389,7 @@ export function listProfiles(): string[] {
 
   return fs.readdirSync(dir).filter((entry) => {
     const full = path.join(dir, entry);
-    return fs.statSync(full).isDirectory() && fs.existsSync(path.join(full, 'user-data'));
+    return fs.statSync(full).isDirectory() && (fs.existsSync(path.join(full, 'profile.json')) || fs.existsSync(path.join(full, 'user-data')));
   });
 }
 
@@ -331,6 +402,7 @@ export function collectProfileDoctorReports(names?: string[], cwd = process.cwd(
     const profileDir = getProfileDir(name, cwd);
     const userDataDir = getProfileUserDataDir(profileDir);
     const extensionsDir = getProfileExtensionsDir(profileDir);
+    const nativeProfileName = getNativeVSCodeProfileName(name);
 
     if (fix) {
       fs.mkdirSync(userDataDir, { recursive: true });
@@ -346,15 +418,22 @@ export function collectProfileDoctorReports(names?: string[], cwd = process.cwd(
         created: manifest?.created ?? new Date().toISOString(),
         lastOpened: manifest?.lastOpened,
         authStorageResetAt: manifest?.authStorageResetAt,
+        nativeProfileName: manifest?.nativeProfileName,
+        storageKind: manifest?.storageKind,
         vscodeCli: currentVSCode,
-        schemaVersion: 2,
+        schemaVersion: manifest?.schemaVersion ?? 2,
       });
       manifest = readProfileManifest(profileDir) ?? manifest;
     }
 
-    let auth = inspectProfileAuthState(userDataDir);
+    const storageKind = getProfileStorageKind(manifest);
+    const authUserDataDir = storageKind === 'native-vscode-profile'
+      ? getVSCodeUserDataDir(currentVSCode) ?? userDataDir
+      : userDataDir;
+
+    let auth = inspectProfileAuthState(authUserDataDir);
     const repairs: string[] = [];
-    if (fix && shouldRepairSecretStorage(auth, manifest, userDataDir)) {
+    if (fix && storageKind === 'legacy-user-data-dir' && shouldRepairSecretStorage(auth, manifest, userDataDir)) {
       const resetAt = new Date().toISOString();
       repairs.push(...repairProfileSecretStorage(profileDir, userDataDir, resetAt));
       writeProfileManifest(profileDir, {
@@ -362,6 +441,8 @@ export function collectProfileDoctorReports(names?: string[], cwd = process.cwd(
         created: manifest?.created ?? new Date().toISOString(),
         lastOpened: manifest?.lastOpened,
         authStorageResetAt: resetAt,
+        nativeProfileName: manifest?.nativeProfileName,
+        storageKind: manifest?.storageKind,
         vscodeCli: currentVSCode ?? manifest?.vscodeCli,
         schemaVersion: 2,
       });
@@ -380,6 +461,8 @@ export function collectProfileDoctorReports(names?: string[], cwd = process.cwd(
       controllerInstalled: hasControllerExtension(extensionsDir),
       manifest: readProfileManifest(profileDir) ?? manifest,
       currentVSCode,
+      nativeProfileName: manifest?.nativeProfileName ?? nativeProfileName,
+      storageKind,
       auth,
       repairs,
       warnings: [],
@@ -407,7 +490,10 @@ export function printProfileDoctorReports(reports: ProfileDoctorReport[], json =
     console.log(`  Path: ${report.profileDir}`);
     console.log(`  User data: ${report.userDataDirExists ? 'present' : 'missing'} (${report.userDataDir})`);
     console.log(`  Extensions: ${report.extensionsDirExists ? 'present' : 'missing'} (${report.extensionsDir})`);
-    console.log(`  Controller extension: ${report.controllerInstalled ? 'present' : 'missing'}`);
+    if (report.storageKind === 'native-vscode-profile') {
+      console.log(`  Native VS Code profile: ${report.nativeProfileName}`);
+    }
+    console.log(`  Controller extension: ${formatControllerStatus(report)}`);
     console.log(`  Current VS Code: ${formatVSCodeSummary(report.currentVSCode)}`);
     console.log(`  Profile VS Code: ${formatVSCodeSummary(report.manifest?.vscodeCli)}`);
     console.log(
@@ -442,12 +528,13 @@ export function listProfilesForCwd(cwd = process.cwd()): string[] {
 
   return fs.readdirSync(dir).filter((entry) => {
     const full = path.join(dir, entry);
-    return fs.statSync(full).isDirectory() && fs.existsSync(path.join(full, 'user-data'));
+    return fs.statSync(full).isDirectory() && (fs.existsSync(path.join(full, 'profile.json')) || fs.existsSync(path.join(full, 'user-data')));
   });
 }
 
 export function getProfilePreferredVSCodeExecutable(name: string, cwd = process.cwd()): string | undefined {
   const manifest = readProfileManifest(getProfileDir(name, cwd));
+  if (manifest?.storageKind !== 'legacy-user-data-dir') return undefined;
   const executablePath = manifest?.vscodeCli?.executablePath;
   return executablePath && fs.existsSync(executablePath) ? executablePath : undefined;
 }
@@ -482,8 +569,8 @@ function inspectProfileAuthState(userDataDir: string): ProfileAuthStateSummary {
 
 function populateDoctorFindings(report: ProfileDoctorReport): void {
   if (!report.exists) report.errors.push('Profile directory is missing.');
-  if (!report.userDataDirExists) report.errors.push('Profile user-data directory is missing.');
-  if (!report.extensionsDirExists) report.errors.push('Profile extensions directory is missing.');
+  if (report.storageKind === 'legacy-user-data-dir' && !report.userDataDirExists) report.errors.push('Profile user-data directory is missing.');
+  if (report.storageKind === 'legacy-user-data-dir' && !report.extensionsDirExists) report.errors.push('Profile extensions directory is missing.');
   if (!report.currentVSCode) report.errors.push(formatVSCodeCliMissingMessage());
   if (!report.manifest?.vscodeCli) report.warnings.push('Profile has legacy metadata; run `vscode-ext-test profile doctor --fix` to stamp the current VS Code install.');
   if (report.manifest?.vscodeCli?.executablePath && !fs.existsSync(report.manifest.vscodeCli.executablePath)) {
@@ -497,7 +584,7 @@ function populateDoctorFindings(report: ProfileDoctorReport): void {
       report.warnings.push(`Profile was last opened with VS Code ${report.manifest.vscodeCli.version}; current VS Code is ${report.currentVSCode.version}.`);
     }
   }
-  if (!report.controllerInstalled) report.warnings.push('Controller extension is not installed in this profile extensions directory.');
+  if (!report.controllerInstalled && report.storageKind === 'legacy-user-data-dir') report.warnings.push('Controller extension is not installed in this profile extensions directory.');
   if (report.repairs.length > 0) {
     report.warnings.push('VS Code secret storage was reset for this profile. Open the profile and sign in to GitHub once so Copilot auth can be stored cleanly.');
   } else if (hasCurrentSafeStorageDecryptErrors(report)) {
@@ -511,6 +598,12 @@ function populateDoctorFindings(report: ProfileDoctorReport): void {
   if (!hasGitHubAuthEvidence(report.auth, report.manifest)) {
     report.warnings.push('No GitHub/Copilot authentication session found for this profile. If this profile should use Copilot, open it and sign in to GitHub.');
   }
+}
+
+function getProfileStorageKind(manifest: ProfileManifest | undefined): 'native-vscode-profile' | 'legacy-user-data-dir' {
+  return manifest?.storageKind === 'native-vscode-profile'
+    ? 'native-vscode-profile'
+    : 'legacy-user-data-dir';
 }
 
 function countAuthSecretMarkers(text: string, extensionId: string): number {
@@ -705,6 +798,11 @@ function formatVSCodeSummary(value: VSCodeCliMetadata | undefined): string {
   if (!value) return '<unknown>';
   const version = value.version ? ` ${value.version}` : '';
   return `${value.displayName}${version} (${value.command})`;
+}
+
+function formatControllerStatus(report: Pick<ProfileDoctorReport, 'storageKind' | 'controllerInstalled'>): string {
+  if (report.storageKind === 'native-vscode-profile') return 'managed by native VS Code profile';
+  return report.controllerInstalled ? 'present' : 'missing';
 }
 
 function countOccurrences(text: string, needle: string): number {

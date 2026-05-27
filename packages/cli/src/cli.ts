@@ -118,9 +118,10 @@ export function createProgram(): Command {
   .command('open <name>')
   .description('Open a named profile in VS Code so you can authenticate or prepare prerequisites')
   .option('--extension-path <dir>', 'Path to extension project to load in the profile', '.')
-  .action((name: string, opts: { extensionPath?: string }) => {
+  .option('--vscode-version <version>', 'VS Code version to use for the isolated test runtime', 'stable')
+  .action(async (name: string, opts: { extensionPath?: string; vscodeVersion?: string }) => {
     try {
-      openProfile(name, opts.extensionPath);
+      await openProfile(name, opts.extensionPath, opts.vscodeVersion);
     } catch (err: unknown) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);

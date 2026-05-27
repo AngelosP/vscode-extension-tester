@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getVsixPath } from './install.js';
-import { listProfiles, getProfileDir, getProfileExtensionsDir, getProfileUserDataDir } from '../profile.js';
+import { listProfiles, getProfileDir, getProfileExtensionsDir, getProfileUserDataDir, getNativeVSCodeProfileName, readProfileManifest } from '../profile.js';
 import { CONTROLLER_EXTENSION_ID } from '../types.js';
 import { execVSCodeCliSync, formatVSCodeCliMissingMessage, resolveVSCodeCli, type ResolvedVSCodeCli } from '../utils/vscode-cli.js';
 
@@ -53,6 +53,17 @@ export async function updateCommand(): Promise<void> {
       const profileDir = getProfileDir(name);
       const userDataDir = getProfileUserDataDir(profileDir);
       const extensionsDir = getProfileExtensionsDir(profileDir);
+      const nativeProfileName = readProfileManifest(profileDir)?.nativeProfileName ?? getNativeVSCodeProfileName(name);
+
+      try {
+        execVSCodeCliSync(codeCli, ['--profile', nativeProfileName, '--install-extension', vsixPath, '--force'], {
+          stdio: 'pipe',
+        });
+        console.log(`  Installed into VS Code profile "${nativeProfileName}".`);
+        updated++;
+      } catch (e: any) {
+        console.log(`  Native profile-specific install skipped — ${e?.message ?? e}`);
+      }
 
       if (!fs.existsSync(extensionsDir)) {
         fs.mkdirSync(extensionsDir, { recursive: true });

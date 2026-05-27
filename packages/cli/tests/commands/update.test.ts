@@ -82,7 +82,7 @@ describe('updateCommand', () => {
 
         realProfileInstallCount++;
         if (realProfileInstallCount === 1) {
-          fs.mkdirSync(path.join(extensionsDirArg, 'vscode-extension-tester.vscode-extension-tester-controller-0.2.0'), { recursive: true });
+          fs.mkdirSync(path.join(extensionsDirArg, 'vscode-extension-tester.vscode-extension-tester-controller-0.2.2'), { recursive: true });
           fs.writeFileSync(path.join(extensionsDirArg, 'extensions.json'), '[{"identifier":{"id":"new"}}]', 'utf-8');
           throw new Error('replacement failed');
         }
@@ -95,7 +95,7 @@ describe('updateCommand', () => {
     const restoredSentinel = path.join(extensionsDir, CONTROLLER_FOLDER, 'sentinel.txt');
     expect(fs.existsSync(restoredSentinel)).toBe(true);
     expect(fs.readFileSync(restoredSentinel, 'utf-8')).toBe('old');
-    expect(fs.existsSync(path.join(extensionsDir, 'vscode-extension-tester.vscode-extension-tester-controller-0.2.0'))).toBe(false);
+    expect(fs.existsSync(path.join(extensionsDir, 'vscode-extension-tester.vscode-extension-tester-controller-0.2.2'))).toBe(false);
     expect(fs.readFileSync(path.join(extensionsDir, 'extensions.json'), 'utf-8')).toBe('[{"identifier":{"id":"old"}}]');
     expect(process.exitCode).toBe(1);
     expect(fs.readdirSync(path.dirname(extensionsDir)).some((entry) => entry.startsWith('.controller-backup-'))).toBe(false);
@@ -142,7 +142,7 @@ describe('updateCommand', () => {
   it('creates a missing profile extensions directory and installs into it', async () => {
     fs.rmSync(extensionsDir, { recursive: true, force: true });
 
-    const installedFolder = 'vscode-extension-tester.vscode-extension-tester-controller-0.2.0';
+    const installedFolder = 'vscode-extension-tester.vscode-extension-tester-controller-0.2.2';
     mockExecVSCodeCliSync.mockImplementation((_cli, args: string[]) => {
       if (args.includes('--extensions-dir')) {
         const extensionsDirArg = args[args.indexOf('--extensions-dir') + 1];
@@ -163,7 +163,7 @@ describe('updateCommand', () => {
 
   it('uses profile user data and removes stale controller metadata before profile reinstall', async () => {
     const userDataDir = path.join(tempDir, 'tests', 'vscode-extension-tester', 'profiles', 'profile-one', 'user-data');
-    const installedFolder = 'vscode-extension-tester.vscode-extension-tester-controller-0.2.0';
+    const installedFolder = 'vscode-extension-tester.vscode-extension-tester-controller-0.2.2';
     fs.writeFileSync(path.join(extensionsDir, 'extensions.json'), JSON.stringify([
       { identifier: { id: 'vscode-extension-tester.vscode-extension-tester-controller' }, relativeLocation: CONTROLLER_FOLDER },
       { identifier: { id: 'publisher.other-extension' }, relativeLocation: 'publisher.other-extension-1.0.0' },
@@ -207,7 +207,7 @@ describe('updateCommand', () => {
           return '';
         }
 
-        fs.mkdirSync(path.join(extensionsDirArg, 'vscode-extension-tester.vscode-extension-tester-controller-0.2.0'), { recursive: true });
+        fs.mkdirSync(path.join(extensionsDirArg, 'vscode-extension-tester.vscode-extension-tester-controller-0.2.2'), { recursive: true });
         fs.writeFileSync(path.join(extensionsDirArg, 'extensions.json'), '[{"identifier":{"id":"new"}}]', 'utf-8');
         throw new Error('first install failed');
       }
@@ -217,7 +217,7 @@ describe('updateCommand', () => {
     await updateCommand();
 
     expect(fs.existsSync(path.join(extensionsDir, CONTROLLER_FOLDER))).toBe(false);
-    expect(fs.existsSync(path.join(extensionsDir, 'vscode-extension-tester.vscode-extension-tester-controller-0.2.0'))).toBe(false);
+    expect(fs.existsSync(path.join(extensionsDir, 'vscode-extension-tester.vscode-extension-tester-controller-0.2.2'))).toBe(false);
     expect(fs.readFileSync(path.join(extensionsDir, 'extensions.json'), 'utf-8')).toBe('[{"identifier":{"id":"old"}}]');
     expect(fs.readdirSync(path.dirname(extensionsDir)).some((entry) => entry.startsWith('.controller-backup-'))).toBe(false);
     expect(fs.readdirSync(path.dirname(extensionsDir)).some((entry) => entry.startsWith('.controller-probe-'))).toBe(false);
@@ -243,7 +243,7 @@ describe('updateCommand', () => {
           return '';
         }
 
-        fs.mkdirSync(path.join(extensionsDirArg, 'vscode-extension-tester.vscode-extension-tester-controller-0.2.0'), { recursive: true });
+        fs.mkdirSync(path.join(extensionsDirArg, 'vscode-extension-tester.vscode-extension-tester-controller-0.2.2'), { recursive: true });
         fs.writeFileSync(path.join(extensionsDirArg, 'extensions.json'), '[{"identifier":{"id":"new"}}]', 'utf-8');
       }
       return '';
@@ -251,7 +251,7 @@ describe('updateCommand', () => {
 
     await updateCommand();
 
-    expect(fs.existsSync(path.join(extensionsDir, 'vscode-extension-tester.vscode-extension-tester-controller-0.2.0'))).toBe(false);
+    expect(fs.existsSync(path.join(extensionsDir, 'vscode-extension-tester.vscode-extension-tester-controller-0.2.2'))).toBe(false);
     expect(fs.readFileSync(path.join(extensionsDir, 'extensions.json'), 'utf-8')).toBe('[{"identifier":{"id":"old"}}]');
     expect(process.exitCode).toBe(1);
   });
@@ -268,7 +268,7 @@ describe('updateCommand', () => {
           return '';
         }
 
-        fs.mkdirSync(path.join(extensionsDirArg, 'vscode-extension-tester.vscode-extension-tester-controller-0.2.0'), { recursive: true });
+        fs.mkdirSync(path.join(extensionsDirArg, 'vscode-extension-tester.vscode-extension-tester-controller-0.2.2'), { recursive: true });
         throw new Error('replacement failed');
       }
       return '';
@@ -277,7 +277,7 @@ describe('updateCommand', () => {
     await updateCommand();
 
     expect(fs.existsSync(path.join(extensionsDir, '_controller', 'package.json'))).toBe(true);
-    expect(fs.existsSync(path.join(extensionsDir, 'vscode-extension-tester.vscode-extension-tester-controller-0.2.0'))).toBe(false);
+    expect(fs.existsSync(path.join(extensionsDir, 'vscode-extension-tester.vscode-extension-tester-controller-0.2.2'))).toBe(false);
   });
 
   it('removes stale controller metadata after a successful profile replacement', async () => {
@@ -289,7 +289,7 @@ describe('updateCommand', () => {
       { identifier: { id: 'vscode-extension-tester.vscode-extension-tester-controller' }, relativeLocation: '_controller', location: { fsPath: oldTarget } },
     ]), 'utf-8');
 
-    const newControllerFolder = 'vscode-extension-tester.vscode-extension-tester-controller-0.2.0';
+    const newControllerFolder = 'vscode-extension-tester.vscode-extension-tester-controller-0.2.2';
     mockExecVSCodeCliSync.mockImplementation((_cli, args: string[]) => {
       if (args.includes('--extensions-dir')) {
         const extensionsDirArg = args[args.indexOf('--extensions-dir') + 1];

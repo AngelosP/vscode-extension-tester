@@ -7,9 +7,12 @@ import { VSCODE_LAUNCH_TIMEOUT_MS } from '../types.js';
 import { ControllerClient } from '../runner/controller-client.js';
 import { runFeatures } from './dev-mode.js';
 import { getVsixPath } from '../commands/install.js';
-import { getProfileDir, getProfileUserDataDir, getProfileExtensionsDir, getProfilePreferredVSCodeExecutable } from '../profile.js';
+import { getProfileDir, getProfileExtensionsDir, getProfileUserDataDir, getProfilePreferredVSCodeExecutable, markProfileAsUserDataDir } from '../profile.js';
 import { isPortInUse, findFreePort } from '../utils/port.js';
 import { resolveVSCodeCli, resolveVSCodeExecutablePath } from '../utils/vscode-cli.js';
+import { removeControllerLaunchRequest, writeControllerLaunchRequest } from '../controller-launch.js';
+
+const CONTROLLER_RUNTIME_EXTENSION_NAME = 'vscode-extension-tester-controller-runtime';
 
 export interface LaunchDevHostSession {
   mode: 'launch';
@@ -72,40 +75,36 @@ export async function createLaunchDevHostSession(options: RunOptions): Promise<L
     console.log('VS Code downloaded.');
   }
 
-  // 2. Resolve user-data and extensions directories
+  // 2. Resolve profile state. Named profiles use profile-owned user-data and
+  // extensions dirs so test windows start from a stable prepared state without
+  // sharing the main VS Code instance state.
   const isEphemeral = !profileName;
   let userDataDir: string;
   let extensionsDir: string | undefined;
+  let profileDir: string | undefined;
 
   if (profileName) {
-    const profileDir = getProfileDir(profileName, extensionPath);
+    profileDir = getProfileDir(profileName, extensionPath);
+    const profileManifest = markProfileAsUserDataDir(profileName, extensionPath);
     userDataDir = getProfileUserDataDir(profileDir);
     extensionsDir = getProfileExtensionsDir(profileDir);
-    clearWindowRestoreState(userDataDir);
-    console.log(`Using named profile "${profileName}"`);
+    fs.mkdirSync(userDataDir, { recursive: true });
+    fs.mkdirSync(extensionsDir, { recursive: true });
+    console.log(`Using named profile "${profileName}" (${profileManifest.storageKind})`);
   } else {
     userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-'));
   }
 
   // 3. Build launch args
   const controllerVsix = getVsixPath();
-
-  // For ephemeral runs, use a temp extensions directory so VS Code doesn't
-  // reuse a cached (stale) version of the controller extension.
-  if (!extensionsDir) {
-    extensionsDir = path.join(userDataDir, 'extensions');
-    fs.mkdirSync(extensionsDir, { recursive: true });
-  }
-
-  // Extract the controller VSIX and symlink it into the extensions directory
-  // so VS Code discovers it as a normally installed extension.  This keeps the
-  // controller available regardless of how many extensionDevelopmentPath entries
-  // there are.
-  const controllerDevDir = path.join(userDataDir, '_controller-dev');
-  fs.mkdirSync(controllerDevDir, { recursive: true });
+  const controllerDevRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-controller-'));
+  const controllerDevDir = path.join(controllerDevRoot, 'extension');
   extractVsix(controllerVsix, controllerDevDir);
-  linkExtensionIntoDir(controllerDevDir, extensionsDir, '_controller');
-  console.log('Controller extension installed into extensions dir.');
+  patchControllerRuntimeManifest(controllerDevDir);
+  if (profileDir) {
+    refreshLegacyControllerDevDir(controllerVsix, profileDir);
+  }
+  let workspaceFilePath: string | undefined;
 
   // 4. Resolve ports — avoid colliding with an already-running VS Code
   //    (e.g. an F5 Dev Host on the default ports).
@@ -129,24 +128,47 @@ export async function createLaunchDevHostSession(options: RunOptions): Promise<L
     cdpPort = freePort;
   }
 
-  const args: string[] = [
-    '--new-window',
-    `--user-data-dir=${userDataDir}`,
-    `--extensions-dir=${extensionsDir}`,
+  const workspacePath = process.env.VSCODE_EXT_TEST_WORKSPACE
+    ? path.resolve(process.env.VSCODE_EXT_TEST_WORKSPACE)
+    : profileName
+      ? extensionPath
+      : undefined;
+  const requestWorkspacePath = process.env.VSCODE_EXT_TEST_WORKSPACE
+    ? path.resolve(process.env.VSCODE_EXT_TEST_WORKSPACE)
+    : profileName
+      ? extensionPath
+      : undefined;
+
+  const launchRequestPath = writeControllerLaunchRequest(controllerPort, profileName, requestWorkspacePath);
+
+  // For ephemeral runs, use a temp extensions directory so VS Code doesn't
+  // reuse a cached (stale) version of the controller extension.
+  if (!extensionsDir) {
+    extensionsDir = path.join(userDataDir, 'extensions');
+    fs.mkdirSync(extensionsDir, { recursive: true });
+  }
+
+  clearWindowRestoreState(userDataDir);
+
+  const args: string[] = ['--new-window'];
+  args.push(`--user-data-dir=${userDataDir}`, `--extensions-dir=${extensionsDir}`);
+
+  args.push(
     `--remote-debugging-port=${cdpPort}`,
     '--disable-telemetry',
     '--skip-welcome',
     '--skip-release-notes',
     '--disable-restore-windows',
     '--disable-workspace-trust',
+    // The controller is loaded as a fresh development extension so launch mode
+    // never depends on an installed or profile-cached controller copy.
+    `--extensionDevelopmentPath=${controllerDevDir}`,
     // The extension under test is loaded via extensionDevelopmentPath —
     // same as F5 / profile open.
     `--extensionDevelopmentPath=${extensionPath}`,
-  ];
+  );
 
-  if (process.env.VSCODE_EXT_TEST_WORKSPACE) {
-    args.push(path.resolve(process.env.VSCODE_EXT_TEST_WORKSPACE));
-  }
+  if (workspacePath) args.push(workspacePath);
 
   // 5. Launch VS Code (with xvfb on Linux if needed)
   console.log('Launching VS Code...');
@@ -171,6 +193,9 @@ export async function createLaunchDevHostSession(options: RunOptions): Promise<L
     await waitForController(client, VSCODE_LAUNCH_TIMEOUT_MS);
     console.log('Connected to controller extension.\n');
   } catch (err) {
+    removeControllerLaunchRequest(launchRequestPath);
+    removeControllerRuntime(controllerDevRoot);
+    removeLaunchWorkspace(workspaceFilePath);
     await closeLaunchedProcess(vscProcess, isEphemeral, userDataDir);
     throw err;
   }
@@ -186,7 +211,12 @@ export async function createLaunchDevHostSession(options: RunOptions): Promise<L
     close: async () => {
       if (closed) return;
       closed = true;
+      await client.closeWindow();
+      await waitForControllerToStop(controllerPort, 5_000);
       client.disconnect();
+      removeControllerLaunchRequest(launchRequestPath);
+      removeControllerRuntime(controllerDevRoot);
+      removeLaunchWorkspace(workspaceFilePath);
       await closeLaunchedProcess(vscProcess, isEphemeral, userDataDir);
     },
   };
@@ -231,6 +261,14 @@ async function waitForController(client: ControllerClient, timeoutMs: number): P
     }
   }
   throw new Error(`Controller extension did not start within ${Math.round(timeoutMs / 1000)}s`);
+}
+
+async function waitForControllerToStop(port: number, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await isPortInUse(port))) return;
+    await delay(100);
+  }
 }
 
 function isHeadlessCI(): boolean {
@@ -302,6 +340,63 @@ function extractVsix(vsixPath: string, destDir: string): void {
   // Cleanup
   try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch { /* */ }
   try { fs.rmSync(tmpZip); } catch { /* */ }
+}
+
+function patchControllerRuntimeManifest(controllerDevDir: string): void {
+  const packageJsonPath = path.join(controllerDevDir, 'package.json');
+  const manifest = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as Record<string, unknown>;
+  manifest.name = CONTROLLER_RUNTIME_EXTENSION_NAME;
+  manifest.displayName = 'Extension Tester Controller Runtime';
+  fs.writeFileSync(packageJsonPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf-8');
+}
+
+function createLaunchWorkspaceFile(extensionPath: string): string {
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-workspace-'));
+  const workspaceFile = path.join(workspaceRoot, 'workspace.code-workspace');
+  fs.writeFileSync(
+    workspaceFile,
+    `${JSON.stringify({ folders: [{ path: extensionPath }] }, null, 2)}\n`,
+    'utf-8',
+  );
+  return workspaceFile;
+}
+
+function refreshLegacyControllerDevDir(controllerVsix: string, profileDir: string): void {
+  const profileRoot = path.dirname(profileDir);
+  const dirs = new Set<string>([path.join(getProfileUserDataDir(profileDir), '_controller-dev')]);
+
+  try {
+    for (const entry of fs.readdirSync(profileRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const candidate = path.join(profileRoot, entry.name, 'user-data', '_controller-dev');
+      if (fs.existsSync(candidate)) dirs.add(candidate);
+    }
+  } catch {
+    // best-effort compatibility refresh
+  }
+
+  for (const legacyControllerDevDir of dirs) {
+    fs.rmSync(legacyControllerDevDir, { recursive: true, force: true });
+    fs.mkdirSync(legacyControllerDevDir, { recursive: true });
+    extractVsix(controllerVsix, legacyControllerDevDir);
+  }
+}
+
+function removeLaunchWorkspace(workspaceFilePath: string | undefined): void {
+  if (!workspaceFilePath) return;
+  try {
+    fs.rmSync(path.dirname(workspaceFilePath), { recursive: true, force: true });
+  } catch {
+    // best-effort cleanup
+  }
+}
+
+function removeControllerRuntime(controllerDevRoot: string): void {
+  try {
+    fs.rmSync(controllerDevRoot, { recursive: true, force: true });
+  } catch {
+    // best-effort cleanup
+  }
 }
 
 function copyDirSync(src: string, dest: string): void {

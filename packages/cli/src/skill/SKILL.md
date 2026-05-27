@@ -338,6 +338,10 @@ Prepare a profile first with:
 vscode-ext-test profile open <profile-name>
 ```
 
+Named profiles are backed by VS Code native profiles, so GitHub and Copilot
+authentication use the same account/secret storage as regular VS Code instead
+of a separate encrypted `--user-data-dir` store.
+
 If an authenticated profile stops behaving correctly after a VS Code update or
 install change, diagnose it before deleting it:
 

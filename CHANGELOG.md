@@ -10,6 +10,8 @@ file together.
 
 | Version | Date | Kind | Notes |
 | ------- | ---- | ---- | ----- |
+| 0.2.2 | 2026-05-27 | patch | Harden isolated profile controller startup and restart behavior |
+| 0.2.1 | 2026-05-27 | baseline | Baseline before automated controller extension versioning. |
 | 0.2.0 | 2026-04-30 | minor | Add extension-host diagnostic script RPC for live sessions |
 | 0.1.1 | 2026-04-29 | patch | Add automated extension build versioning workflow. |
 | 0.1.0 | 2026-04-29 | baseline | Baseline before automated extension build versioning. |
