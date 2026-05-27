@@ -131,8 +131,8 @@ coordinates. Stabilize the Dev Host window with resize/move steps first. To use 
 right-click to open it, then select the item with the popup menu step.
 Prefer QuickInput, progress, and notification wait/assertion steps over fixed waits.
 
-`vscode-ext-test init` also installs these instructions into downstream repos
-as `.github/skills/e2e-test-extension/SKILL.md`. Rerun init after upgrading the
+`vscode-ext-test install-into-project` also installs these instructions into downstream repos
+as `.github/skills/e2e-test-extension/SKILL.md`. Rerun install-into-project after upgrading the
 CLI to refresh that generated skill file; `repo-knowledge.md` is preserved.
 
 ### Assertions (Then)

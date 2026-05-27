@@ -48,7 +48,7 @@ export async function runCommand(opts: Record<string, string | boolean>): Promis
         `Features directory not found: ${featuresDir}\n` +
         (options.testId
           ? `Create .feature files in ${path.relative(cwd, featuresDir)}/`
-          : `Run 'vscode-ext-test init' to create example tests.`)
+          : `Run 'vscode-ext-test install-into-project' to create example tests.`)
       );
     }
     const featureFiles = fs.readdirSync(featuresDir).filter((f) => f.endsWith('.feature'));

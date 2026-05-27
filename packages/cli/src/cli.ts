@@ -63,8 +63,8 @@ program
   .action(liveCommand);
 
 program
-  .command('install')
-  .description('Install the controller extension into VS Code')
+  .command('install-into-profile')
+  .description('Install the controller extension into the current VS Code profile')
   .action(installCommand);
 
 program
@@ -73,15 +73,40 @@ program
   .action(updateCommand);
 
 program
-  .command('uninstall')
-  .description('Remove the controller extension from VS Code')
+  .command('uninstall-from-profile')
+  .description('Remove the controller extension from the current VS Code profile')
   .action(uninstallCommand);
 
 program
-  .command('init')
+  .command('install-into-project')
   .description('Scaffold tests/vscode-extension-tester/e2e/ with example .feature file and VS Code configs')
   .option('--features <dir>', 'Target directory for .feature files', 'tests/vscode-extension-tester/e2e')
   .action(initCommand);
+
+program
+  .command('install', { hidden: true })
+  .description('Deprecated alias for install-into-profile')
+  .action(() => {
+    console.warn('`vscode-ext-test install` is deprecated. Use `vscode-ext-test install-into-profile`.');
+    return installCommand();
+  });
+
+program
+  .command('uninstall', { hidden: true })
+  .description('Deprecated alias for uninstall-from-profile')
+  .action(() => {
+    console.warn('`vscode-ext-test uninstall` is deprecated. Use `vscode-ext-test uninstall-from-profile`.');
+    return uninstallCommand();
+  });
+
+program
+  .command('init', { hidden: true })
+  .description('Deprecated alias for install-into-project')
+  .option('--features <dir>', 'Target directory for .feature files', 'tests/vscode-extension-tester/e2e')
+  .action((opts: { features?: string }) => {
+    console.warn('`vscode-ext-test init` is deprecated. Use `vscode-ext-test install-into-project`.');
+    return initCommand(opts);
+  });
 
 const testsCmd = program
   .command('tests')

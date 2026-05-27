@@ -12,7 +12,7 @@ Here is an example of me asking Copilot to test the auto-completion of SQL state
 
 ## Quick Start
 
-Just init the extension project you want to enable this for, and a SKILLS.md file (and other artifacts) will be added and you are good to go.
+Install vscode-extension-tester into the extension project you want to test, and a SKILL.md file (and other artifacts) will be added so agents know how to use the framework.
 
 ```bash
 # Install globally
@@ -20,10 +20,10 @@ npm link  # from packages/cli/
 
 # Set it up to work in a project
 cd your-extension/
-vscode-ext-test init                     # scaffolds configs + installs controller
+vscode-ext-test install-into-project     # scaffolds configs + installs controller
 ```
 
-Rerun `vscode-ext-test init` after upgrading the CLI to refresh the generated
+Rerun `vscode-ext-test install-into-project` after upgrading the CLI to refresh the generated
 `.github/skills/e2e-test-extension/SKILL.md` instructions. Project-specific
 notes in `repo-knowledge.md` are preserved.
 
@@ -58,9 +58,9 @@ This launches a fresh, isolated VS Code instance with your extension loaded, exe
 vscode-ext-test run --reuse-named-profile sql-authenticated
 ```
 
-This reuses a previously prepared named profile (`sql-authenticated` in this example). Named profiles live under `tests/vscode-extension-tester/profiles/<name>/` and carry their own `user-data` and `extensions` directories, which means they preserve login sessions, settings, and installed extensions across runs.
+This reuses a previously prepared named profile (`sql-authenticated` in this example). Named profiles live under `tests/vscode-extension-tester/profiles/<name>/` and carry their own `user-data` and `extensions` directories, which means they preserve settings and installed extensions across runs.
 
-You want this whenever your tests depend on state that can't be set up automatically like for example, an OAuth sign-in to a third-party service, a database connection that requires interactive credentials, or specific VS Code settings that must be configured through the UI. Create a profile once with `vscode-ext-test profile open sql-authenticated`, set it up interactively, and then every subsequent `--reuse-named-profile sql-authenticated` run inherits that state without repeating the manual setup.
+For authentication on VS Code 1.120+, named profiles also share a CLI-owned auth store under `tests/vscode-extension-tester/auth-shared/`. This avoids VS Code's user-wide `.vscode-shared` storage from mixing encrypted GitHub/Copilot auth blobs across different `--user-data-dir` roots. Create a profile once with `vscode-ext-test profile open sql-authenticated`, set it up interactively, and then every subsequent `--reuse-named-profile sql-authenticated` run inherits the prepared state without repeating the manual setup.
 
 ## Build
 
@@ -78,7 +78,7 @@ npm run package
 
 Release artifacts are built by GitHub Actions on Windows so the packaged CLI includes both required runtime assets:
 
-* `assets/controller-extension.vsix` \- bundled controller extension installed by `vscode-ext-test install`
+* `assets/controller-extension.vsix` \- bundled controller extension installed by `vscode-ext-test install-into-profile`
 * `assets/native/win-x64/FlaUIBridge.exe` \- self\-contained native UI automation bridge for Windows CI agents
 
 To create a CLI release, bump the CLI package version, then push the matching
@@ -96,7 +96,7 @@ Downstream CI can install the released CLI directly from the tarball:
 
 ```bash
 npm install -g https://github.com/<org>/vscode-extension-tester/releases/download/v<version>/vscode-ext-test-<version>.tgz
-vscode-ext-test install
+vscode-ext-test install-into-profile
 vscode-ext-test run --features tests/vscode-extension-tester/e2e
 ```
 
@@ -119,12 +119,13 @@ writing files. Controller extension version history is tracked in
 
 | Command | Description |
 | ------- | ----------- |
-| `init` | Install controller extension, scaffold `.feature` file, `launch.json`, and `tasks.json` |
+| `install-into-project` | Install controller extension, scaffold `.feature` file, `launch.json`, `tasks.json`, and the generated skill |
+| `install-into-profile` | Install the controller extension into the current VS Code profile and check prerequisites (`gh`, `git`, VS Code CLI auto-discovery) |
+| `uninstall-from-profile` | Remove the controller extension from the current VS Code profile |
+| `update` | Reinstall the bundled controller extension into VS Code and every named vscode-extension-tester profile |
 | `run` | Execute `.feature` tests (dev mode or CI mode) |
 | `live` | Start or attach to VS Code once and execute Gherkin steps over JSONL stdin/stdout |
 | `tests add [context...]` | AI agent analyzes codebase, writes tests, explores the live extension, self-heals failures |
-| `install` | Install the controller extension + check prerequisites (`gh`, `git`, VS Code CLI auto-discovery) |
-| `uninstall` | Remove the controller extension |
 
 ### `run` Options
 

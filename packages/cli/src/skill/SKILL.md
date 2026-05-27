@@ -12,10 +12,10 @@ applyTo: "tests/vscode-extension-tester/**"
 
 Use this skill to create, run, and verify E2E tests for a VS Code extension.
 
-This file is installed into extension repos by `vscode-ext-test init` at
-`.github/skills/e2e-test-extension/SKILL.md`. Rerun `vscode-ext-test init`
+This file is installed into extension repos by `vscode-ext-test install-into-project` at
+`.github/skills/e2e-test-extension/SKILL.md`. Rerun `vscode-ext-test install-into-project`
 after upgrading the CLI to refresh these framework instructions; repo-specific
-knowledge belongs in `repo-knowledge.md`, which init preserves.
+knowledge belongs in `repo-knowledge.md`, which install-into-project preserves.
 
 ## Execution Modes
 
@@ -279,6 +279,12 @@ Prepare a profile first with:
 ```bash
 vscode-ext-test profile open <profile-name>
 ```
+
+On VS Code 1.120+, named profiles use a CLI-owned shared auth store under
+`tests/vscode-extension-tester/auth-shared/` so GitHub/Copilot and Microsoft
+auth can survive across multiple prepared profiles without using VS Code's global
+`.vscode-shared` store. If auth gets corrupted, close all profile windows and
+recreate/sign in the affected profiles with `vscode-ext-test profile open`.
 
 ## Available Gherkin Steps
 
@@ -688,9 +694,9 @@ and closes panels/sidebars. This ensures each scenario starts from the same base
 
 ## Repo-Specific Knowledge
 
-When you run `vscode-ext-test init`, a `repo-knowledge.md` file is created in
+When you run `vscode-ext-test install-into-project`, a `repo-knowledge.md` file is created in
 `.github/skills/e2e-test-extension/` alongside this SKILL.md. Unlike SKILL.md
-(which is overwritten on every `init` to stay current with framework updates),
+(which is overwritten on every `install-into-project` to stay current with framework updates),
 **`repo-knowledge.md` is never overwritten** — it is your persistent,
 repo-specific knowledge base.
 
