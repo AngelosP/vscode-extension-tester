@@ -41,6 +41,16 @@ const ADD_SYSTEM_PROMPT = `You are an expert VS Code extension test engineer. Yo
 
 AVAILABLE STEP DEFINITIONS (use ONLY these exact patterns):
 
+Given steps (setup):
+  Given the extension is in a clean state
+  Given a file "<path>" exists
+  Given a file "<path>" exists with content "<text>"
+  Given a file "<path>" exists with content:
+  Given a temp file "<name>" exists
+  Given a temp file "<name>" exists with content "<text>"
+  Given a temp file "<name>" exists with content:
+  Given I capture the output channel "<name>"
+
 When steps (actions):
   When I execute command "<commandId>"
   When I start command "<commandId>"
@@ -102,6 +112,7 @@ INPUT TARGETING RULES:
 - Use right-click steps to open context menus before selecting from the popup menu.
 - Use raw mouse coordinates only as a last resort when no command, selector, or accessible name can target the UI.
 - In a live session, raw Gherkin coordinates are relative to the full Dev Host window/screenshot, including title bar and borders. In normal batch runs, the same raw-coordinate steps are absolute screen coordinates.
+- Inline file content supports escaped quotes and common escapes (\\\", \\\\, \\n, \\r, and \\t); use \\\\ for literal backslashes, or prefer the with content: doc string form for JSON/multiline fixtures.
 
 Variables from .env can be used as \${VARIABLE_NAME} in step text.
 

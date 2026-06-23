@@ -671,12 +671,23 @@ Then the editor should contain "hello world"
 Use these for test setup when you don't need to test the actual dialog interaction:
 - `Given a file "<path>" exists` - create an empty file (relative to cwd or absolute)
 - `Given a file "<path>" exists with content "<text>"` - create a file with content
+- `Given a file "<path>" exists with content:` plus a doc string - create a file from JSON or multiline content
 - `Given a temp file "<name>" exists` - create in OS temp directory
 - `Given a temp file "<name>" exists with content "<text>"` - create temp file with content
+- `Given a temp file "<name>" exists with content:` plus a doc string - create a temp file from JSON or multiline content
 - `When I open file "<path>" in the editor` - open file directly (no Open dialog)
 - `When I delete file "<path>"` - delete a file
 - `Then the file "<path>" should exist` - assert file exists on disk
 - `Then the file "<path>" should contain "<text>"` - assert file content
+
+Inline file content supports escaped quotes and common escapes: `\"`, `\\`, `\n`, `\r`, and `\t`. Literal backslashes in inline content must be escaped as `\\`, so write Windows-style content as `C:\\temp\\new.txt`. For JSON or multiline fixtures, prefer a doc string:
+
+\`\`\`gherkin
+Given a file "fixture.json" exists with content:
+  """
+  {"kind":"customEditor","version":1}
+  """
+\`\`\`
 
 ### Clean State
 

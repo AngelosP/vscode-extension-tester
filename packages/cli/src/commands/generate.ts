@@ -234,6 +234,16 @@ function buildPrompt(ctx: ExtensionContext, memories: string, userData: string, 
   const stepDefs = `
 AVAILABLE STEP DEFINITIONS (you MUST only use these exact patterns):
 
+Given steps (setup):
+  Given the extension is in a clean state
+  Given a file "<path>" exists
+  Given a file "<path>" exists with content "<text>"
+  Given a file "<path>" exists with content:
+  Given a temp file "<name>" exists
+  Given a temp file "<name>" exists with content "<text>"
+  Given a temp file "<name>" exists with content:
+  Given I capture the output channel "<name>"
+
 When steps (actions):
   When I execute command "<commandId>"
   When I start command "<commandId>"
@@ -300,6 +310,7 @@ RULES:
 - If a command opens a QuickPick or InputBox, first wait for/inspect the QuickInput, then select by visible label or item id and enter text with QuickInput steps; these can use captured state or the visible workbench widget.
 - Prefer commands and stable webview selectors/data-testid values; use webview visible-text clicks when selectors are unavailable; use native accessible-name clicks next; use raw coordinates only as a last resort. Live-session raw coordinates are full Dev Host window/screenshot-relative; normal batch-run raw coordinates are absolute screen coordinates.
 - Use right-click steps to open context menus before selecting items from popup menus.
+- Inline file content supports escaped quotes and common escapes (\\\", \\\\, \\n, \\r, and \\t); use \\\\ for literal backslashes, or prefer the with content: doc string form for JSON/multiline fixtures.
 `;
 
   const commandList = ctx.commands.map((c) => {

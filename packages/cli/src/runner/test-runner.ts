@@ -190,7 +190,8 @@ export class TestRunner {
 
   private async runStep(step: ParsedStep, options: { captureFailureScreenshot?: boolean } = {}): Promise<StepResult> {
     const startTime = Date.now();
-    const resolvedText = this.resolveEnvVars(step.text);
+    const rawText = step.text;
+    const resolvedText = this.resolveEnvVars(rawText);
     const docString = step.docString ? this.resolveEnvVars(step.docString) : undefined;
     this.dispatchArtifacts = [];
 
@@ -200,7 +201,7 @@ export class TestRunner {
 
     try {
       const dispatchLog = await this.withStepTimeout(
-        this.dispatch(resolvedText, docString),
+        this.dispatch(resolvedText, docString, rawText),
         resolvedText,
       );
 
@@ -278,7 +279,7 @@ export class TestRunner {
     }
   }
 
-  private async dispatch(text: string, docString?: string): Promise<string | void> {
+  private async dispatch(text: string, docString?: string, rawText = text): Promise<string | void> {
     let match: RegExpMatchArray | null;
 
     // ─── Reset state ───
@@ -289,24 +290,24 @@ export class TestRunner {
     }
 
     // ─── Utility: create file with content (inline) ───
-    match = text.match(/^a file "([^"]+)" exists with content "([^"]+)"$/);
-    if (match) { this.createFile(match[1], match[2]); return; }
+    match = rawText.match(/^a file "([^"]+)" exists with content "((?:\\.|[^"\\])*)"$/);
+    if (match) { this.createFile(this.resolveEnvVars(match[1]), this.resolveEnvVars(unescapeQuotedStepText(match[2]))); return; }
 
     // ─── Utility: create file with content (doc string) ───
-    match = text.match(/^a file "([^"]+)" exists with content:?$/);
-    if (match && docString !== undefined) { this.createFile(match[1], docString); return; }
+    match = rawText.match(/^a file "([^"]+)" exists with content:?$/);
+    if (match && docString !== undefined) { this.createFile(this.resolveEnvVars(match[1]), docString); return; }
 
     // ─── Utility: create empty file ───
     match = text.match(/^a file "([^"]+)" exists$/);
     if (match) { this.createFile(match[1], ''); return; }
 
     // ─── Utility: create temp file with content (inline) ───
-    match = text.match(/^a temp file "([^"]+)" exists with content "([^"]+)"$/);
-    if (match) { this.createTempFile(match[1], match[2]); return; }
+    match = rawText.match(/^a temp file "([^"]+)" exists with content "((?:\\.|[^"\\])*)"$/);
+    if (match) { this.createTempFile(this.resolveEnvVars(match[1]), this.resolveEnvVars(unescapeQuotedStepText(match[2]))); return; }
 
     // ─── Utility: create temp file with content (doc string) ───
-    match = text.match(/^a temp file "([^"]+)" exists with content:?$/);
-    if (match && docString !== undefined) { this.createTempFile(match[1], docString); return; }
+    match = rawText.match(/^a temp file "([^"]+)" exists with content:?$/);
+    if (match && docString !== undefined) { this.createTempFile(this.resolveEnvVars(match[1]), docString); return; }
 
     // ─── Utility: create empty temp file ───
     match = text.match(/^a temp file "([^"]+)" exists$/);
@@ -375,12 +376,13 @@ export class TestRunner {
     }
 
     // ─── Utility: file should contain ───
-    match = text.match(/^the file "([^"]+)" should contain "([^"]+)"$/);
+    match = rawText.match(/^the file "([^"]+)" should contain "((?:\\.|[^"\\])*)"$/);
     if (match) {
-      const p = this.resolveFilePath(match[1]);
+      const p = this.resolveFilePath(this.resolveEnvVars(match[1]));
       if (!fs.existsSync(p)) throw new Error(`File not found: ${p}`);
       const content = fs.readFileSync(p, 'utf-8');
-      if (!content.includes(match[2])) throw new Error(`File "${p}" does not contain "${match[2]}"`);
+      const expected = this.resolveEnvVars(unescapeQuotedStepText(match[2]));
+      if (!content.includes(expected)) throw new Error(`File "${p}" does not contain "${expected}"`);
       return;
     }
 
@@ -1608,6 +1610,19 @@ function sanitizeFilename(name: string, maxLength = 120): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function unescapeQuotedStepText(value: string): string {
+  return value.replace(/\\(["\\nrt])/g, (_match, escaped: string) => {
+    switch (escaped) {
+      case '"': return '"';
+      case '\\': return '\\';
+      case 'n': return '\n';
+      case 'r': return '\r';
+      case 't': return '\t';
+      default: return `\\${escaped}`;
+    }
+  });
 }
 
 function normalizeQuickInputText(text: string): string {

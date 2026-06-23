@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ControllerClient } from '../../src/runner/controller-client.js';
 import type { ParsedFeature, ParsedScenario, ParsedStep } from '../../src/runner/gherkin-parser.js';
+import { GherkinParser } from '../../src/runner/gherkin-parser.js';
 import { TestRunner } from '../../src/runner/test-runner.js';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -943,9 +944,86 @@ describe('TestRunner', () => {
       expect(fs.readFileSync(filePath, 'utf-8')).toBe('hello world');
     });
 
+    it('should create a file with escaped quote content from parsed Gherkin', async () => {
+      const filePath = path.join(tmpDir, 'test-json-inline.json');
+      const parser = new GherkinParser();
+      const feature = parser.parse(`
+Feature: Inline JSON
+  Scenario: Create fixture
+    Given a file "${filePath}" exists with content "{\\"kind\\":\\"customEditor\\",\\"version\\":1}"
+`);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('{"kind":"customEditor","version":1}');
+    });
+
+    it('should decode common escapes in inline file content without double-decoding', async () => {
+      const filePath = path.join(tmpDir, 'escaped-content.txt');
+
+      const feature = makeFeature('Test', [
+        makeScenario('Escaped Content', [
+          makeStep('Given ', `a file "${filePath}" exists with content "line one\\nline two\\tpath C:\\\\temp\\\\new.txt"`),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('line one\nline two\tpath C:\\temp\\new.txt');
+    });
+
+    it('should preserve backslashes from testData variables in inline file content', async () => {
+      const filePath = path.join(tmpDir, 'test-data-content.txt');
+      const customRunner = new TestRunner(client, { FIXTURE_TEXT: 'C:\\temp\\new.txt' });
+
+      const feature = makeFeature('Test', [
+        makeScenario('Variable Content', [
+          makeStep('Given ', `a file "${filePath}" exists with content "\${FIXTURE_TEXT}"`),
+        ]),
+      ]);
+
+      await customRunner.runFeature(feature);
+
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('C:\\temp\\new.txt');
+    });
+
+    it('should preserve literal backslashes in inline content when escaped', async () => {
+      const filePath = path.join(tmpDir, 'literal-backslashes.txt');
+
+      const feature = makeFeature('Test', [
+        makeScenario('Literal Backslashes', [
+          makeStep('Given ', `a file "${filePath}" exists with content "C:\\\\temp\\\\new.txt"`),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('C:\\temp\\new.txt');
+    });
+
+    it('should create a temp file with escaped quote content', async () => {
+      const tempFileName = `vscode-ext-test-${Date.now()}-escaped.json`;
+      const tempFilePath = path.join(os.tmpdir(), tempFileName);
+
+      try {
+        const feature = makeFeature('Test', [
+          makeScenario('Create Temp File', [
+            makeStep('Given ', `a temp file "${tempFileName}" exists with content "{\\"temp\\":true}"`),
+          ]),
+        ]);
+
+        await runner.runFeature(feature);
+
+        expect(fs.readFileSync(tempFilePath, 'utf-8')).toBe('{"temp":true}');
+      } finally {
+        fs.rmSync(tempFilePath, { force: true });
+      }
+    });
+
     it('should create a file with doc string content (for JSON / quotes)', async () => {
       const filePath = path.join(tmpDir, 'test-json.sqlx');
-      const jsonContent = '{"kind":"sqlx","version":1,"state":{"sections":[{"type":"sql","query":"SELECT 1"}]}}';
+      const jsonContent = '{"kind":"sqlx","version":1,"state":{"sections":[{"type":"sql","query":"SELECT 1"}]}}\nsecond line with \\n preserved';
 
       const feature = makeFeature('Test', [
         makeScenario('Create JSON File', [
@@ -957,6 +1035,21 @@ describe('TestRunner', () => {
 
       expect(fs.existsSync(filePath)).toBe(true);
       expect(fs.readFileSync(filePath, 'utf-8')).toBe(jsonContent);
+    });
+
+    it('should preserve repo-relative paths when creating inline content', async () => {
+      const relativePath = path.join('__test_tmp__', 'relative-file.txt');
+      const filePath = path.resolve(process.cwd(), relativePath);
+
+      const feature = makeFeature('Test', [
+        makeScenario('Create Relative File', [
+          makeStep('Given ', `a file "${relativePath}" exists with content "relative content"`),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('relative content');
     });
 
     it('should create an empty file', async () => {
@@ -1027,6 +1120,37 @@ describe('TestRunner', () => {
       ]);
 
       const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+    });
+
+    it('should assert file contains escaped quote text', async () => {
+      const filePath = path.join(tmpDir, 'content-json.txt');
+      fs.writeFileSync(filePath, '{"kind":"customEditor"}', 'utf-8');
+
+      const feature = makeFeature('Test', [
+        makeScenario('File Contains Escaped Quote', [
+          makeStep('Then ', `the file "${filePath}" should contain "\\"kind\\":\\"customEditor\\""`),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+    });
+
+    it('should preserve backslashes from testData variables in file contains assertions', async () => {
+      const filePath = path.join(tmpDir, 'content-path.txt');
+      fs.writeFileSync(filePath, 'Saved path: C:\\temp\\new.txt', 'utf-8');
+      const customRunner = new TestRunner(client, { EXPECTED_PATH: 'C:\\temp\\new.txt' });
+
+      const feature = makeFeature('Test', [
+        makeScenario('File Contains Variable Path', [
+          makeStep('Then ', `the file "${filePath}" should contain "\${EXPECTED_PATH}"`),
+        ]),
+      ]);
+
+      const result = await customRunner.runFeature(feature);
 
       expect(result.scenarios[0].status).toBe('passed');
     });

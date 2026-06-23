@@ -70,7 +70,20 @@ vscode-ext-test run --attach-devhost --test-id smoke-test
 | `Given the extension is in a clean state` | Reset UI: close all editors, dismiss notifications, clear output channels |
 | `Given a file "<path>" exists` | Create an empty file for test setup |
 | `Given a file "<path>" exists with content "<text>"` | Create a file with content |
+| `Given a file "<path>" exists with content:` | Create a file from a doc string; use this for JSON or multiline content |
+| `Given a temp file "<name>" exists` | Create an empty file in the OS temp directory |
+| `Given a temp file "<name>" exists with content "<text>"` | Create a temp file with content |
+| `Given a temp file "<name>" exists with content:` | Create a temp file from a doc string; use this for JSON or multiline content |
 | `Given I capture the output channel "<name>"` | Declare an output channel to capture |
+
+Inline file content supports escaped quotes and common escapes such as `\"`, `\\`, `\n`, `\r`, and `\t`. Literal backslashes in inline content must be escaped as `\\`, so write Windows-style content as `C:\\temp\\new.txt`. For JSON or multiline fixtures, prefer a doc string:
+
+```gherkin
+Given a file "fixture.json" exists with content:
+  """
+  {"kind":"customEditor","version":1}
+  """
+```
 
 ### Actions (When)
 
