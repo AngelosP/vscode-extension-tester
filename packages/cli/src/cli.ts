@@ -69,7 +69,7 @@ program
 
 program
   .command('update')
-  .description('Update the controller extension in VS Code and all named profiles')
+  .description('Update the controller extension in VS Code, all named profiles, and the VS Code test runtime')
   .action(updateCommand);
 
 program

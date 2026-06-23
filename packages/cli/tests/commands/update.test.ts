@@ -3,15 +3,20 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-const { mockResolveVSCodeCli, mockExecVSCodeCliSync } = vi.hoisted(() => ({
+const { mockResolveVSCodeCli, mockExecVSCodeCliSync, mockDownloadVSCode } = vi.hoisted(() => ({
   mockResolveVSCodeCli: vi.fn(),
   mockExecVSCodeCliSync: vi.fn(),
+  mockDownloadVSCode: vi.fn(),
 }));
 
 vi.mock('../../src/utils/vscode-cli.js', () => ({
   resolveVSCodeCli: mockResolveVSCodeCli,
   execVSCodeCliSync: mockExecVSCodeCliSync,
   formatVSCodeCliMissingMessage: () => 'VS Code CLI not found.',
+}));
+
+vi.mock('@vscode/test-electron', () => ({
+  download: mockDownloadVSCode,
 }));
 
 const { updateCommand } = await import('../../src/commands/update.js');
@@ -48,12 +53,19 @@ describe('updateCommand', () => {
 
     mockResolveVSCodeCli.mockReset();
     mockExecVSCodeCliSync.mockReset();
+    mockDownloadVSCode.mockReset();
     mockResolveVSCodeCli.mockReturnValue({
       command: 'code.cmd',
       displayName: 'VS Code',
       source: 'path',
       variant: 'stable',
       requiresShell: true,
+    });
+    mockDownloadVSCode.mockImplementation(async ({ cachePath }: { cachePath?: string } = {}) => {
+      const installDir = path.join(cachePath ?? path.join(process.cwd(), '.vscode-test'), 'vscode-win32-x64-archive-1.123.0');
+      fs.mkdirSync(installDir, { recursive: true });
+      fs.writeFileSync(path.join(installDir, 'is-complete'), '', 'utf-8');
+      return path.join(installDir, 'Code.exe');
     });
 
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -312,6 +324,57 @@ describe('updateCommand', () => {
     const metadata = JSON.parse(fs.readFileSync(path.join(extensionsDir, 'extensions.json'), 'utf-8')) as Array<{ relativeLocation?: string }>;
     expect(metadata.map((entry) => entry.relativeLocation)).toEqual([newControllerFolder]);
     expect(process.exitCode).toBeUndefined();
+  });
+
+  it('refreshes the cached VS Code test runtime without touching saved profile state', async () => {
+    const oldCacheDir = path.join(tempDir, '.vscode-test', 'vscode-win32-x64-archive-1.121.0');
+    const sharedCacheDir = path.join(tempDir, '.vscode-test', 'extensions');
+    const profileSentinel = path.join(tempDir, 'tests', 'vscode-extension-tester', 'profiles', 'profile-one', 'user-data', 'settings.json');
+    fs.mkdirSync(oldCacheDir, { recursive: true });
+    fs.mkdirSync(sharedCacheDir, { recursive: true });
+    fs.writeFileSync(path.join(oldCacheDir, 'Code.exe'), 'old', 'utf-8');
+    fs.writeFileSync(path.join(sharedCacheDir, 'keep.txt'), 'keep', 'utf-8');
+    fs.writeFileSync(profileSentinel, '{"saved":true}', 'utf-8');
+
+    const installedFolder = 'vscode-extension-tester.vscode-extension-tester-controller-0.2.0';
+    mockExecVSCodeCliSync.mockImplementation((_cli, args: string[]) => {
+      if (args.includes('--extensions-dir')) {
+        const extensionsDirArg = args[args.indexOf('--extensions-dir') + 1];
+        createControllerManifest(extensionsDirArg, installedFolder);
+      }
+      return '';
+    });
+
+    await updateCommand();
+
+    const expectedCachePath = path.join(tempDir, '.vscode-test');
+    expect(mockDownloadVSCode).toHaveBeenCalledWith({ version: 'stable', cachePath: expectedCachePath });
+    expect(fs.existsSync(oldCacheDir)).toBe(false);
+    expect(fs.existsSync(path.join(expectedCachePath, 'vscode-win32-x64-archive-1.123.0', 'is-complete'))).toBe(true);
+    expect(fs.existsSync(path.join(sharedCacheDir, 'keep.txt'))).toBe(true);
+    expect(fs.readFileSync(profileSentinel, 'utf-8')).toBe('{"saved":true}');
+    expect(fs.readdirSync(expectedCachePath).some((entry) => entry.startsWith('.vscode-download-backup-'))).toBe(false);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('restores the previous VS Code test runtime cache when refresh fails', async () => {
+    fs.rmSync(path.join(tempDir, 'tests', 'vscode-extension-tester', 'profiles'), { recursive: true, force: true });
+    const oldCacheDir = path.join(tempDir, '.vscode-test', 'vscode-win32-x64-archive-1.121.0');
+    const partialCacheDir = path.join(tempDir, '.vscode-test', 'vscode-win32-x64-archive-1.123.0');
+    fs.mkdirSync(oldCacheDir, { recursive: true });
+    fs.writeFileSync(path.join(oldCacheDir, 'Code.exe'), 'old', 'utf-8');
+    mockExecVSCodeCliSync.mockReturnValue('');
+    mockDownloadVSCode.mockImplementation(async ({ cachePath }: { cachePath?: string } = {}) => {
+      fs.mkdirSync(path.join(cachePath ?? path.join(process.cwd(), '.vscode-test'), 'vscode-win32-x64-archive-1.123.0'), { recursive: true });
+      throw new Error('offline');
+    });
+
+    await updateCommand();
+
+    expect(fs.existsSync(path.join(oldCacheDir, 'Code.exe'))).toBe(true);
+    expect(fs.existsSync(partialCacheDir)).toBe(false);
+    expect(fs.readdirSync(path.join(tempDir, '.vscode-test')).some((entry) => entry.startsWith('.vscode-download-backup-'))).toBe(false);
+    expect(process.exitCode).toBe(1);
   });
 });
 

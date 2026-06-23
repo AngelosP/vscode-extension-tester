@@ -13,9 +13,18 @@ interface ControllerBackup {
   extensionsJsonBackedUp: boolean;
 }
 
+interface VSCodeCacheBackup {
+  root: string;
+  entries: string[];
+}
+
+const VSCODE_TEST_CACHE_DIR = '.vscode-test';
+const VSCODE_DOWNLOAD_DIR_PATTERN = /^vscode-(?:[a-z0-9-]+-)?[0-9]+(?:\.[0-9]+)+$/;
+
 /**
  * Update the controller extension in VS Code (global) and in every named
- * profile by reinstalling from the bundled VSIX with --force.
+ * profile by reinstalling from the bundled VSIX with --force. Also refreshes
+ * the isolated VS Code test runtime cache used by launch-mode e2e tests.
  */
 export async function updateCommand(): Promise<void> {
   const vsixPath = getVsixPath();
@@ -96,11 +105,78 @@ export async function updateCommand(): Promise<void> {
     }
   }
 
+  if (!(await updateVSCodeTestRuntimeCache())) {
+    hadFailure = true;
+  }
+
   if (hadFailure) {
     process.exitCode = 1;
   }
 
-  console.log(`\nDone. Updated ${updated} location(s).`);
+  console.log(`\nDone. Updated ${updated} controller location(s).`);
+}
+
+async function updateVSCodeTestRuntimeCache(): Promise<boolean> {
+  const cachePath = path.resolve(VSCODE_TEST_CACHE_DIR);
+  console.log('\nUpdating VS Code test runtime (stable)...');
+
+  const backup = quarantineVSCodeDownloadDirs(cachePath);
+  try {
+    const { download } = await import('@vscode/test-electron');
+    const vscodeExecutablePath = await download({ version: 'stable', cachePath });
+    discardVSCodeCacheBackup(backup);
+    console.log(`  Ready: ${vscodeExecutablePath}`);
+    return true;
+  } catch (error) {
+    restoreVSCodeCacheBackup(backup, cachePath);
+    console.error(`  Warning: VS Code test runtime update failed - ${formatError(error)}`);
+    return false;
+  }
+}
+
+function quarantineVSCodeDownloadDirs(cachePath: string): VSCodeCacheBackup | undefined {
+  const entries = listVSCodeDownloadDirs(cachePath);
+  if (entries.length === 0) return undefined;
+
+  const backupRoot = fs.mkdtempSync(path.join(cachePath, '.vscode-download-backup-'));
+  for (const entry of entries) {
+    fs.renameSync(path.join(cachePath, entry), path.join(backupRoot, entry));
+  }
+
+  return { root: backupRoot, entries };
+}
+
+function discardVSCodeCacheBackup(backup: VSCodeCacheBackup | undefined): void {
+  if (!backup) return;
+  fs.rmSync(backup.root, { recursive: true, force: true });
+}
+
+function restoreVSCodeCacheBackup(backup: VSCodeCacheBackup | undefined, cachePath: string): void {
+  if (!backup) return;
+
+  for (const entry of listVSCodeDownloadDirs(cachePath)) {
+    fs.rmSync(path.join(cachePath, entry), { recursive: true, force: true });
+  }
+
+  for (const entry of backup.entries) {
+    fs.renameSync(path.join(backup.root, entry), path.join(cachePath, entry));
+  }
+
+  fs.rmSync(backup.root, { recursive: true, force: true });
+}
+
+function listVSCodeDownloadDirs(cachePath: string): string[] {
+  try {
+    return fs.readdirSync(cachePath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && VSCODE_DOWNLOAD_DIR_PATTERN.test(entry.name))
+      .map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function hasControllerExtension(extensionsDir: string): boolean {

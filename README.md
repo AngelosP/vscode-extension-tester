@@ -124,7 +124,7 @@ writing files. Controller extension version history is tracked in
 | `install-into-project` | Install controller extension, scaffold `.feature` file, `launch.json`, `tasks.json`, and the generated skill |
 | `install-into-profile` | Install the controller extension into the current VS Code profile and check prerequisites (`gh`, `git`, VS Code CLI auto-discovery) |
 | `uninstall-from-profile` | Remove the controller extension from the current VS Code profile |
-| `update` | Reinstall the bundled controller extension into VS Code and every named vscode-extension-tester profile |
+| `update` | Reinstall the bundled controller extension into VS Code and every named profile, then refresh the cached VS Code test runtime used by isolated runs |
 | `run` | Execute `.feature` tests (dev mode or CI mode) |
 | `live` | Start or attach to VS Code once and execute Gherkin steps over JSONL stdin/stdout |
 | `tests add [context...]` | AI agent analyzes codebase, writes tests, explores the live extension, self-heals failures |
