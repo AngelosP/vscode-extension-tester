@@ -301,6 +301,37 @@ describe('CdpClient', () => {
     }
   });
 
+  it('continues past JSON artifact errors from unrelated webviews', async () => {
+    let attachCount = 0;
+    mockCdpFactoryRef.current.mockImplementation(async () => {
+      const instance = createMockClient();
+      let contextHandler: ((params: { context: { id: number } }) => void) | undefined;
+      instance.on.mockImplementation((event: string, handler: typeof contextHandler) => {
+        if (event === 'Runtime.executionContextCreated') contextHandler = handler;
+      });
+      instance.Runtime.enable.mockImplementation(() => {
+        contextHandler?.({ context: { id: 1 } });
+        return Promise.resolve(undefined);
+      });
+      attachCount++;
+      if (attachCount === 1) {
+        instance.Runtime.evaluate.mockResolvedValue({ result: { value: { __vscodeExtTestJsonArtifactError: '$.snapshot is undefined' } } });
+      } else {
+        instance.Runtime.evaluate.mockResolvedValue({ result: { value: { measures: { readyMs: 123 } } } });
+      }
+      return instance;
+    });
+    (mockCdpFactoryRef.current as any).List = vi.fn().mockResolvedValue([
+      { type: 'page', url: 'vscode-webview://first', id: 'target-1', title: 'Unrelated' },
+      { type: 'page', url: 'vscode-webview://second', id: 'target-2', title: 'Perf Webview' },
+    ]);
+
+    const value = await client.evaluateJsonArtifactInWebview('strictExpression()');
+
+    expect(value).toEqual({ measures: { readyMs: 123 } });
+    expect(attachCount).toBe(2);
+  });
+
   it('uses DOM events before mouse dispatch for explicit webview selector clicks', async () => {
     setupSingleWebviewContext();
     mockClientRef.current.Runtime.evaluate.mockResolvedValue({ result: { value: true } });

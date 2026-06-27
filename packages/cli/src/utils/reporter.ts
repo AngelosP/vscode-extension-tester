@@ -83,7 +83,12 @@ export function writeReportFile(result: TestRunResult, extensionPath: string, me
 
   const suffix = metadata ? `-${toFileTimestamp(metadata.timestamp)}` : '';
   const reportPath = path.join(dir, `report${suffix}.md`);
-  const md = generateMarkdown(result, metadata);
+  const cwd = path.resolve(extensionPath);
+  const artifacts = collectSerializableArtifacts(result, cwd);
+  const screenshots = artifacts
+    .filter((artifact) => isScreenshotKind(artifact.kind) && artifact.path)
+    .map((artifact) => artifact.path!);
+  const md = generateMarkdown(result, metadata, screenshots, undefined, artifacts);
   fs.writeFileSync(reportPath, md, 'utf-8');
   return reportPath;
 }

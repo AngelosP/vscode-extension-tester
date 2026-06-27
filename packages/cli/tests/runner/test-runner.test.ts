@@ -111,6 +111,7 @@ function resetMockCdp(): void {
     getWebviewBodyText: vi.fn().mockResolvedValue(''),
     getTextInWebview: vi.fn().mockResolvedValue(''),
     evaluateInWebview: vi.fn().mockResolvedValue(undefined),
+    evaluateJsonArtifactInWebview: vi.fn().mockResolvedValue(undefined),
     clickInWebviewBySelector: vi.fn().mockResolvedValue(undefined),
     clickInWebviewByAccessibleText: vi.fn().mockResolvedValue(undefined),
     focusInWebviewBySelector: vi.fn().mockResolvedValue(undefined),
@@ -1645,7 +1646,7 @@ Feature: Inline JSON
     it('should collect a JSON artifact from a webview expression', async () => {
       const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-json-'));
       const jsonRunner = new TestRunner(client, {}, artifactsDir);
-      getMockCdp().evaluateInWebview.mockResolvedValue({ measures: { openToReadyMs: 123 }, marks: { ready: 456 } });
+      getMockCdp().evaluateJsonArtifactInWebview.mockResolvedValue({ measures: { openToReadyMs: 123 }, marks: { ready: 456 } });
       try {
         const feature = makeFeature('Test', [
           makeScenario('Collect webview JSON', [
@@ -1661,7 +1662,7 @@ Feature: Inline JSON
         expect(artifact?.source).toBe('webview');
         expect(artifact?.path && fs.existsSync(artifact.path)).toBe(true);
         expect(JSON.parse(fs.readFileSync(artifact!.path!, 'utf-8'))).toEqual({ measures: { openToReadyMs: 123 }, marks: { ready: 456 } });
-        expect(getMockCdp().evaluateInWebview.mock.calls[0][0]).toContain('window.__e2e.perf.snapshot()');
+        expect(getMockCdp().evaluateJsonArtifactInWebview.mock.calls[0][0]).toContain('window.__e2e.perf.snapshot()');
       } finally {
         jsonRunner.cleanup();
         fs.rmSync(artifactsDir, { recursive: true, force: true });
@@ -1671,7 +1672,7 @@ Feature: Inline JSON
     it('should fail JSON artifact collection when the webview expression returns null', async () => {
       const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-json-'));
       const jsonRunner = new TestRunner(client, {}, artifactsDir);
-      getMockCdp().evaluateInWebview.mockResolvedValue(null);
+      getMockCdp().evaluateJsonArtifactInWebview.mockResolvedValue(null);
       try {
         const feature = makeFeature('Test', [
           makeScenario('Collect null', [

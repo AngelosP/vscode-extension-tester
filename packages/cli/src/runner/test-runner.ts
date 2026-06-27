@@ -979,7 +979,7 @@ export class TestRunner {
   }
 
   private async collectWebviewJsonArtifact(name: string, expression: string, webviewTitle?: string, timeoutMs?: number): Promise<void> {
-    const result = await (await this.requireCdp()).evaluateInWebview(strictJsonExpression(expression), webviewTitle, { timeoutMs });
+    const result = await (await this.requireCdp()).evaluateJsonArtifactInWebview(strictJsonExpression(expression), webviewTitle, { timeoutMs });
     const value = assertJsonArtifactValue(result, `Webview JSON artifact "${name}"`);
     this.dispatchArtifacts.push(this.writeJsonArtifact(name, value, 'webview'));
   }

@@ -756,6 +756,46 @@ export class CdpClient {
   }
 
   /**
+   * Evaluate a strict JSON artifact expression in webviews. Unlike the generic
+   * diagnostic eval, JSON-artifact error sentinels from one target do not stop
+   * probing other matching webviews. This prevents an unrelated open webview
+   * from failing a collector before the intended webview is tried.
+   */
+  async evaluateJsonArtifactInWebview(expression: string, webviewTitle?: string, options: CdpEvaluationOptions = {}): Promise<unknown> {
+    const targets = await this.getWebviewTargets(webviewTitle, 5_000);
+    if (targets.length === 0) {
+      throw new Error(
+        webviewTitle
+          ? `No webview found matching title "${webviewTitle}". Open the webview first, or check the spelling.`
+          : 'No webviews are currently open.',
+      );
+    }
+
+    let lastError: Error | undefined;
+    const artifactErrors: string[] = [];
+    for (const target of targets) {
+      try {
+        const value = await this.withWebviewClient(target.id, async (wv) => {
+          return await this.evaluateAcrossFrames(wv, expression, options);
+        }, options.timeoutMs ? { operationTimeoutMs: options.timeoutMs, retries: 1, retryOperationTimeouts: false } : undefined);
+        if (value === null || value === undefined) continue;
+        if (isJsonArtifactErrorValue(value)) {
+          artifactErrors.push(`${target.title || target.url}: ${value.__vscodeExtTestJsonArtifactError}`);
+          continue;
+        }
+        return value;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
+    }
+    if (artifactErrors.length > 0) {
+      return { __vscodeExtTestJsonArtifactError: artifactErrors.join('; ') };
+    }
+    if (lastError) throw lastError;
+    return undefined;
+  }
+
+  /**
    * Click an element inside a webview by CSS selector. If `webviewTitle` is
    * provided, the search is restricted to webviews whose title matches.
    * Throws if the element is not found in any matching webview.
@@ -1695,6 +1735,14 @@ function buttonMask(button: CdpMouseButton): number {
 
 function isTimeoutError(error: Error): boolean {
   return /timed out after \d+ms/.test(error.message);
+}
+
+function isJsonArtifactErrorValue(value: unknown): value is { __vscodeExtTestJsonArtifactError: string } {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    typeof (value as { __vscodeExtTestJsonArtifactError?: unknown }).__vscodeExtTestJsonArtifactError === 'string'
+  );
 }
 
 /**

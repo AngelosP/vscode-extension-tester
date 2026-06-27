@@ -148,8 +148,8 @@ writing files. Controller extension version history is tracked in
 | `--warmup <n>` | `0` | Number of unmeasured warmup iterations |
 | `--env <KEY=VALUE>` | - | Environment variable for launched VS Code; repeatable |
 | `--vscode-arg <arg>` | - | Extra VS Code launch argument; repeatable |
-| `--collect-webview-json <expr>` | - | Collect a webview JSON artifact after each scenario; repeatable |
-| `--collect-extension-host-json <expr>` | - | Collect an extension-host JSON artifact after each scenario; repeatable |
+| `--collect-webview-json <expr>` | - | Collect a webview JSON artifact after each passing scenario; repeatable |
+| `--collect-extension-host-json <expr>` | - | Collect an extension-host JSON artifact after each passing scenario; repeatable |
 | `--timeout <ms>` | `30000` | Per-step timeout |
 | `--no-build` | - | Skip building the extension before running |
 | `--paused` | `false` | Set up the environment but pause before running tests |

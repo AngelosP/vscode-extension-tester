@@ -249,6 +249,36 @@ describe('reporter', () => {
       expect(content).toContain('Warning: Could not capture failure screenshot');
     });
 
+    it('should include generic artifacts in timestamped markdown reports', () => {
+      const artifactPath = path.join(tmpDir, 'tests', 'vscode-extension-tester', 'runs', 'run-1', 'iteration-001', 'json-artifacts', 'Scenario', 'webview-perf.json');
+      fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+      fs.writeFileSync(artifactPath, '{}', 'utf-8');
+      const base = makeRunResult();
+      const result: TestRunResult = {
+        ...base,
+        features: [{
+          ...base.features[0],
+          scenarios: [{
+            ...base.features[0].scenarios[0],
+            steps: [{
+              ...base.features[0].scenarios[0].steps[0],
+              artifacts: {
+                screenshots: [],
+                logs: [{ kind: 'json', name: 'webview-perf', source: 'webview', path: artifactPath, label: 'webview-perf' }],
+                warnings: [],
+              },
+            }],
+          }],
+        }],
+      };
+
+      const reportPath = writeReportFile(result, tmpDir, testMetadata);
+      const content = fs.readFileSync(reportPath, 'utf-8');
+
+      expect(content).toContain('## Artifacts');
+      expect(content).toContain('webview-perf');
+    });
+
     it('should include run metadata in markdown', () => {
       const reportPath = writeReportFile(makeRunResult(), tmpDir, testMetadata);
       const content = fs.readFileSync(reportPath, 'utf-8');
