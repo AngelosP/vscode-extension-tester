@@ -70,6 +70,24 @@ export interface TestRunResult {
   readonly totalFailed: number;
   readonly totalSkipped: number;
   readonly durationMs: number;
+  readonly iterations?: IterationResult[];
+  readonly artifacts?: StepArtifact[];
+}
+
+export type IterationPhase = 'warmup' | 'measured';
+
+export interface IterationMetadata {
+  readonly phase: IterationPhase;
+  readonly index: number;
+  readonly label: string;
+  readonly artifactsDir?: string;
+}
+
+export interface IterationResult extends TestRunResult {
+  readonly phase: IterationPhase;
+  readonly index: number;
+  readonly label: string;
+  readonly artifactsDir?: string;
 }
 
 export type ScreenshotPolicy = 'always' | 'onFailure' | 'never';
@@ -78,6 +96,9 @@ export type StepArtifactKind =
   | 'screenshot'
   | 'failure-screenshot'
   | 'final-screenshot'
+  | 'json'
+  | 'trace'
+  | 'perf-summary'
   | 'output-log'
   | 'log-manifest'
   | 'host-log'
@@ -86,6 +107,9 @@ export type StepArtifactKind =
 export interface StepArtifact {
   readonly kind: StepArtifactKind;
   readonly path?: string;
+  readonly name?: string;
+  readonly source?: 'webview' | 'extension-host' | 'runner' | 'cdp';
+  readonly iteration?: IterationMetadata;
   readonly label?: string;
   readonly message?: string;
 }
@@ -173,6 +197,12 @@ export interface RunSingleStepOptions {
   readonly screenshotPolicy?: ScreenshotPolicy;
   readonly includeState?: boolean;
   readonly captureLogs?: boolean;
+}
+
+export interface JsonCollectorSpec {
+  readonly name: string;
+  readonly source: 'webview' | 'extension-host';
+  readonly expression: string;
 }
 
 export interface LiveSessionOptions {
@@ -346,6 +376,20 @@ export interface RunOptions {
   recordOnFailure: boolean;
   reporter: 'console' | 'json' | 'html';
   timeout: number;
+
+  // ─── Performance / artifacts ───
+  /** If true, write aggregate performance summaries from collected JSON artifacts. */
+  perf?: boolean;
+  /** Number of measured iterations. Defaults to 1. */
+  iterations?: number;
+  /** Number of unmeasured warmup iterations. Defaults to 0. */
+  warmup?: number;
+  /** Environment variables to pass to a launched VS Code process. Ignored in attach mode. */
+  env?: Record<string, string>;
+  /** Additional VS Code command-line arguments for launch mode. Ignored in attach mode. */
+  vscodeArgs?: string[];
+  /** JSON artifact collectors to run automatically after each measured scenario. */
+  jsonCollectors?: JsonCollectorSpec[];
 
   // ─── Profile strategy (mutually exclusive, launch mode only) ───
   reuseNamedProfile?: string;

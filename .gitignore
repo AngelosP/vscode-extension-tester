@@ -28,6 +28,7 @@ tests/vscode-extension-tester/profiles/
 packages/controller-extension/tests/vscode-extension-tester/runs/
 **/results/
 .vscode-test/
+.vscode-ext-test/
 
 # Test profiles (ephemeral VS Code user-data created by runs)
 .vscode-ext-test-profiles/

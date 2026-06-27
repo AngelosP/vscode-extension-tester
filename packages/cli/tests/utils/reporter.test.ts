@@ -309,6 +309,64 @@ describe('reporter', () => {
       expect(json.screenshots).toHaveLength(1);
       expect(json.screenshots[0]).toContain('1-screenshot.png');
     });
+
+    it('should include generic JSON artifacts in results.json and report.md', () => {
+      const runDir = path.join(tmpDir, 'tests', 'vscode-extension-tester', 'runs', 'json-run');
+      const artifactPath = path.join(runDir, 'iteration-001', 'json-artifacts', 'Scenario', 'webview-perf.json');
+      fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+      fs.writeFileSync(artifactPath, '{"measures":{"ready":123}}', 'utf-8');
+
+      const base = makeRunResult();
+      const result: TestRunResult = {
+        ...base,
+        features: [{
+          ...base.features[0],
+          scenarios: [{
+            ...base.features[0].scenarios[0],
+            steps: [{
+              ...base.features[0].scenarios[0].steps[0],
+              artifacts: {
+                screenshots: [],
+                logs: [{
+                  kind: 'json',
+                  name: 'webview-perf',
+                  source: 'webview',
+                  path: artifactPath,
+                  label: 'webview-perf',
+                  iteration: { phase: 'measured', index: 1, label: 'iteration-001', artifactsDir: path.dirname(path.dirname(path.dirname(artifactPath))) },
+                }],
+                warnings: [],
+              },
+            }],
+          }],
+          passed: 1,
+          failed: 0,
+          skipped: 0,
+        }],
+        totalPassed: 1,
+        totalFailed: 0,
+        totalSkipped: 0,
+      };
+
+      writeRunArtifacts(result, tmpDir, 'json-run', [], '');
+
+      const json = JSON.parse(fs.readFileSync(path.join(runDir, 'results.json'), 'utf-8'));
+      expect(path.isAbsolute(json.features[0].scenarios[0].steps[0].artifacts.logs[0].path)).toBe(false);
+      expect(path.isAbsolute(json.features[0].scenarios[0].steps[0].artifacts.logs[0].iteration.artifactsDir)).toBe(false);
+      expect(path.isAbsolute(json.artifacts[0].iteration.artifactsDir)).toBe(false);
+      expect(json.artifacts).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'json',
+          name: 'webview-perf',
+          source: 'webview',
+          path: path.join('tests', 'vscode-extension-tester', 'runs', 'json-run', 'iteration-001', 'json-artifacts', 'Scenario', 'webview-perf.json'),
+        }),
+      ]));
+
+      const report = fs.readFileSync(path.join(runDir, 'report.md'), 'utf-8');
+      expect(report).toContain('## Artifacts');
+      expect(report).toContain('webview-perf');
+    });
     it('should include metadata in run report.md', () => {
       writeRunArtifacts(makeRunResult(), tmpDir, 'meta-run', ['test.feature'], '', testMetadata);
 

@@ -22,7 +22,7 @@ export interface AttachDevHostSession {
  * Attach mode: connect to an already-running Extension Development Host and
  * run tests. The user must have launched the Dev Host themselves (e.g. via F5).
  */
-export async function attachMode(options: RunOptions, artifactsDir?: string): Promise<TestRunResult> {
+export async function attachMode(options: RunOptions, artifactsDir?: string, runnerOptions?: TestRunnerOptions): Promise<TestRunResult> {
   const startTime = Date.now();
 
   const session = await attachDevHostSession(options);
@@ -39,7 +39,7 @@ export async function attachMode(options: RunOptions, artifactsDir?: string): Pr
       controllerPort: session.controllerPort,
       cdpPort: session.cdpPort,
     };
-    return await runFeatures(session.client, runOptions, startTime, artifactsDir, session.userDataDir, session.cdpPort, session.targetPid);
+    return await runFeatures(session.client, runOptions, startTime, artifactsDir, session.userDataDir, session.cdpPort, session.targetPid, runnerOptions);
   } finally {
     await session.close();
   }

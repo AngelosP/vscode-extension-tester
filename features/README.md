@@ -25,6 +25,10 @@ tests/vscode-extension-tester/
         20260419-213200/
           report.md
           results.json
+          perf-summary.json
+          perf-summary.md
+          iteration-001/
+            json-artifacts/
   .vscode-ext-test/
     live/                       # Live step artifacts from vscode-ext-test live/tests add
       2026-04-19T21-32-00-000Z/
@@ -60,6 +64,16 @@ Connect to an already-running Dev Host (e.g. launched via F5):
 ```bash
 vscode-ext-test run --attach-devhost --test-id smoke-test
 ```
+
+Attach mode reuses the already-running Dev Host. Repeat runs and JSON artifact collection still work, but `--env` and `--vscode-arg` cannot affect that existing VS Code process.
+
+### Performance runs
+
+```bash
+vscode-ext-test run --test-id open-performance --perf --iterations 3 --warmup 1
+```
+
+Warmup iterations are written under `warmup-001/`, measured iterations under `iteration-001/`, `iteration-002/`, and so on. `--perf` writes `perf-summary.json` and `perf-summary.md` in the top-level run directory using numeric fields from measured JSON artifacts.
 
 ## Available Steps
 
@@ -114,6 +128,8 @@ Given a file "fixture.json" exists with content:
 | `When I double click "<sel>" in the webview` | Double-click a webview element by CSS selector |
 | `When I click the webview element "<text>"` | Click a webview control by visible text, aria-label, title, or role text |
 | `When I evaluate "<js>" in the webview for <N> seconds` | Run diagnostic JavaScript in a webview with an explicit timeout budget |
+| `Then I collect JSON artifact "<name>" from webview expression "<js>"` | Evaluate JavaScript in the active/current webview and save the returned strict JSON value |
+| `Then I collect JSON artifact "<name>" from extension host expression "<js>"` | Evaluate JavaScript in the extension host and save the returned strict JSON value |
 | `When I move the mouse to <x>, <y>` | Move the OS cursor to coordinates; live sessions use Dev Host window/screenshot-relative coordinates, normal batch runs use absolute screen coordinates |
 | `When I click` | Click at the current mouse position |
 | `When I right click` | Right-click at the current mouse position |
@@ -172,6 +188,26 @@ CLI to refresh that generated skill file; `repo-knowledge.md` is preserved.
 | `Then the status bar should show "<text>"` | Assert status bar text |
 
 ## Variables
+
+### JSON artifacts
+
+Use JSON artifact steps for performance snapshots or structured state that should be preserved with the run:
+
+```gherkin
+Then I collect JSON artifact "webview-perf" from webview expression "window.__e2e.perf.snapshot()"
+Then I collect JSON artifact "host-perf" from extension host expression "globalThis.__perf.snapshot()"
+```
+
+For JavaScript that contains quotes or multiple lines, use a doc string:
+
+```gherkin
+Then I collect JSON artifact "custom-state" from webview expression:
+  """
+  ({ title: document.title, sections: document.querySelectorAll('section').length })
+  """
+```
+
+The returned value must be JSON-serializable and cannot be `null` or `undefined`. Artifacts are saved under the current run or iteration directory and listed in `results.json` and `report.md`.
 
 Use `${ENV_VAR}` syntax to reference environment variables or test data:
 

@@ -3,6 +3,8 @@ import type { ParsedFeature, ParsedScenario, ParsedStep } from './gherkin-parser
 import type {
   FeatureResult,
   AutomationDiagnostic,
+  IterationMetadata,
+  JsonCollectorSpec,
   LiveStepArtifacts,
   LiveStepResult,
   NotificationInfo,
@@ -17,12 +19,15 @@ import { CDP_PORT, STEP_TIMEOUT_MS } from '../types.js';
 import { NativeUIClient } from './native-ui-client.js';
 import { CdpClient } from './cdp-client.js';
 import { loadEnv } from '../agent/env.js';
+import { assertJsonArtifactValue, strictJsonExpression } from '../utils/perf-summary.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 export interface TestRunnerOptions {
   readonly coordinateOrigin?: 'screen' | 'devHostWindow';
   readonly stepTimeoutMs?: number;
+  readonly iteration?: IterationMetadata;
+  readonly jsonCollectors?: JsonCollectorSpec[];
 }
 
 /**
@@ -91,6 +96,17 @@ export class TestRunner {
       const result = await this.runStep(step);
       stepResults.push(result);
       if (result.status === 'failed') failed = true;
+    }
+
+    if (!failed && this.options.jsonCollectors && this.options.jsonCollectors.length > 0) {
+      for (const collector of this.options.jsonCollectors) {
+        const result = await this.runSyntheticJsonCollector(collector);
+        stepResults.push(result);
+        if (result.status === 'failed') {
+          failed = true;
+          break;
+        }
+      }
     }
 
     // Dump per-scenario captured output channels (best-effort)
@@ -738,6 +754,34 @@ export class TestRunner {
       return;
     }
 
+    // ─── Webview: collect JSON artifact (quoted expression) ───
+    match = text.match(/^I collect JSON artifact "([^"]+)" from webview expression "([^"]+)"(?: in the webview "([^"]+)")?(?: for (\d+) seconds?)?$/);
+    if (match) {
+      await this.collectWebviewJsonArtifact(match[1], match[2], match[3], this.resolveUserEvalTimeout(match[4]));
+      return;
+    }
+
+    // ─── Webview: collect JSON artifact (doc string expression) ───
+    match = text.match(/^I collect JSON artifact "([^"]+)" from webview expression(?: in the webview "([^"]+)")?(?: for (\d+) seconds?)?:?$/);
+    if (match && docString !== undefined) {
+      await this.collectWebviewJsonArtifact(match[1], docString, match[2], this.resolveUserEvalTimeout(match[3]));
+      return;
+    }
+
+    // ─── Extension host: collect JSON artifact (quoted expression) ───
+    match = text.match(/^I collect JSON artifact "([^"]+)" from extension host expression "([^"]+)"(?: for (\d+) seconds?)?$/);
+    if (match) {
+      await this.collectExtensionHostJsonArtifact(match[1], match[2], this.resolveUserEvalTimeout(match[3]));
+      return;
+    }
+
+    // ─── Extension host: collect JSON artifact (doc string expression) ───
+    match = text.match(/^I collect JSON artifact "([^"]+)" from extension host expression(?: for (\d+) seconds?)?:?$/);
+    if (match && docString !== undefined) {
+      await this.collectExtensionHostJsonArtifact(match[1], docString, this.resolveUserEvalTimeout(match[2]));
+      return;
+    }
+
     // ─── Webview: list open webviews (debugging aid) ───
     if (/^I list the webviews$/.test(text)) {
       const webviews = await (await this.requireCdp()).listWebviews();
@@ -901,6 +945,81 @@ export class TestRunner {
       await delay(500);
     }
     throw new Error(`Command "${commandId}" was not available within ${timeoutMs}ms. Last matches: ${JSON.stringify(lastMatches)}`);
+  }
+
+  private async runSyntheticJsonCollector(collector: JsonCollectorSpec): Promise<StepResult> {
+    const keyword = 'Then ';
+    const text = `I collect JSON artifact "${collector.name}" from ${collector.source === 'webview' ? 'webview' : 'extension host'} expression "${collector.expression}"`;
+    const startTime = Date.now();
+    this.dispatchArtifacts = [];
+    try {
+      if (collector.source === 'webview') {
+        await this.collectWebviewJsonArtifact(collector.name, collector.expression);
+      } else {
+        await this.collectExtensionHostJsonArtifact(collector.name, collector.expression);
+      }
+      return {
+        keyword,
+        text,
+        status: 'passed',
+        durationMs: Date.now() - startTime,
+        artifacts: this.buildArtifacts(this.dispatchArtifacts),
+      };
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      return {
+        keyword,
+        text,
+        status: 'failed',
+        durationMs: Date.now() - startTime,
+        error: { message: error.message, stack: error.stack },
+        artifacts: this.buildArtifacts(this.dispatchArtifacts),
+      };
+    }
+  }
+
+  private async collectWebviewJsonArtifact(name: string, expression: string, webviewTitle?: string, timeoutMs?: number): Promise<void> {
+    const result = await (await this.requireCdp()).evaluateInWebview(strictJsonExpression(expression), webviewTitle, { timeoutMs });
+    const value = assertJsonArtifactValue(result, `Webview JSON artifact "${name}"`);
+    this.dispatchArtifacts.push(this.writeJsonArtifact(name, value, 'webview'));
+  }
+
+  private async collectExtensionHostJsonArtifact(name: string, expression: string, timeoutMs?: number): Promise<void> {
+    const script = `return await (${strictJsonExpression(expression)});`;
+    const result = await this.client.runExtensionHostScript(script, timeoutMs);
+    if (!result.ok) {
+      throw new Error(`Extension-host JSON artifact "${name}" expression failed: ${result.error?.message ?? 'unknown error'}`);
+    }
+    const value = assertJsonArtifactValue(result.value, `Extension-host JSON artifact "${name}"`);
+    this.dispatchArtifacts.push(this.writeJsonArtifact(name, value, 'extension-host'));
+  }
+
+  private writeJsonArtifact(name: string, value: unknown, source: 'webview' | 'extension-host'): StepArtifact {
+    if (!this.artifactsDir) {
+      throw new Error(`Cannot write JSON artifact "${name}" because this run has no artifacts directory.`);
+    }
+
+    const scenarioName = this.currentScenarioName ?? 'scenario';
+    const targetDir = path.join(this.artifactsDir, 'json-artifacts', sanitizeFilename(scenarioName));
+    fs.mkdirSync(targetDir, { recursive: true });
+
+    const baseName = sanitizeFilename(name, 80) || 'artifact';
+    let filePath = path.join(targetDir, `${baseName}.json`);
+    let suffix = 2;
+    while (fs.existsSync(filePath)) {
+      filePath = path.join(targetDir, `${baseName}-${suffix}.json`);
+      suffix++;
+    }
+
+    fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
+    return {
+      kind: 'json',
+      name,
+      source,
+      path: filePath,
+      label: name,
+      iteration: this.options.iteration,
+    };
   }
 
   private async assertCommandAvailable(commandId: string): Promise<void> {
@@ -1497,13 +1616,15 @@ export class TestRunner {
     this.dispatchArtifacts.push(artifact);
   }
 
-  private buildArtifacts(screenshots: StepArtifact[] = [], logs: StepArtifact[] = [], warnings: string[] = []): LiveStepArtifacts | undefined {
-    const artifactWarnings = screenshots
+  private buildArtifacts(artifacts: StepArtifact[] = [], logs: StepArtifact[] = [], warnings: string[] = []): LiveStepArtifacts | undefined {
+    const screenshots = artifacts.filter((artifact) => isScreenshotArtifact(artifact));
+    const logArtifacts = [...logs, ...artifacts.filter((artifact) => !isScreenshotArtifact(artifact))];
+    const artifactWarnings = artifacts
       .map((artifact) => artifact.message)
       .filter((message): message is string => Boolean(message));
     const allWarnings = [...warnings, ...artifactWarnings];
-    if (screenshots.length === 0 && logs.length === 0 && allWarnings.length === 0) return undefined;
-    return { screenshots, logs, warnings: allWarnings };
+    if (screenshots.length === 0 && logArtifacts.length === 0 && allWarnings.length === 0) return undefined;
+    return { screenshots, logs: logArtifacts, warnings: allWarnings };
   }
 
   private resolveUserEvalTimeout(timeoutSeconds?: string): number | undefined {
@@ -1594,6 +1715,10 @@ function cloneArtifacts(artifacts: LiveStepArtifacts | undefined): MutableLiveSt
     warnings: [...(artifacts?.warnings ?? [])],
     manifestPath: artifacts?.manifestPath,
   };
+}
+
+function isScreenshotArtifact(artifact: StepArtifact): boolean {
+  return artifact.kind === 'screenshot' || artifact.kind === 'failure-screenshot' || artifact.kind === 'final-screenshot';
 }
 
 interface MutableLiveStepArtifacts extends LiveStepArtifacts {

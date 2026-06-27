@@ -30,6 +30,13 @@ program
   .option('--reporter <type>', 'Output format: console, json, html', 'console')
   .option('--controller-port <number>', 'Controller WebSocket port', '9788')
   .option('--cdp-port <number>', 'Chrome DevTools Protocol port', '9222')
+  .option('--perf', 'Enable performance summary artifacts', false)
+  .option('--iterations <n>', 'Number of measured iterations', '1')
+  .option('--warmup <n>', 'Number of unmeasured warmup iterations', '0')
+  .option('--env <KEY=VALUE>', 'Environment variable for launched VS Code; repeatable', collectRepeated, [])
+  .option('--vscode-arg <arg>', 'Additional VS Code launch argument; repeatable', collectRepeated, [])
+  .option('--collect-webview-json <expr>', 'Collect JSON artifact from webview expression after each scenario; repeatable', collectRepeated, [])
+  .option('--collect-extension-host-json <expr>', 'Collect JSON artifact from extension host expression after each scenario; repeatable', collectRepeated, [])
   .option('--xvfb', 'Use xvfb for headless Linux', false)
   .option('--timeout <ms>', 'Per-step timeout in ms', '30000')
   .option('--reuse-named-profile <name>', 'Use an existing named profile (fails if missing)')
@@ -172,7 +179,7 @@ profileCmd
     }
   });
 
-program.parse();
+program.parse(normalizeRunArgv(process.argv));
 
 function readCliPackageVersion(): string {
   try {
@@ -181,4 +188,23 @@ function readCliPackageVersion(): string {
   } catch {
     return '0.0.0';
   }
+}
+
+function collectRepeated(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+function normalizeRunArgv(argv: string[]): string[] {
+  const normalized: string[] = [];
+  const runIndex = argv.indexOf('run');
+  for (let index = 0; index < argv.length; index++) {
+    const token = argv[index];
+    if (runIndex >= 0 && index > runIndex && token === '--vscode-arg' && argv[index + 1]?.startsWith('--')) {
+      normalized.push(`--vscode-arg=${argv[index + 1]}`);
+      index++;
+      continue;
+    }
+    normalized.push(token);
+  }
+  return normalized;
 }

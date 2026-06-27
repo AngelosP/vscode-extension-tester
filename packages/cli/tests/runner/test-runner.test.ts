@@ -162,6 +162,7 @@ function createMockClient(): ControllerClient {
     disconnect: vi.fn(),
     executeCommand: vi.fn().mockResolvedValue({ executed: true }),
     startCommand: vi.fn().mockResolvedValue({ started: true, commandId: 'test' }),
+    runExtensionHostScript: vi.fn().mockResolvedValue({ ok: true, value: { ok: true }, durationMs: 1 }),
     respondToQuickPick: vi.fn().mockResolvedValue({ selected: '' }),
     respondToInputBox: vi.fn().mockResolvedValue({ entered: '', intercepted: true }),
     respondToDialog: vi.fn().mockResolvedValue({ clicked: '' }),
@@ -1639,6 +1640,78 @@ Feature: Inline JSON
       expect(result.scenarios[0].status).toBe('failed');
       expect(result.scenarios[0].steps[0].error?.message).toContain('must be less than the step timeout');
       expect(getMockCdp().evaluateInWebview).not.toHaveBeenCalled();
+    });
+
+    it('should collect a JSON artifact from a webview expression', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-json-'));
+      const jsonRunner = new TestRunner(client, {}, artifactsDir);
+      getMockCdp().evaluateInWebview.mockResolvedValue({ measures: { openToReadyMs: 123 }, marks: { ready: 456 } });
+      try {
+        const feature = makeFeature('Test', [
+          makeScenario('Collect webview JSON', [
+            makeStep('Then ', 'I collect JSON artifact "webview-perf" from webview expression "window.__e2e.perf.snapshot()"'),
+          ]),
+        ]);
+
+        const result = await jsonRunner.runFeature(feature);
+
+        expect(result.scenarios[0].status).toBe('passed');
+        const artifact = result.scenarios[0].steps[0].artifacts?.logs.find((item) => item.kind === 'json');
+        expect(artifact?.name).toBe('webview-perf');
+        expect(artifact?.source).toBe('webview');
+        expect(artifact?.path && fs.existsSync(artifact.path)).toBe(true);
+        expect(JSON.parse(fs.readFileSync(artifact!.path!, 'utf-8'))).toEqual({ measures: { openToReadyMs: 123 }, marks: { ready: 456 } });
+        expect(getMockCdp().evaluateInWebview.mock.calls[0][0]).toContain('window.__e2e.perf.snapshot()');
+      } finally {
+        jsonRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should fail JSON artifact collection when the webview expression returns null', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-json-'));
+      const jsonRunner = new TestRunner(client, {}, artifactsDir);
+      getMockCdp().evaluateInWebview.mockResolvedValue(null);
+      try {
+        const feature = makeFeature('Test', [
+          makeScenario('Collect null', [
+            makeStep('Then ', 'I collect JSON artifact "webview-perf" from webview expression "window.missing"'),
+          ]),
+        ]);
+
+        const result = await jsonRunner.runFeature(feature);
+
+        expect(result.scenarios[0].status).toBe('failed');
+        expect(result.scenarios[0].steps[0].error?.message).toContain('returned null');
+      } finally {
+        jsonRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should collect a JSON artifact from an extension-host expression', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-json-'));
+      const jsonRunner = new TestRunner(client, {}, artifactsDir);
+      (client.runExtensionHostScript as any).mockResolvedValue({ ok: true, value: { measures: { hostMs: 34 } }, durationMs: 1 });
+      try {
+        const feature = makeFeature('Test', [
+          makeScenario('Collect host JSON', [
+            makeStep('Then ', 'I collect JSON artifact "host-perf" from extension host expression "globalThis.__perf.snapshot()"'),
+          ]),
+        ]);
+
+        const result = await jsonRunner.runFeature(feature);
+
+        expect(result.scenarios[0].status).toBe('passed');
+        const artifact = result.scenarios[0].steps[0].artifacts?.logs.find((item) => item.kind === 'json');
+        expect(artifact?.name).toBe('host-perf');
+        expect(artifact?.source).toBe('extension-host');
+        expect(JSON.parse(fs.readFileSync(artifact!.path!, 'utf-8'))).toEqual({ measures: { hostMs: 34 } });
+        expect(client.runExtensionHostScript).toHaveBeenCalledWith(expect.stringContaining('globalThis.__perf.snapshot()'), 29_000);
+      } finally {
+        jsonRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
     });
   });
 

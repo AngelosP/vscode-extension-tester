@@ -3,8 +3,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as cp from 'node:child_process';
 import type { RunOptions, TestRunResult } from '../types.js';
-import { VSCODE_LAUNCH_TIMEOUT_MS } from '../types.js';
+import { CONTROLLER_EXTENSION_ID, VSCODE_LAUNCH_TIMEOUT_MS } from '../types.js';
 import { ControllerClient } from '../runner/controller-client.js';
+import type { TestRunnerOptions } from '../runner/test-runner.js';
 import { runFeatures } from './dev-mode.js';
 import { getVsixPath } from '../commands/install.js';
 import { getProfileDir, getProfileUserDataDir, getProfileExtensionsDir, getProfileSharedDataDir, ensureProfileAuthLocalState } from '../profile.js';
@@ -27,7 +28,7 @@ export interface LaunchDevHostSession {
  * When a named profile is provided via RunOptions, uses that profile's
  * user-data and extensions directories instead of creating ephemeral ones.
  */
-export async function launchMode(options: RunOptions, artifactsDir?: string): Promise<TestRunResult> {
+export async function launchMode(options: RunOptions, artifactsDir?: string, runnerOptions?: TestRunnerOptions): Promise<TestRunResult> {
   const startTime = Date.now();
 
   const session = await createLaunchDevHostSession(options);
@@ -44,7 +45,7 @@ export async function launchMode(options: RunOptions, artifactsDir?: string): Pr
       controllerPort: session.controllerPort,
       cdpPort: session.cdpPort,
     };
-    return await runFeatures(session.client, runOptions, startTime, artifactsDir, session.userDataDir, session.cdpPort, session.targetPid);
+    return await runFeatures(session.client, runOptions, startTime, artifactsDir, session.userDataDir, session.cdpPort, session.targetPid, runnerOptions);
   } finally {
     await session.close();
   }
@@ -140,6 +141,12 @@ export async function createLaunchDevHostSession(options: RunOptions): Promise<L
     `--extensionDevelopmentPath=${extensionPath}`,
   ];
 
+  const userArgs = normalizeUserVsCodeArgs(options.vscodeArgs ?? [], cdpPort);
+  if (userArgs.some((arg) => arg === '--disable-extensions')) {
+    args.push(`--extensionDevelopmentPath=${controllerDevDir}`);
+  }
+  args.push(...userArgs);
+
   if (process.env.VSCODE_EXT_TEST_WORKSPACE) {
     args.push(path.resolve(process.env.VSCODE_EXT_TEST_WORKSPACE));
   }
@@ -151,12 +158,12 @@ export async function createLaunchDevHostSession(options: RunOptions): Promise<L
   if (process.platform === 'linux' && (options.xvfb || isHeadlessCI())) {
     vscProcess = cp.spawn('xvfb-run', ['-a', vscPath, ...args], {
       stdio: 'pipe',
-      env: { ...process.env, VSCODE_EXT_TESTER_PORT: String(controllerPort) },
+      env: { ...process.env, ...(options.env ?? {}), VSCODE_EXT_TESTER_PORT: String(controllerPort) },
     });
   } else {
     vscProcess = cp.spawn(vscPath, args, {
       stdio: 'pipe',
-      env: { ...process.env, VSCODE_EXT_TESTER_PORT: String(controllerPort) },
+      env: { ...process.env, ...(options.env ?? {}), VSCODE_EXT_TESTER_PORT: String(controllerPort) },
     });
   }
 
@@ -186,6 +193,53 @@ export async function createLaunchDevHostSession(options: RunOptions): Promise<L
       await closeLaunchedProcess(vscProcess, isEphemeral, userDataDir);
     },
   };
+}
+
+function normalizeUserVsCodeArgs(rawArgs: string[], cdpPort: number): string[] {
+  const result: string[] = [];
+  const blockedPrefixes = [
+    '--user-data-dir',
+    '--extensions-dir',
+    '--shared-data-dir',
+    '--extensionDevelopmentPath',
+    '--extension-development-path',
+  ];
+
+  for (let index = 0; index < rawArgs.length; index++) {
+    const arg = rawArgs[index];
+    const lower = arg.toLowerCase();
+    const [name] = lower.split('=', 1);
+    if (blockedPrefixes.some((prefix) => name === prefix.toLowerCase())) {
+      throw new Error(`--vscode-arg ${arg} is managed by vscode-ext-test and cannot be overridden.`);
+    }
+    if (name === '--remote-debugging-port') {
+      const value = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : rawArgs[index + 1];
+      if (value === '0') {
+        throw new Error('--vscode-arg --remote-debugging-port=0 is not supported because the runner must know the CDP port. Use --cdp-port <n> instead.');
+      }
+      const requestedPort = value ? parseInt(value, 10) : Number.NaN;
+      if (!Number.isFinite(requestedPort) || requestedPort !== cdpPort) {
+        throw new Error(`--remote-debugging-port is managed by vscode-ext-test. Use --cdp-port ${value ?? '<n>'} instead.`);
+      }
+      if (!arg.includes('=')) index++;
+      continue;
+    }
+    if (name === '--disable-extension') {
+      const value = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : rawArgs[index + 1];
+      if (value?.toLowerCase() === CONTROLLER_EXTENSION_ID.toLowerCase()) {
+        throw new Error(`--vscode-arg cannot disable the controller extension (${CONTROLLER_EXTENSION_ID}).`);
+      }
+      result.push(arg);
+      if (!arg.includes('=') && value !== undefined) {
+        result.push(value);
+        index++;
+      }
+      continue;
+    }
+    result.push(arg);
+  }
+
+  return result;
 }
 
 async function closeLaunchedProcess(vscProcess: cp.ChildProcess, isEphemeral: boolean, userDataDir: string): Promise<void> {

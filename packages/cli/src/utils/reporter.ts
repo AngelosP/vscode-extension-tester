@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { TestRunResult, FeatureResult, ScenarioResult, StepResult, RunMetadata } from '../types.js';
+import type { TestRunResult, FeatureResult, ScenarioResult, StepResult, RunMetadata, StepArtifact, IterationResult, LiveStepArtifacts } from '../types.js';
 
 /**
  * Print test results to console with colors, or as JSON/HTML.
@@ -93,7 +93,7 @@ export function toFileTimestamp(iso: string): string {
   return iso.replace(/[-:]/g, '').replace('T', '-').replace(/\..*$/, '').slice(0, 15);
 }
 
-function generateMarkdown(result: TestRunResult, metadataOrScreenshots?: RunMetadata | string[], screenshots?: string[], runDirRel?: string): string {
+function generateMarkdown(result: TestRunResult, metadataOrScreenshots?: RunMetadata | string[], screenshots?: string[], runDirRel?: string, artifacts?: SerializableArtifact[]): string {
   // Overload: legacy callers pass (result, screenshots?, runDirRel?)
   let metadata: RunMetadata | undefined;
   if (Array.isArray(metadataOrScreenshots)) {
@@ -161,6 +161,18 @@ function generateMarkdown(result: TestRunResult, metadataOrScreenshots?: RunMeta
     lines.push('');
   }
 
+  const nonScreenshotArtifacts = (artifacts ?? []).filter((artifact) => !isScreenshotKind(artifact.kind));
+  if (nonScreenshotArtifacts.length > 0) {
+    lines.push('## Artifacts', '');
+    for (const artifact of nonScreenshotArtifacts) {
+      const label = artifact.label ?? artifact.name ?? artifact.kind;
+      const source = artifact.source ? ` (${artifact.source})` : '';
+      const iteration = artifact.iteration ? ` [${artifact.iteration.label}]` : '';
+      lines.push(`- ${label}${source}${iteration}: \`${artifact.path ?? artifact.message ?? ''}\``);
+    }
+    lines.push('');
+  }
+
   lines.push('---', `*Generated at ${new Date().toISOString()}*`, '');
   return lines.join('\n');
 }
@@ -183,15 +195,25 @@ export function writeRunArtifacts(
   const runDir = path.join(cwd, 'tests', 'vscode-extension-tester', 'runs', runId);
   fs.mkdirSync(runDir, { recursive: true });
 
-  // Find screenshot files already in the run dir
-  const screenshots = fs.readdirSync(runDir).filter(f => f.endsWith('.png')).sort();
+  const artifacts = collectSerializableArtifacts(result, cwd);
+  const topLevelScreenshots = fs.readdirSync(runDir)
+    .filter(f => f.endsWith('.png'))
+    .map((fileName) => path.join(path.relative(cwd, runDir), fileName));
+  const screenshots = Array.from(new Set([
+    ...artifacts
+      .filter((artifact) => isScreenshotKind(artifact.kind) && artifact.path)
+      .map((artifact) => artifact.path!),
+    ...topLevelScreenshots,
+  ])).sort();
+  const serializableResult = normalizeResultForSerialization(result, cwd);
 
   // results.json - include screenshot paths and run metadata
   const resultsWithScreenshots = {
-    ...result,
+    ...serializableResult,
     runId,
     runDir: path.relative(cwd, runDir),
-    screenshots: screenshots.map(f => path.join(path.relative(cwd, runDir), f)),
+    screenshots,
+    artifacts,
     ...(metadata ? { metadata } : {}),
   };
   fs.writeFileSync(
@@ -201,7 +223,7 @@ export function writeRunArtifacts(
   );
 
   // report.md - include screenshot listing and metadata
-  const md = generateMarkdown(result, metadata, screenshots, path.relative(cwd, runDir));
+  const md = generateMarkdown(result, metadata, screenshots, path.relative(cwd, runDir), artifacts);
   fs.writeFileSync(path.join(runDir, 'report.md'), md, 'utf-8');
 
   // console.log - structured output log split by scenario/step
@@ -248,4 +270,104 @@ function generateConsoleLog(result: TestRunResult): string {
   }
 
   return lines.join('\n');
+}
+
+interface SerializableArtifact {
+  readonly kind: StepArtifact['kind'];
+  readonly path?: string;
+  readonly name?: string;
+  readonly source?: StepArtifact['source'];
+  readonly iteration?: StepArtifact['iteration'];
+  readonly label?: string;
+  readonly message?: string;
+}
+
+function collectSerializableArtifacts(result: TestRunResult, cwd: string): SerializableArtifact[] {
+  const artifacts: StepArtifact[] = [...(result.artifacts ?? [])];
+  for (const feature of result.features) {
+    for (const scenario of feature.scenarios) {
+      for (const step of scenario.steps) {
+        artifacts.push(...(step.artifacts?.screenshots ?? []));
+        artifacts.push(...(step.artifacts?.logs ?? []));
+      }
+    }
+  }
+
+  const seen = new Set<string>();
+  const serialized: SerializableArtifact[] = [];
+  for (const artifact of artifacts) {
+    const normalized = normalizeStepArtifact(artifact, cwd);
+    const item: SerializableArtifact = {
+      kind: normalized.kind,
+      path: normalized.path,
+      name: normalized.name,
+      source: normalized.source,
+      iteration: normalized.iteration,
+      label: normalized.label,
+      message: normalized.message,
+    };
+    const key = `${item.kind}\0${item.path ?? ''}\0${item.name ?? ''}\0${item.message ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    serialized.push(item);
+  }
+  return serialized;
+}
+
+function normalizeArtifactPath(filePath: string | undefined, cwd: string): string | undefined {
+  if (!filePath) return undefined;
+  if (!path.isAbsolute(filePath)) return filePath;
+  return path.relative(cwd, filePath);
+}
+
+function normalizeResultForSerialization(result: TestRunResult, cwd: string): TestRunResult {
+  return {
+    ...result,
+    features: result.features.map((feature) => ({
+      ...feature,
+      scenarios: feature.scenarios.map((scenario) => ({
+        ...scenario,
+        steps: scenario.steps.map((step) => ({
+          ...step,
+          artifacts: normalizeLiveStepArtifacts(step.artifacts, cwd),
+        })),
+      })),
+    })),
+    iterations: result.iterations?.map((iteration) => normalizeIterationResult(iteration, cwd)),
+    artifacts: result.artifacts?.map((artifact) => normalizeStepArtifact(artifact, cwd)),
+  };
+}
+
+function normalizeIterationResult(iteration: IterationResult, cwd: string): IterationResult {
+  return {
+    ...normalizeResultForSerialization(iteration, cwd),
+    phase: iteration.phase,
+    index: iteration.index,
+    label: iteration.label,
+    artifactsDir: normalizeArtifactPath(iteration.artifactsDir, cwd),
+  };
+}
+
+function normalizeLiveStepArtifacts(artifacts: LiveStepArtifacts | undefined, cwd: string): LiveStepArtifacts | undefined {
+  if (!artifacts) return undefined;
+  return {
+    ...artifacts,
+    screenshots: artifacts.screenshots.map((artifact) => normalizeStepArtifact(artifact, cwd)),
+    logs: artifacts.logs.map((artifact) => normalizeStepArtifact(artifact, cwd)),
+    manifestPath: normalizeArtifactPath(artifacts.manifestPath, cwd),
+  };
+}
+
+function normalizeStepArtifact(artifact: StepArtifact, cwd: string): StepArtifact {
+  return {
+    ...artifact,
+    path: normalizeArtifactPath(artifact.path, cwd),
+    iteration: artifact.iteration
+      ? { ...artifact.iteration, artifactsDir: normalizeArtifactPath(artifact.iteration.artifactsDir, cwd) }
+      : undefined,
+  };
+}
+
+function isScreenshotKind(kind: StepArtifact['kind']): boolean {
+  return kind === 'screenshot' || kind === 'failure-screenshot' || kind === 'final-screenshot';
 }

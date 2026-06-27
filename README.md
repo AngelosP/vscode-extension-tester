@@ -143,6 +143,13 @@ writing files. Controller extension version history is tracked in
 | `--reporter <type>` | `console` | Output format: `console`, `json`, `html` |
 | `--controller-port <n>` | `9788` | Controller WebSocket port |
 | `--cdp-port <n>` | `9222` | Chrome DevTools Protocol port |
+| `--perf` | `false` | Write aggregate performance summaries from collected JSON artifacts |
+| `--iterations <n>` | `1` | Number of measured iterations |
+| `--warmup <n>` | `0` | Number of unmeasured warmup iterations |
+| `--env <KEY=VALUE>` | - | Environment variable for launched VS Code; repeatable |
+| `--vscode-arg <arg>` | - | Extra VS Code launch argument; repeatable |
+| `--collect-webview-json <expr>` | - | Collect a webview JSON artifact after each scenario; repeatable |
+| `--collect-extension-host-json <expr>` | - | Collect an extension-host JSON artifact after each scenario; repeatable |
 | `--timeout <ms>` | `30000` | Per-step timeout |
 | `--no-build` | - | Skip building the extension before running |
 | `--paused` | `false` | Set up the environment but pause before running tests |
@@ -221,6 +228,8 @@ Scenario: Monitor only the channels I care about
 | `I enter "<text>" in the QuickInput` | When | Enter and accept QuickInput text after validation clears |
 | `I click the webview element "<text>"` | When | Click a webview control by visible text, aria-label, title, or role text |
 | `I evaluate "<js>" in the webview for <N> seconds` | When | Run diagnostic JavaScript in a webview with an explicit timeout budget |
+| `I collect JSON artifact "<name>" from webview expression "<js>"` | Then | Save a strict JSON artifact evaluated in the active webview |
+| `I collect JSON artifact "<name>" from extension host expression "<js>"` | Then | Save a strict JSON artifact evaluated in the extension host |
 | `I click "<action>" on notification "<text>"` | When | Resolve a captured VS Code notification action |
 | `I wait for progress "<title>" to complete` | Then | Wait for a tracked VS Code progress operation to finish |
 | `the output channel "<name>" should contain "<text>"` | Then | Assert the channel contains the given text |
@@ -235,6 +244,26 @@ The controller extension patches `vscode.window.createOutputChannel` at two leve
 2. **Instance-level** — wraps channels created *after* the controller, including `LogOutputChannel` methods (`trace`, `debug`, `info`, `warn`, `error`)
 
 This means you can assert on output from any extension, regardless of activation order.
+
+## Performance Profiling
+
+Use `--perf` with warmup/measured iterations when you want repeatable workflow timing artifacts rather than a single pass/fail run:
+
+```bash
+vscode-ext-test run \
+  --test-id open-performance \
+  --perf \
+  --iterations 7 \
+  --warmup 1 \
+  --env KUSTO_WORKBENCH_PERF=1 \
+  --vscode-arg=--disable-gpu \
+  --collect-webview-json "webview-perf=window.__e2e?.perf?.snapshot?.()" \
+  --collect-extension-host-json "host-perf=globalThis.__kustoPerf?.snapshot?.()"
+```
+
+Measured iterations are written under `iteration-001/`, `iteration-002/`, and so on; warmups use `warmup-001/`. JSON artifacts collected by steps or CLI collectors are listed in `results.json` and `report.md`. When `--perf` is enabled, the run directory also contains `perf-summary.json` and `perf-summary.md`, summarizing numeric fields from measured JSON artifacts with count, min, median, p95, max, and mean.
+
+In `--attach-devhost` mode, the runner can repeat scenarios and collect artifacts from the existing Dev Host, but `--env` and `--vscode-arg` cannot change an already-running VS Code process.
 
 ## Architecture
 
