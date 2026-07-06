@@ -112,6 +112,7 @@ export interface StepArtifact {
   readonly iteration?: IterationMetadata;
   readonly label?: string;
   readonly message?: string;
+  readonly metadata?: ScreenshotCaptureMetadata | Record<string, unknown>;
 }
 
 export interface LiveStepArtifacts {
@@ -175,6 +176,33 @@ export interface ScreenshotCaptureResult {
   readonly strategy?: string;
   readonly attempts?: ScreenshotCaptureAttempt[];
   readonly warnings?: string[];
+  readonly metadata?: ScreenshotCaptureMetadata;
+}
+
+export interface ScreenshotBounds {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export interface ScreenshotWindowInfo {
+  readonly hwnd?: string;
+  readonly processId?: number;
+  readonly title?: string;
+  readonly bounds?: ScreenshotBounds | null;
+}
+
+export interface ScreenshotCaptureMetadata {
+  readonly expected?: { readonly hwnd?: string; readonly processId?: number; readonly title?: string };
+  readonly target?: ScreenshotWindowInfo;
+  readonly foregroundBefore?: ScreenshotWindowInfo | null;
+  readonly foregroundAfter?: ScreenshotWindowInfo | null;
+  readonly foregroundAtCapture?: ScreenshotWindowInfo | null;
+  readonly bounds?: ScreenshotBounds;
+  readonly monitor?: Record<string, unknown> | null;
+  readonly dpi?: number | null;
+  readonly validation?: Record<string, unknown>;
 }
 
 export interface LiveStepResult extends StepResult {

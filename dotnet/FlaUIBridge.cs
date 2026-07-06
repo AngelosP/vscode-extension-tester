@@ -5,6 +5,7 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using FlaUI.Core;
@@ -32,7 +33,94 @@ namespace FlaUIBridge
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
         [DllImport("user32.dll")]
+        private static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
         private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern int GetWindowTextLength(IntPtr hWnd);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr GetWindowDC(IntPtr hWnd);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern int ReleaseDC(IntPtr hWnd, IntPtr hdc);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr MonitorFromWindow(IntPtr hWnd, uint flags);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFO info);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetDpiForWindow(IntPtr hWnd);
+
+        [DllImport("gdi32.dll", SetLastError = true)]
+        private static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+        [DllImport("gdi32.dll", SetLastError = true)]
+        private static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int width, int height);
+
+        [DllImport("gdi32.dll", SetLastError = true)]
+        private static extern IntPtr SelectObject(IntPtr hdc, IntPtr obj);
+
+        [DllImport("gdi32.dll", SetLastError = true)]
+        private static extern bool BitBlt(IntPtr destHdc, int destX, int destY, int width, int height, IntPtr srcHdc, int srcX, int srcY, int rop);
+
+        [DllImport("gdi32.dll", SetLastError = true)]
+        private static extern bool DeleteObject(IntPtr obj);
+
+        [DllImport("gdi32.dll", SetLastError = true)]
+        private static extern bool DeleteDC(IntPtr hdc);
+
+        private const int SRCCOPY = 0x00CC0020;
+        private const uint MONITOR_DEFAULTTONEAREST = 2;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MONITORINFO
+        {
+            public int cbSize;
+            public RECT rcMonitor;
+            public RECT rcWork;
+            public int dwFlags;
+        }
+
+        private sealed class CaptureContext
+        {
+            public required IntPtr Hwnd { get; init; }
+            public required int X { get; init; }
+            public required int Y { get; init; }
+            public required int Width { get; init; }
+            public required int Height { get; init; }
+            public required object Target { get; init; }
+            public required object? ForegroundBefore { get; init; }
+            public required object? ForegroundAfter { get; init; }
+            public required object? Monitor { get; init; }
+            public required uint? Dpi { get; init; }
+            public required object Expected { get; init; }
+        }
 
         /// <summary>
         /// Find a window by title pattern (partial match).
@@ -308,12 +396,13 @@ namespace FlaUIBridge
         /// </summary>
         public async Task<object> ListWindows(dynamic input)
         {
+            bool includeOffscreen = input?.includeOffscreen == true;
             var desktop = _automation.GetDesktop();
             var windows = desktop.FindAllChildren(
                 cf => cf.ByControlType(ControlType.Window));
 
             return windows
-                .Where(w => !string.IsNullOrEmpty(w.Name) && w.Properties.IsOffscreen.ValueOrDefault == false)
+                .Where(w => !string.IsNullOrEmpty(w.Name) && (includeOffscreen || w.Properties.IsOffscreen.ValueOrDefault == false))
                 .Select(w => CacheAndSerializeWindow(w))
                 .ToArray();
         }
@@ -386,6 +475,9 @@ namespace FlaUIBridge
         {
             string windowId = (string)input.windowId;
             string filePath = (string)input.filePath;
+            int? expectedProcessId = input.expectedProcessId == null ? null : Convert.ToInt32(input.expectedProcessId);
+            string? expectedTitle = input.expectedTitle as string;
+            string? expectedWindowHandle = input.expectedWindowHandle as string;
 
             if (!_elementCache.TryGetValue(windowId, out var element))
                 throw new Exception($"Window {windowId} not found in cache");
@@ -398,10 +490,14 @@ namespace FlaUIBridge
             {
                 try
                 {
-                    var capture = await PrepareCapture(element);
+                    var capture = await PrepareCapture(element, expectedProcessId, expectedTitle, expectedWindowHandle, warnings);
+                    if (!IsSameHwnd(GetForegroundWindow(), capture.Hwnd))
+                    {
+                        throw new Exception($"Foreground window after focus is {FormatHwnd(GetForegroundWindow())}, expected target {FormatHwnd(capture.Hwnd)}; skipped CopyFromScreen to avoid capturing the wrong window");
+                    }
                     SaveCopyFromScreen(capture.X, capture.Y, capture.Width, capture.Height, filePath);
                     attempts.Add(new { attempt, strategy = "CopyFromScreen", success = true });
-                    return new { success = true, filePath, width = capture.Width, height = capture.Height, strategy = "CopyFromScreen", attempts = attempts.ToArray(), warnings = warnings.ToArray() };
+                    return CaptureSuccess(filePath, capture, "CopyFromScreen", attempts, warnings);
                 }
                 catch (Exception ex)
                 {
@@ -417,41 +513,78 @@ namespace FlaUIBridge
             {
                 try
                 {
-                    var capture = await PrepareCapture(element);
-                    SavePrintWindow(new IntPtr(nativeHandle), capture.Width, capture.Height, filePath);
-                    attempts.Add(new { attempt = 4, strategy = "PrintWindow", success = true });
-                    warnings.Add("Used PrintWindow fallback after CopyFromScreen failures; Chromium content can render blank on some systems.");
-                    return new { success = true, filePath, width = capture.Width, height = capture.Height, strategy = "PrintWindow", attempts = attempts.ToArray(), warnings = warnings.ToArray() };
+                    var capture = await PrepareCapture(element, expectedProcessId, expectedTitle, expectedWindowHandle, warnings);
+                    SaveWindowDcBitBlt(capture.Hwnd, capture.Width, capture.Height, filePath);
+                    attempts.Add(new { attempt = 4, strategy = "WindowDC-BitBlt", success = true });
+                    warnings.Add("Used WindowDC BitBlt fallback after CopyFromScreen failures.");
+                    return CaptureSuccess(filePath, capture, "WindowDC-BitBlt", attempts, warnings);
                 }
                 catch (Exception ex)
                 {
                     lastError = ex;
-                    attempts.Add(new { attempt = 4, strategy = "PrintWindow", success = false, message = ex.Message });
+                    attempts.Add(new { attempt = 4, strategy = "WindowDC-BitBlt", success = false, message = ex.Message });
+                    warnings.Add($"WindowDC BitBlt fallback failed: {ex.Message}");
+                }
+
+                try
+                {
+                    var capture = await PrepareCapture(element, expectedProcessId, expectedTitle, expectedWindowHandle, warnings);
+                    SavePrintWindow(capture.Hwnd, capture.Width, capture.Height, filePath);
+                    attempts.Add(new { attempt = 5, strategy = "PrintWindow", success = true });
+                    warnings.Add("Used PrintWindow fallback after CopyFromScreen and WindowDC BitBlt failures; Chromium content can render blank on some systems.");
+                    return CaptureSuccess(filePath, capture, "PrintWindow", attempts, warnings);
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                    attempts.Add(new { attempt = 5, strategy = "PrintWindow", success = false, message = ex.Message });
+                    warnings.Add($"PrintWindow fallback failed: {ex.Message}");
                 }
             }
 
-            throw new Exception($"Screenshot capture failed after retries: {lastError?.Message}", lastError);
+            throw new Exception($"Screenshot capture failed after retries: {lastError?.Message}; attempts: {string.Join(" | ", attempts.Select(a => a.ToString()))}", lastError);
         }
 
-        private static async Task<(int X, int Y, int Width, int Height)> PrepareCapture(AutomationElement element)
+        private static async Task<CaptureContext> PrepareCapture(AutomationElement element, int? expectedProcessId, string? expectedTitle, string? expectedWindowHandle, List<string> warnings)
         {
             var window = element.AsWindow();
             var nativeHandle = element.Properties.NativeWindowHandle.ValueOrDefault;
-            if (nativeHandle != 0) ShowWindow(new IntPtr(nativeHandle), SW_RESTORE);
+            if (nativeHandle == 0) throw new Exception("Target window has no native HWND; cannot validate screenshot target");
+            var hwnd = new IntPtr(nativeHandle);
+            var foregroundBefore = GetWindowInfo(GetForegroundWindow());
+            ValidateTargetWindow(hwnd, expectedProcessId, expectedTitle, expectedWindowHandle, warnings);
+
+            if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
             window.SetForeground();
             await Task.Delay(200);
+            ValidateTargetWindow(hwnd, expectedProcessId, expectedTitle, expectedWindowHandle, warnings);
 
             if (element.Properties.IsOffscreen.ValueOrDefault)
                 throw new Exception("Window is minimized or offscreen after restore; cannot capture screenshot");
 
-            var rect = element.BoundingRectangle;
-            int x = Convert.ToInt32(Math.Round(Convert.ToDouble(rect.X)));
-            int y = Convert.ToInt32(Math.Round(Convert.ToDouble(rect.Y)));
-            int width = Convert.ToInt32(Math.Round(Convert.ToDouble(rect.Width)));
-            int height = Convert.ToInt32(Math.Round(Convert.ToDouble(rect.Height)));
+            var bounds = GetWindowBounds(hwnd) ?? RectToObject(element.BoundingRectangle.X, element.BoundingRectangle.Y, element.BoundingRectangle.Width, element.BoundingRectangle.Height);
+            dynamic dynamicBounds = bounds;
+            int x = Convert.ToInt32(Math.Round(Convert.ToDouble(dynamicBounds.x)));
+            int y = Convert.ToInt32(Math.Round(Convert.ToDouble(dynamicBounds.y)));
+            int width = Convert.ToInt32(Math.Round(Convert.ToDouble(dynamicBounds.width)));
+            int height = Convert.ToInt32(Math.Round(Convert.ToDouble(dynamicBounds.height)));
             if (width <= 0 || height <= 0)
-                throw new Exception($"Window has invalid screenshot bounds: {rect}");
-            return (x, y, width, height);
+                throw new Exception($"Window has invalid screenshot bounds: x={x}, y={y}, width={width}, height={height}");
+
+            return new CaptureContext
+            {
+                Hwnd = hwnd,
+                X = x,
+                Y = y,
+                Width = width,
+                Height = height,
+                Target = GetWindowInfo(hwnd)!,
+                ForegroundBefore = foregroundBefore,
+                ForegroundAfter = GetWindowInfo(GetForegroundWindow()),
+                Monitor = GetMonitorMetadata(hwnd),
+                Dpi = TryGetDpi(hwnd),
+                Expected = new { hwnd = expectedWindowHandle, processId = expectedProcessId, title = expectedTitle }
+            };
         }
 
         private static void SaveCopyFromScreen(int x, int y, int width, int height, string filePath)
@@ -459,6 +592,7 @@ namespace FlaUIBridge
             using var bitmap = new Bitmap(width, height);
             using var graphics = Graphics.FromImage(bitmap);
             graphics.CopyFromScreen(x, y, 0, 0, new Size(width, height));
+            ValidateBitmapHasSignal(bitmap, "CopyFromScreen");
             SavePngAtomically(bitmap, filePath);
         }
 
@@ -476,19 +610,238 @@ namespace FlaUIBridge
             {
                 graphics.ReleaseHdc(hdc);
             }
+            ValidateBitmapHasSignal(bitmap, "PrintWindow");
             SavePngAtomically(bitmap, filePath);
         }
 
-        private static void SavePngAtomically(Bitmap bitmap, string filePath)
+        private static void SaveWindowDcBitBlt(IntPtr hwnd, int width, int height, string filePath)
+        {
+            IntPtr sourceDc = IntPtr.Zero;
+            IntPtr memoryDc = IntPtr.Zero;
+            IntPtr bitmapHandle = IntPtr.Zero;
+            IntPtr previousObject = IntPtr.Zero;
+            try
+            {
+                sourceDc = GetWindowDC(hwnd);
+                if (sourceDc == IntPtr.Zero) throw Win32Exception("GetWindowDC failed");
+                memoryDc = CreateCompatibleDC(sourceDc);
+                if (memoryDc == IntPtr.Zero) throw Win32Exception("CreateCompatibleDC failed");
+                bitmapHandle = CreateCompatibleBitmap(sourceDc, width, height);
+                if (bitmapHandle == IntPtr.Zero) throw Win32Exception("CreateCompatibleBitmap failed");
+                previousObject = SelectObject(memoryDc, bitmapHandle);
+                if (previousObject == IntPtr.Zero) throw Win32Exception("SelectObject failed");
+                if (!BitBlt(memoryDc, 0, 0, width, height, sourceDc, 0, 0, SRCCOPY)) throw Win32Exception("BitBlt failed");
+                using var bitmap = Image.FromHbitmap(bitmapHandle);
+                ValidateBitmapHasSignal(bitmap, "WindowDC-BitBlt");
+                SavePngAtomically(bitmap, filePath);
+            }
+            finally
+            {
+                if (previousObject != IntPtr.Zero && memoryDc != IntPtr.Zero) SelectObject(memoryDc, previousObject);
+                if (bitmapHandle != IntPtr.Zero) DeleteObject(bitmapHandle);
+                if (memoryDc != IntPtr.Zero) DeleteDC(memoryDc);
+                if (sourceDc != IntPtr.Zero) ReleaseDC(hwnd, sourceDc);
+            }
+        }
+
+        private static void SavePngAtomically(Image bitmap, string filePath)
         {
             var directory = Path.GetDirectoryName(filePath);
             if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-            var tempPath = filePath + ".tmp";
-            bitmap.Save(tempPath, ImageFormat.Png);
-            if (new FileInfo(tempPath).Length == 0)
-                throw new Exception("Screenshot file was empty after save");
-            if (File.Exists(filePath)) File.Delete(filePath);
-            File.Move(tempPath, filePath);
+            var tempPath = filePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                using var stream = new MemoryStream();
+                bitmap.Save(stream, ImageFormat.Png);
+                var bytes = stream.ToArray();
+                if (bytes.Length == 0) throw new Exception("Screenshot PNG encoder produced no bytes");
+                File.WriteAllBytes(tempPath, bytes);
+                if (new FileInfo(tempPath).Length == 0) throw new Exception("Screenshot file was empty after write");
+                File.Move(tempPath, filePath, overwrite: true);
+            }
+            finally
+            {
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* best effort */ }
+            }
+        }
+
+        private static void ValidateBitmapHasSignal(Bitmap bitmap, string strategy)
+        {
+            if (bitmap.Width <= 0 || bitmap.Height <= 0) throw new Exception($"{strategy} produced an invalid bitmap size: {bitmap.Width}x{bitmap.Height}");
+
+            int sampleColumns = Math.Min(24, bitmap.Width);
+            int sampleRows = Math.Min(24, bitmap.Height);
+            int minLuminance = 255;
+            int maxLuminance = 0;
+            int distinctBuckets = 0;
+            var buckets = new HashSet<int>();
+
+            for (int row = 0; row < sampleRows; row++)
+            {
+                int y = sampleRows == 1 ? 0 : (int)Math.Round(row * (bitmap.Height - 1) / (double)(sampleRows - 1));
+                for (int col = 0; col < sampleColumns; col++)
+                {
+                    int x = sampleColumns == 1 ? 0 : (int)Math.Round(col * (bitmap.Width - 1) / (double)(sampleColumns - 1));
+                    var pixel = bitmap.GetPixel(x, y);
+                    int luminance = (pixel.R * 299 + pixel.G * 587 + pixel.B * 114) / 1000;
+                    minLuminance = Math.Min(minLuminance, luminance);
+                    maxLuminance = Math.Max(maxLuminance, luminance);
+                    buckets.Add((pixel.R / 16 << 8) | (pixel.G / 16 << 4) | (pixel.B / 16));
+                }
+            }
+
+            distinctBuckets = buckets.Count;
+            if (maxLuminance - minLuminance < 4 || distinctBuckets < 2)
+            {
+                throw new Exception($"{strategy} produced a visually blank or uniform screenshot (sampled luminance range {minLuminance}-{maxLuminance}, colorBuckets={distinctBuckets})");
+            }
+        }
+
+        private static object CaptureSuccess(string filePath, CaptureContext capture, string strategy, List<object> attempts, List<string> warnings)
+        {
+            var foregroundAtCapture = GetWindowInfo(GetForegroundWindow());
+            var metadata = new
+            {
+                expected = capture.Expected,
+                target = capture.Target,
+                foregroundBefore = capture.ForegroundBefore,
+                foregroundAfter = capture.ForegroundAfter,
+                foregroundAtCapture,
+                bounds = RectToObject(capture.X, capture.Y, capture.Width, capture.Height),
+                monitor = capture.Monitor,
+                dpi = capture.Dpi,
+                validation = new
+                {
+                    targetMatchesForegroundAfterFocus = IsSameWindowInfo(capture.Target, capture.ForegroundAfter),
+                    targetMatchesForegroundAtCapture = IsSameWindowInfo(capture.Target, foregroundAtCapture),
+                }
+            };
+            return new
+            {
+                success = true,
+                filePath,
+                width = capture.Width,
+                height = capture.Height,
+                strategy,
+                attempts = attempts.ToArray(),
+                warnings = warnings.Distinct().ToArray(),
+                metadata,
+            };
+        }
+
+        private static void ValidateTargetWindow(IntPtr hwnd, int? expectedProcessId, string? expectedTitle, string? expectedWindowHandle, List<string> warnings)
+        {
+            var actualProcessId = GetWindowProcessId(hwnd);
+            var actualTitle = GetWindowTitle(hwnd);
+            var actualHandle = FormatHwnd(hwnd);
+
+            if (!string.IsNullOrEmpty(expectedWindowHandle) && !string.Equals(expectedWindowHandle, actualHandle, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new Exception($"Screenshot target HWND mismatch: expected {expectedWindowHandle}, actual {actualHandle}");
+            }
+            if (expectedProcessId.HasValue && actualProcessId != expectedProcessId.Value)
+            {
+                throw new Exception($"Screenshot target process mismatch: expected pid {expectedProcessId.Value}, actual pid {actualProcessId}");
+            }
+            if (!string.IsNullOrWhiteSpace(expectedTitle) && !actualTitle.Contains(expectedTitle, StringComparison.OrdinalIgnoreCase))
+            {
+                warnings.Add($"Screenshot target title changed after discovery. Expected to contain \"{expectedTitle}\", actual \"{actualTitle}\".");
+            }
+        }
+
+        private static object? GetWindowInfo(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return null;
+            return new
+            {
+                hwnd = FormatHwnd(hwnd),
+                processId = GetWindowProcessId(hwnd),
+                title = GetWindowTitle(hwnd),
+                bounds = GetWindowBounds(hwnd),
+            };
+        }
+
+        private static bool IsSameWindowInfo(object? left, object? right)
+        {
+            if (left == null || right == null) return false;
+            dynamic l = left;
+            dynamic r = right;
+            return string.Equals((string)l.hwnd, (string)r.hwnd, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsSameHwnd(IntPtr left, IntPtr right)
+        {
+            return left != IntPtr.Zero && left == right;
+        }
+
+        private static string FormatHwnd(IntPtr hwnd)
+        {
+            return $"0x{hwnd.ToInt64():X}";
+        }
+
+        private static int GetWindowProcessId(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return 0;
+            GetWindowThreadProcessId(hwnd, out var processId);
+            return unchecked((int)processId);
+        }
+
+        private static string GetWindowTitle(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return "";
+            var length = Math.Max(GetWindowTextLength(hwnd), 0);
+            var builder = new StringBuilder(length + 1);
+            _ = GetWindowText(hwnd, builder, builder.Capacity);
+            return builder.ToString();
+        }
+
+        private static object? GetWindowBounds(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var rect)) return null;
+            return RectToObject(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
+        }
+
+        private static object RectToObject(double x, double y, double width, double height)
+        {
+            return new { x, y, width, height };
+        }
+
+        private static object RectToObject(RECT rect)
+        {
+            return RectToObject(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
+        }
+
+        private static object? GetMonitorMetadata(IntPtr hwnd)
+        {
+            try
+            {
+                var monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                if (monitor == IntPtr.Zero) return null;
+                var info = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+                if (!GetMonitorInfo(monitor, ref info)) return null;
+                return new
+                {
+                    handle = FormatHwnd(monitor),
+                    bounds = RectToObject(info.rcMonitor),
+                    workArea = RectToObject(info.rcWork),
+                    flags = info.dwFlags,
+                };
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static uint? TryGetDpi(IntPtr hwnd)
+        {
+            try { return hwnd == IntPtr.Zero ? null : GetDpiForWindow(hwnd); }
+            catch { return null; }
+        }
+
+        private static Exception Win32Exception(string message)
+        {
+            return new Exception($"{message}; Win32Error={Marshal.GetLastWin32Error()}");
         }
 
         // ─── Helpers ─────────────────────────────────────────────────
@@ -502,6 +855,7 @@ namespace FlaUIBridge
                 id,
                 title = window.Name ?? "",
                 processId = window.Properties.ProcessId.ValueOrDefault,
+                nativeHandle = FormatHwnd(new IntPtr(window.Properties.NativeWindowHandle.ValueOrDefault)),
                 bounds = new { x = rect.X, y = rect.Y, width = rect.Width, height = rect.Height },
                 isVisible = !window.Properties.IsOffscreen.ValueOrDefault
             };

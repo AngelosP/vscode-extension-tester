@@ -126,7 +126,7 @@ Bridges Gherkin semantics to controller calls:
 - **`test-runner.ts`** - Iterates scenarios and steps, dispatching each step to the controller. Handles Background steps, step timeouts, and `.env` variable interpolation (`${VAR}`).
 - **`controller-client.ts`** - WebSocket client implementing a simple JSON-RPC protocol. Sends requests (method + params), awaits responses, and can run explicit diagnostic JavaScript in the extension host.
 - **`cdp-client.ts`** - Chrome DevTools Protocol client for renderer/webview automation: screenshot capture, DOM access, text insertion, keyboard events, selector-centered pointer clicks, visible-text webview clicks, and user-authored webview evals with caller-provided timeout budgets.
-- **`native-ui-client.ts`** - Client for the FlaUI .NET bridge, used for OS-level automation: native dialog handling (file pickers, message boxes), window management (resize, move), screen-coordinate mouse movement/clicking, accessible-element clicks, native keyboard fallback, screenshot warnings, and structured bridge errors.
+- **`native-ui-client.ts`** - Client for the FlaUI .NET bridge, used for OS-level automation: native dialog handling (file pickers, message boxes), window management (resize, move), screen-coordinate mouse movement/clicking, accessible-element clicks, native keyboard fallback, screenshot target metadata, screenshot fallback ordering (`CopyFromScreen` retries, `WindowDC-BitBlt`, then `PrintWindow`), screenshot warnings, and structured bridge errors.
 
 ### 4. Controller Extension (`packages/controller-extension/src/`)
 
@@ -141,7 +141,7 @@ Runs inside the VS Code Extension Host. Activated when `VSCODE_EXT_TESTER_PORT` 
 
 ### 5. FlaUI Bridge (`dotnet/`)
 
-An optional .NET 8 process that uses [FlaUI](https://github.com/FlaUI/FlaUI) to automate native Windows UI elements that can't be reached through the VS Code API (e.g., OS file dialogs, system message boxes, window resize/move, screen-coordinate mouse input, right-click/context-menu opening). Communicates with the CLI over stdin/stdout using request IDs so delayed native responses cannot be confused with later requests. Screenshot capture retries `CopyFromScreen`, can fall back to `PrintWindow`, and returns warning metadata when a fallback was needed.
+An optional .NET 8 process that uses [FlaUI](https://github.com/FlaUI/FlaUI) to automate native Windows UI elements that can't be reached through the VS Code API (e.g., OS file dialogs, system message boxes, window resize/move, screen-coordinate mouse input, right-click/context-menu opening). Communicates with the CLI over stdin/stdout using request IDs so delayed native responses cannot be confused with later requests. Screenshot capture retries `CopyFromScreen`, falls back to `WindowDC-BitBlt`, then `PrintWindow`, and returns target/fallback metadata when capture needs auditing.
 
 ## Communication Protocol
 

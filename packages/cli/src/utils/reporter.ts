@@ -160,8 +160,11 @@ function generateMarkdown(result: TestRunResult, metadataOrScreenshots?: RunMeta
     lines.push('**IMPORTANT: Use `view_image` on each screenshot to verify the test actually passed.**');
     lines.push(`Screenshots are in \`${runDirRel ?? 'the run directory'}\`:`, '');
     for (const s of screenshots) {
-      const imgPath = runDirRel ? `${runDirRel}/${s}` : s;
+      const imgPath = runDirRel && !pathIsUnder(s, runDirRel) ? `${runDirRel}/${s}` : s;
       lines.push(`- \`${imgPath}\``);
+      const screenshotArtifact = (artifacts ?? []).find((artifact) => isScreenshotKind(artifact.kind) && artifact.path === s);
+      const metadataLine = formatScreenshotMetadata(screenshotArtifact?.metadata);
+      if (metadataLine) lines.push(`  - ${metadataLine}`);
     }
     lines.push('');
   }
@@ -285,6 +288,7 @@ interface SerializableArtifact {
   readonly iteration?: StepArtifact['iteration'];
   readonly label?: string;
   readonly message?: string;
+  readonly metadata?: StepArtifact['metadata'];
 }
 
 function collectSerializableArtifacts(result: TestRunResult, cwd: string): SerializableArtifact[] {
@@ -310,6 +314,7 @@ function collectSerializableArtifacts(result: TestRunResult, cwd: string): Seria
       iteration: normalized.iteration,
       label: normalized.label,
       message: normalized.message,
+      metadata: normalized.metadata,
     };
     const key = `${item.kind}\0${item.path ?? ''}\0${item.name ?? ''}\0${item.message ?? ''}`;
     if (seen.has(key)) continue;
@@ -371,6 +376,51 @@ function normalizeStepArtifact(artifact: StepArtifact, cwd: string): StepArtifac
       ? { ...artifact.iteration, artifactsDir: normalizeArtifactPath(artifact.iteration.artifactsDir, cwd) }
       : undefined,
   };
+}
+
+function formatScreenshotMetadata(metadata: StepArtifact['metadata']): string | undefined {
+  if (!metadata || typeof metadata !== 'object') return undefined;
+  const value = metadata as Record<string, any>;
+  const target = value.target as Record<string, unknown> | undefined;
+  const foreground = (value.foregroundAtCapture ?? value.foregroundAfter) as Record<string, unknown> | undefined;
+  const bounds = value.bounds as Record<string, unknown> | undefined;
+  const parts = [
+    value.strategy ? `strategy=${String(value.strategy)}` : undefined,
+    Array.isArray(value.attempts) ? `attempts=${formatAttemptSummary(value.attempts)}` : undefined,
+    target ? `target=${formatWindowSummary(target)}` : undefined,
+    foreground ? `foreground=${formatWindowSummary(foreground)}` : undefined,
+    bounds ? `bounds=${formatBounds(bounds)}` : undefined,
+    value.dpi ? `dpi=${String(value.dpi)}` : undefined,
+    value.validation ? `validation=${JSON.stringify(value.validation)}` : undefined,
+  ].filter((part): part is string => Boolean(part));
+  return parts.length > 0 ? parts.join('; ') : undefined;
+}
+
+function formatAttemptSummary(attempts: Array<Record<string, unknown>>): string {
+  return attempts
+    .map((attempt) => `${String(attempt.strategy ?? '?')}:${attempt.success === true ? 'ok' : 'failed'}`)
+    .join(',');
+}
+
+function formatWindowSummary(value: Record<string, unknown>): string {
+  const hwnd = value.hwnd ? String(value.hwnd) : '?';
+  const pid = value.processId !== undefined ? String(value.processId) : '?';
+  const title = truncate(String(value.title ?? ''), 80);
+  return `${hwnd}/pid:${pid}${title ? `/"${title}"` : ''}`;
+}
+
+function formatBounds(value: Record<string, unknown>): string {
+  return `${Math.round(Number(value.x ?? 0))},${Math.round(Number(value.y ?? 0))} ${Math.round(Number(value.width ?? 0))}x${Math.round(Number(value.height ?? 0))}`;
+}
+
+function truncate(value: string, maxLength: number): string {
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength - 1)}...`;
+}
+
+function pathIsUnder(candidate: string, parent: string): boolean {
+  const normalizedCandidate = candidate.replace(/\\/g, '/').toLowerCase();
+  const normalizedParent = parent.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+  return normalizedCandidate === normalizedParent || normalizedCandidate.startsWith(`${normalizedParent}/`);
 }
 
 function isScreenshotKind(kind: StepArtifact['kind']): boolean {

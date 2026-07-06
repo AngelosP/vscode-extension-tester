@@ -134,13 +134,23 @@ export class NativeUIClient {
   }
 
   /** Capture a window screenshot to a PNG file. */
-  async captureWindowScreenshot(windowId: string, filePath: string): Promise<ScreenshotCaptureResult> {
-    return this.call('captureWindowScreenshot', { windowId, filePath }) as Promise<ScreenshotCaptureResult>;
+  async captureWindowScreenshot(
+    windowId: string,
+    filePath: string,
+    expected?: { processId?: number; title?: string; windowHandle?: string },
+  ): Promise<ScreenshotCaptureResult> {
+    return this.call('captureWindowScreenshot', {
+      windowId,
+      filePath,
+      expectedProcessId: expected?.processId,
+      expectedTitle: expected?.title,
+      expectedWindowHandle: expected?.windowHandle,
+    }) as Promise<ScreenshotCaptureResult>;
   }
 
-  /** List all visible windows. */
-  async listWindows(): Promise<NativeWindow[]> {
-    return this.call('listWindows', {}) as Promise<NativeWindow[]>;
+  /** List top-level windows. Hidden/minimized windows are included only when requested. */
+  async listWindows(options: { includeOffscreen?: boolean } = {}): Promise<NativeWindow[]> {
+    return this.call('listWindows', options) as Promise<NativeWindow[]>;
   }
 
   /** Get the accessibility tree of a window. */
@@ -266,8 +276,12 @@ export class NativeUIClient {
 
   /** Capture the Dev Host window to a PNG file. */
   async captureDevHostScreenshot(filePath: string): Promise<ScreenshotCaptureResult> {
-    const win = await this.findDevHostWindow();
-    return this.captureWindowScreenshot(win.id, filePath);
+    const win = await this.findDevHostWindow({ includeOffscreen: true });
+    return this.captureWindowScreenshot(win.id, filePath, {
+      processId: win.processId,
+      title: win.title,
+      windowHandle: win.nativeHandle,
+    });
   }
 
   /**
@@ -367,10 +381,10 @@ export class NativeUIClient {
   }
 
   /** Find the Extension Development Host window. */
-  private async findDevHostWindow(): Promise<NativeWindow> {
+  private async findDevHostWindow(options: { includeOffscreen?: boolean } = {}): Promise<NativeWindow> {
     const allowedPids = this.targetPid ? getDescendantPids(this.targetPid) : undefined;
 
-    const windows = await this.listWindows() as NativeWindow[];
+    const windows = await this.listWindows({ includeOffscreen: options.includeOffscreen }) as NativeWindow[];
     const candidates = windows.filter(
       w => w.title.includes('Extension Development Host')
     );
@@ -611,6 +625,7 @@ export interface NativeWindow {
   id: string;
   title: string;
   processId: number;
+  nativeHandle?: string;
   bounds: { x: number; y: number; width: number; height: number };
   isVisible: boolean;
 }

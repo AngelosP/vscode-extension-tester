@@ -241,6 +241,12 @@ describe('Types and Constants', () => {
         width: 800,
         height: 600,
         warnings: ['Used PrintWindow fallback'],
+        metadata: {
+          target: { hwnd: '0x1234', processId: 4242, title: 'Extension Development Host', bounds: { x: 0, y: 0, width: 800, height: 600 } },
+          foregroundAtCapture: { hwnd: '0x1234', processId: 4242, title: 'Extension Development Host' },
+          dpi: 96,
+          validation: { targetMatchesForegroundAtCapture: true },
+        },
       };
 
       const summary: LiveSessionSummary = {

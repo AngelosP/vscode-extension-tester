@@ -93,10 +93,14 @@ while ((line = Console.ReadLine()) != null)
                 new
                 {
                     windowId = p.GetProperty("windowId").GetString()!,
-                    filePath = p.GetProperty("filePath").GetString()!
+                    filePath = p.GetProperty("filePath").GetString()!,
+                    expectedProcessId = p.TryGetProperty("expectedProcessId", out var expectedPid) && expectedPid.ValueKind == JsonValueKind.Number ? expectedPid.GetInt32() : (int?)null,
+                    expectedTitle = p.TryGetProperty("expectedTitle", out var expectedTitle) && expectedTitle.ValueKind == JsonValueKind.String ? expectedTitle.GetString() : null,
+                    expectedWindowHandle = p.TryGetProperty("expectedWindowHandle", out var expectedHandle) && expectedHandle.ValueKind == JsonValueKind.String ? expectedHandle.GetString() : null,
                 }),
 
-            "listWindows" => await automation.ListWindows(null!),
+            "listWindows" => await automation.ListWindows(
+                new { includeOffscreen = p.ValueKind != JsonValueKind.Undefined && p.TryGetProperty("includeOffscreen", out var includeOffscreen) && includeOffscreen.ValueKind == JsonValueKind.True }),
 
             "getElementTree" => await automation.GetElementTree(
                 new { windowId = p.GetProperty("windowId").GetString()! }),

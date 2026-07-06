@@ -102,6 +102,7 @@ const SAMPLE_WINDOW = {
   id: 'win_1',
   title: 'Test Window',
   processId: 1234,
+  nativeHandle: '0x1111',
   bounds: { x: 0, y: 0, width: 800, height: 600 },
   isVisible: true,
 };
@@ -110,6 +111,7 @@ const DEV_HOST_WINDOW = {
   id: 'devhost_1',
   title: 'Extension Development Host - Test',
   processId: 1234,
+  nativeHandle: '0x2222',
   bounds: { x: 50, y: 75, width: 800, height: 600 },
   isVisible: true,
 };
@@ -296,6 +298,28 @@ describe('NativeUIClient', () => {
       await expect(client.clickInDevHostAt(24, 300)).rejects.toThrow('matching target PID 9999 was not found');
     });
 
+    it('captureDevHostScreenshot() should pass discovered Dev Host identity', async () => {
+      respondWith([DEV_HOST_WINDOW]);
+      respondWith({ success: true });
+      respondWith({ success: true, filePath: 'C:\\tmp\\devhost.png' });
+
+      await client.captureDevHostScreenshot('C:\\tmp\\devhost.png');
+
+      const listWindows = JSON.parse(stdinWrites[0]);
+      expect(listWindows).toMatchObject({ method: 'listWindows', params: { includeOffscreen: true } });
+      const sent = JSON.parse(stdinWrites[2]);
+      expect(sent).toMatchObject({
+        method: 'captureWindowScreenshot',
+        params: {
+          windowId: 'devhost_1',
+          filePath: 'C:\\tmp\\devhost.png',
+          expectedProcessId: 1234,
+          expectedTitle: 'Extension Development Host - Test',
+          expectedWindowHandle: '0x2222',
+        },
+      });
+    });
+
     it('setText() should send correct JSON', async () => {
       respondWith({ success: true });
       await client.setText('elem_1', 'hello.txt');
@@ -336,12 +360,22 @@ describe('NativeUIClient', () => {
 
     it('captureWindowScreenshot() should send correct JSON', async () => {
       respondWith({ success: true });
-      await client.captureWindowScreenshot('win_1', 'C:\\tmp\\shot.png');
+      await client.captureWindowScreenshot('win_1', 'C:\\tmp\\shot.png', {
+        processId: 1234,
+        title: 'Extension Development Host',
+        windowHandle: '0x1111',
+      });
 
       const sent = JSON.parse(stdinWrites[0]);
       expect(sent).toMatchObject({
         method: 'captureWindowScreenshot',
-        params: { windowId: 'win_1', filePath: 'C:\\tmp\\shot.png' },
+        params: {
+          windowId: 'win_1',
+          filePath: 'C:\\tmp\\shot.png',
+          expectedProcessId: 1234,
+          expectedTitle: 'Extension Development Host',
+          expectedWindowHandle: '0x1111',
+        },
       });
     });
 

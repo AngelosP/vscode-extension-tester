@@ -1607,8 +1607,38 @@ export class TestRunner {
     fs.mkdirSync(targetDir, { recursive: true });
 
     const result = await (await this.requireNativeUI()).captureDevHostScreenshot(filePath);
+    if (!result?.success) {
+      throw new Error(`Screenshot capture did not report success for ${filePath}`);
+    }
+    if (!fs.existsSync(filePath) || fs.statSync(filePath).size === 0) {
+      throw new Error(`Screenshot capture reported success but did not create a non-empty PNG: ${filePath}`);
+    }
+    const validation = result.metadata?.validation as Record<string, unknown> | undefined;
+    const targetMatchesForeground = validation?.['targetMatchesForegroundAtCapture'] === true;
+    const strategy = result.strategy ?? 'unknown';
+    if (!targetMatchesForeground && strategy !== 'CopyFromScreen') {
+      throw new Error(
+        `Screenshot capture used ${strategy} while the foreground window did not match the Dev Host target. ` +
+        'The artifact is not trustworthy visual evidence; see native capture metadata for target/foreground details.'
+      );
+    }
     const warnings = result?.warnings?.filter(Boolean) ?? [];
-    return { kind, path: filePath, label: label ?? 'screenshot', message: warnings.length > 0 ? warnings.join('\n') : undefined };
+    const metadata = {
+      strategy: result.strategy,
+      attempts: result.attempts,
+      width: result.width,
+      height: result.height,
+      warnings,
+      native: result.metadata,
+      ...(result.metadata ?? {}),
+    };
+    return {
+      kind,
+      path: filePath,
+      label: label ?? 'screenshot',
+      message: warnings.length > 0 ? warnings.join('\n') : undefined,
+      metadata,
+    };
   }
 
   private async takeScreenshot(label?: string): Promise<void> {

@@ -1,6 +1,6 @@
 {
   "name": "vscode-ext-test",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "E2E test VS Code extensions as if a real user was operating them",
   "main": "dist/cli.js",
   "bin": {

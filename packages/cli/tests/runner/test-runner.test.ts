@@ -66,7 +66,22 @@ function resetMockNativeUI(): void {
     focusInDevHost: vi.fn().mockResolvedValue(undefined),
     resizeDevHost: vi.fn().mockResolvedValue(undefined),
     moveDevHost: vi.fn().mockResolvedValue(undefined),
-    captureDevHostScreenshot: vi.fn().mockResolvedValue(undefined),
+    captureDevHostScreenshot: vi.fn().mockImplementation(async (filePath: string) => {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, 'png', 'utf-8');
+      return {
+        success: true,
+        filePath,
+        width: 800,
+        height: 600,
+        strategy: 'CopyFromScreen',
+        metadata: {
+          target: { hwnd: '0x1234', processId: 4242, title: 'Extension Development Host', bounds: { x: 0, y: 0, width: 800, height: 600 } },
+          foregroundAtCapture: { hwnd: '0x1234', processId: 4242, title: 'Extension Development Host' },
+          validation: { targetMatchesForegroundAtCapture: true },
+        },
+      };
+    }),
     getDevHostTree: vi.fn().mockResolvedValue({}),
   };
 }
@@ -2616,10 +2631,71 @@ Feature: Inline JSON
       ]);
 
       try {
-        await screenshotRunner.runFeature(feature);
+        const result = await screenshotRunner.runFeature(feature);
         expect(getMockNativeUI().captureDevHostScreenshot).toHaveBeenCalledWith(
           path.join(artifactsDir, '1-resource_picker.png')
         );
+        const artifact = result.scenarios[0].steps[0].artifacts?.screenshots[0];
+        expect(artifact?.metadata).toMatchObject({
+          strategy: 'CopyFromScreen',
+          width: 800,
+          height: 600,
+          target: { hwnd: '0x1234', processId: 4242 },
+          foregroundAtCapture: { hwnd: '0x1234', processId: 4242 },
+        });
+      } finally {
+        screenshotRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should fail screenshot steps when native capture reports success without a file', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-artifacts-'));
+      const screenshotRunner = new TestRunner(client, {}, artifactsDir);
+      getMockNativeUI().captureDevHostScreenshot.mockResolvedValueOnce({ success: true, filePath: path.join(artifactsDir, 'missing.png') });
+      const feature = makeFeature('Test', [
+        makeScenario('Screenshot missing file', [
+          makeStep('When ', 'I take a screenshot "missing"'),
+        ]),
+      ]);
+
+      try {
+        const result = await screenshotRunner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('failed');
+        expect(result.scenarios[0].steps[0].error?.message).toContain('did not create a non-empty PNG');
+      } finally {
+        screenshotRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should fail screenshot steps when fallback capture is not foreground-validated', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-artifacts-'));
+      const screenshotRunner = new TestRunner(client, {}, artifactsDir);
+      const filePath = path.join(artifactsDir, '1-unverified.png');
+      getMockNativeUI().captureDevHostScreenshot.mockImplementationOnce(async () => {
+        fs.writeFileSync(filePath, 'png', 'utf-8');
+        return {
+          success: true,
+          filePath,
+          strategy: 'PrintWindow',
+          metadata: {
+            validation: { targetMatchesForegroundAtCapture: false },
+            target: { hwnd: '0x1234', processId: 4242, title: 'Extension Development Host' },
+            foregroundAtCapture: { hwnd: '0x9999', processId: 9999, title: 'Other App' },
+          },
+        };
+      });
+      const feature = makeFeature('Test', [
+        makeScenario('Unverified screenshot', [
+          makeStep('When ', 'I take a screenshot "unverified"'),
+        ]),
+      ]);
+
+      try {
+        const result = await screenshotRunner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('failed');
+        expect(result.scenarios[0].steps[0].error?.message).toContain('not trustworthy visual evidence');
       } finally {
         screenshotRunner.cleanup();
         fs.rmSync(artifactsDir, { recursive: true, force: true });

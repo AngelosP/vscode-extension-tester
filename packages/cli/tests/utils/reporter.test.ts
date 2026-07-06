@@ -340,6 +340,57 @@ describe('reporter', () => {
       expect(json.screenshots[0]).toContain('1-screenshot.png');
     });
 
+    it('should include screenshot capture metadata in results.json and report.md', () => {
+      const runDir = path.join(tmpDir, 'tests', 'vscode-extension-tester', 'runs', 'screenshot-meta-run');
+      const screenshotPath = path.join(runDir, '1-proof.png');
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(screenshotPath, 'png', 'utf-8');
+      const metadata = {
+        strategy: 'CopyFromScreen',
+        attempts: [{ attempt: 1, strategy: 'CopyFromScreen', success: true }],
+        width: 800,
+        height: 600,
+        target: { hwnd: '0x1234', processId: 4242, title: 'Extension Development Host', bounds: { x: 0, y: 0, width: 800, height: 600 } },
+        foregroundAtCapture: { hwnd: '0x1234', processId: 4242, title: 'Extension Development Host' },
+        bounds: { x: 0, y: 0, width: 800, height: 600 },
+        dpi: 96,
+        validation: { targetMatchesForegroundAtCapture: true },
+      };
+      const base = makeRunResult();
+      const result: TestRunResult = {
+        ...base,
+        features: [{
+          ...base.features[0],
+          scenarios: [{
+            ...base.features[0].scenarios[0],
+            steps: [{
+              ...base.features[0].scenarios[0].steps[0],
+              artifacts: {
+                screenshots: [{ kind: 'screenshot', path: screenshotPath, label: 'proof', metadata }],
+                logs: [],
+                warnings: [],
+              },
+            }],
+          }],
+        }],
+      };
+
+      writeRunArtifacts(result, tmpDir, 'screenshot-meta-run', [], '');
+
+      const json = JSON.parse(fs.readFileSync(path.join(runDir, 'results.json'), 'utf-8'));
+      expect(json.features[0].scenarios[0].steps[0].artifacts.screenshots[0].metadata.target.hwnd).toBe('0x1234');
+      expect(json.features[0].scenarios[0].steps[0].artifacts.screenshots[0].metadata.strategy).toBe('CopyFromScreen');
+      expect(json.features[0].scenarios[0].steps[0].artifacts.screenshots[0].metadata.attempts[0].strategy).toBe('CopyFromScreen');
+      expect(json.artifacts[0].metadata.target.processId).toBe(4242);
+      const report = fs.readFileSync(path.join(runDir, 'report.md'), 'utf-8');
+      expect(report).toContain('tests\\vscode-extension-tester\\runs\\screenshot-meta-run\\1-proof.png');
+      expect(report).not.toContain('screenshot-meta-run/tests');
+      expect(report).toContain('strategy=CopyFromScreen');
+      expect(report).toContain('attempts=CopyFromScreen:ok');
+      expect(report).toContain('target=0x1234/pid:4242');
+      expect(report).toContain('dpi=96');
+    });
+
     it('should include generic JSON artifacts in results.json and report.md', () => {
       const runDir = path.join(tmpDir, 'tests', 'vscode-extension-tester', 'runs', 'json-run');
       const artifactPath = path.join(runDir, 'iteration-001', 'json-artifacts', 'Scenario', 'webview-perf.json');
