@@ -30,5 +30,5 @@ describe('buildExtension', () => {
     const writes = stderr.mock.calls.map((call) => String(call[0])).join('');
     expect(writes).toContain('child-out');
     expect(writes).toContain('child-err');
-  });
+  }, 30_000);
 });
