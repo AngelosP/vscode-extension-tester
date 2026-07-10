@@ -43,10 +43,10 @@ function isVisible(el) {
   return rect.width > 0 && rect.height > 0;
 }
 function clean(text) {
-  return String(text || '').replace(/\s+/g, ' ').trim();
+  return String(text || '').replace(/\\s+/g, ' ').trim();
 }
 function stripThemeIcons(text) {
-  return clean(text).replace(/\$\([^)]+\)\s*/g, '').trim();
+  return clean(text).replace(/\\\$\\([^)]+\\)\\s*/g, '').trim();
 }
 function widget() {
   const widgets = Array.from(document.querySelectorAll('.quick-input-widget'));

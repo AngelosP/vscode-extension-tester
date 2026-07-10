@@ -206,7 +206,10 @@ function createMockClient(): ControllerClient {
     closeWindow: vi.fn().mockResolvedValue(undefined),
     listCommands: vi.fn().mockResolvedValue([]),
     getFullState: vi.fn().mockResolvedValue({}),
-    setLogLevel: vi.fn().mockResolvedValue(undefined),
+    setLogLevel: vi.fn().mockImplementation(async (level: string, channel?: string) => channel
+      ? { status: 'applied', scope: 'channel', channel, channelCommand: `workbench.action.output.show.${channel}` }
+      : { status: 'ok', scope: 'global', actualLevel: level }),
+    getLogLevel: vi.fn().mockResolvedValue('Info'),
     getExtensionStatus: vi.fn().mockResolvedValue([]),
     typeText: vi.fn().mockResolvedValue(undefined),
     openFile: vi.fn().mockResolvedValue(undefined),
@@ -344,6 +347,33 @@ describe('TestRunner', () => {
         fs.rmSync(artifactsDir, { recursive: true, force: true });
       }
     });
+
+    it('does not carry observed output channels into the next live step', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-live-'));
+      const liveRunner = new TestRunner(client, {}, artifactsDir);
+      (client.getOutputChannels as any).mockResolvedValue([]);
+      (client.getCapturedChannels as any).mockResolvedValue([]);
+      getMockCdp().readOutputChannelContent.mockResolvedValue('trace from step one\n');
+
+      try {
+        const first = await liveRunner.runSingleStep(
+          makeStep('Then ', 'the output channel "Kusto Workbench" should contain "step one"'),
+          { stepIndex: 1, screenshotPolicy: 'never', includeState: false },
+        );
+        const second = await liveRunner.runSingleStep(
+          makeStep('When ', 'I execute command "test.command"'),
+          { stepIndex: 2, screenshotPolicy: 'never', includeState: false },
+        );
+
+        const firstManifest = JSON.parse(fs.readFileSync(first.artifacts.manifestPath!, 'utf-8'));
+        const secondManifest = JSON.parse(fs.readFileSync(second.artifacts.manifestPath!, 'utf-8'));
+        expect(firstManifest.channelCaptures.map((capture: { name: string }) => capture.name)).toContain('Kusto Workbench');
+        expect(secondManifest.channelCaptures.map((capture: { name: string }) => capture.name)).not.toContain('Kusto Workbench');
+      } finally {
+        liveRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('step dispatch', () => {
@@ -381,6 +411,127 @@ describe('TestRunner', () => {
       await runner.runFeature(feature);
 
       expect(client.startCommand).toHaveBeenCalledWith('kusto.openRemoteFile');
+    });
+
+    it('sets and verifies a named output channel log level', async () => {
+      getMockCdp().getWorkbenchQuickInputState.mockResolvedValue({
+        active: true,
+        source: 'workbench',
+        items: [{ id: 'workbench-item-1', label: 'Kusto Workbench', matchLabel: 'Kusto Workbench', description: 'Trace' }],
+      });
+      const feature = makeFeature('Test', [
+        makeScenario('Named log level', [
+          makeStep('When ', 'I set the output channel "Kusto Workbench" log level to "Trace"'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(client.setLogLevel).toHaveBeenCalledWith('Trace', 'Kusto Workbench');
+      expect(client.startCommand).toHaveBeenCalledWith('workbench.action.setLogLevel');
+    });
+
+    it('reports the actual named output channel log level on mismatch', async () => {
+      getMockCdp().getWorkbenchQuickInputState.mockResolvedValue({
+        active: true,
+        source: 'workbench',
+        items: [{ id: 'workbench-item-1', label: 'Kusto Workbench', matchLabel: 'Kusto Workbench', description: 'Debug' }],
+      });
+      const feature = makeFeature('Test', [
+        makeScenario('Named log level mismatch', [
+          makeStep('Then ', 'the output channel "Kusto Workbench" log level should be "Trace"'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('failed');
+      expect(result.scenarios[0].steps[0].error?.message).toContain('actual level is Debug');
+    });
+
+    it('uses the global level when a channel has no override description', async () => {
+      (client.getLogLevel as any).mockResolvedValue('Trace');
+      getMockCdp().getWorkbenchQuickInputState.mockResolvedValue({
+        active: true,
+        source: 'workbench',
+        items: [{ id: 'workbench-item-1', label: 'Kusto Workbench', matchLabel: 'Kusto Workbench' }],
+      });
+      const feature = makeFeature('Test', [
+        makeScenario('Inherited log level', [
+          makeStep('Then ', 'the output channel "Kusto Workbench" log level should be "Trace"'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(client.getLogLevel).toHaveBeenCalled();
+    });
+
+    it('falls back to the workbench picker for the global log level', async () => {
+      (client.setLogLevel as any).mockRejectedValue(new Error('extension-tests hook unavailable'));
+      (client.getLogLevel as any).mockResolvedValue('Trace');
+      getMockCdp().getWorkbenchQuickInputState.mockResolvedValue({
+        active: true,
+        source: 'workbench',
+        items: [{ id: 'workbench-item-0', label: 'Trace', matchLabel: 'Trace' }],
+      });
+      const feature = makeFeature('Test', [
+        makeScenario('Global log level', [
+          makeStep('When ', 'I set the global log level to "Trace"'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(getMockCdp().selectWorkbenchQuickInputItem).toHaveBeenCalledWith('Trace');
+      expect(client.getLogLevel).toHaveBeenCalled();
+    });
+
+    it('waits for the global picker level to settle and closes the picker', async () => {
+      (client.setLogLevel as any).mockRejectedValue(new Error('extension-tests hook unavailable'));
+      (client.getLogLevel as any)
+        .mockResolvedValueOnce('Info')
+        .mockResolvedValueOnce('Info')
+        .mockResolvedValue('Trace');
+      getMockCdp().getWorkbenchQuickInputState.mockResolvedValue({
+        active: true,
+        source: 'workbench',
+        items: [{ id: 'workbench-item-0', label: 'Trace', matchLabel: 'Trace' }],
+      });
+      const feature = makeFeature('Test', [
+        makeScenario('Settled global log level', [
+          makeStep('When ', 'I set the global log level to "Trace"'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('passed');
+      expect(client.getLogLevel).toHaveBeenCalledTimes(3);
+      expect(client.executeCommand).toHaveBeenCalledWith('workbench.action.closeQuickOpen');
+    });
+
+    it('closes the global picker when level selection fails', async () => {
+      (client.setLogLevel as any).mockRejectedValue(new Error('extension-tests hook unavailable'));
+      getMockCdp().getWorkbenchQuickInputState.mockResolvedValue({
+        active: true,
+        source: 'workbench',
+        items: [{ id: 'workbench-item-0', label: 'Trace', matchLabel: 'Trace' }],
+      });
+      getMockCdp().selectWorkbenchQuickInputItem.mockRejectedValue(new Error('CDP click failed'));
+      const feature = makeFeature('Test', [
+        makeScenario('Failed global log level', [
+          makeStep('When ', 'I set the global log level to "Trace"'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('failed');
+      expect(client.executeCommand).toHaveBeenCalledWith('workbench.action.closeQuickOpen');
     });
 
     it('should handle "I select from the QuickPick" step', async () => {
@@ -1453,6 +1604,94 @@ Feature: Inline JSON
       const result = await runner.runFeature(feature);
       expect(result.scenarios[0].status).toBe('failed');
       expect(result.scenarios[0].steps[0].error?.message).toContain('was not captured');
+    });
+
+    it('persists CDP fallback content when controller interception is empty', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-output-'));
+      const artifactRunner = new TestRunner(client, {}, artifactsDir);
+      (client.getOutputChannels as any).mockResolvedValue([]);
+      (client.getCapturedChannels as any).mockResolvedValue([]);
+      getMockCdp().readOutputChannelContent.mockResolvedValue('service.start\nclient.success\n');
+
+      try {
+        await artifactRunner.runFeature(makeFeature('Test', [
+          makeScenario('Trace capture', [
+            makeStep('Then ', 'the output channel "Kusto Workbench" should contain "client.success"'),
+          ]),
+        ]));
+
+        const scenarioDir = path.join(artifactsDir, 'output-channels', 'Trace_capture');
+        const logPath = path.join(scenarioDir, 'Kusto_Workbench.log');
+        const manifest = JSON.parse(fs.readFileSync(path.join(scenarioDir, '_capture-manifest.json'), 'utf-8'));
+        expect(fs.readFileSync(logPath, 'utf-8')).toBe('service.start\nclient.success\n');
+        expect(manifest.capturedChannels).toContainEqual({
+          name: 'Kusto Workbench',
+          length: 29,
+          source: 'cdp-fallback',
+        });
+        expect(manifest.channelCaptures).toContainEqual({
+          name: 'Kusto Workbench',
+          length: 29,
+          source: 'cdp-fallback',
+          controllerLength: 0,
+        });
+      } finally {
+        artifactRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('prefers controller content and records its source', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-output-'));
+      const artifactRunner = new TestRunner(client, {}, artifactsDir);
+      (client.getOutputChannels as any).mockResolvedValue(['Kusto Workbench']);
+      (client.getCapturedChannels as any).mockResolvedValue([{ name: 'Kusto Workbench', content: 'controller trace\n' }]);
+      getMockCdp().readOutputChannelContent.mockResolvedValue('fallback trace\n');
+
+      try {
+        await artifactRunner.runFeature(makeFeature('Test', [
+          makeScenario('Controller capture', [makeStep('Given ', 'the VS Code is in a clean state')]),
+        ]));
+
+        const scenarioDir = path.join(artifactsDir, 'output-channels', 'Controller_capture');
+        const manifest = JSON.parse(fs.readFileSync(path.join(scenarioDir, '_capture-manifest.json'), 'utf-8'));
+        expect(fs.readFileSync(path.join(scenarioDir, 'Kusto_Workbench.log'), 'utf-8')).toBe('controller trace\n');
+        expect(manifest.capturedChannels[0].source).toBe('controller');
+        expect(getMockCdp().readOutputChannelContent).not.toHaveBeenCalled();
+      } finally {
+        artifactRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists an unobserved channel discovered only through CDP', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-output-'));
+      const artifactRunner = new TestRunner(client, {}, artifactsDir);
+      (client.getOutputChannels as any).mockResolvedValue([]);
+      (client.getCapturedChannels as any).mockResolvedValue([]);
+      getMockCdp().getOutputChannelDescriptors.mockResolvedValue([
+        { id: 'kusto', label: 'Kusto Workbench', file: 'Kusto Workbench.log' },
+      ]);
+      getMockCdp().readOutputChannelContent.mockResolvedValue('unobserved trace\n');
+
+      try {
+        await artifactRunner.runFeature(makeFeature('Test', [
+          makeScenario('Unobserved capture', [makeStep('Given ', 'the VS Code is in a clean state')]),
+        ]));
+
+        const scenarioDir = path.join(artifactsDir, 'output-channels', 'Unobserved_capture');
+        const manifest = JSON.parse(fs.readFileSync(path.join(scenarioDir, '_capture-manifest.json'), 'utf-8'));
+        expect(fs.readFileSync(path.join(scenarioDir, 'Kusto_Workbench.log'), 'utf-8')).toBe('unobserved trace\n');
+        expect(manifest.channelCaptures).toContainEqual({
+          name: 'Kusto Workbench',
+          length: 17,
+          source: 'cdp-fallback',
+          controllerLength: 0,
+        });
+      } finally {
+        artifactRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
     });
   });
 

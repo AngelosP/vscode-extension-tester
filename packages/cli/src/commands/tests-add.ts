@@ -54,6 +54,8 @@ Given steps (setup):
 When steps (actions):
   When I execute command "<commandId>"
   When I start command "<commandId>"
+  When I set the output channel "<name>" log level to "<level>"
+  When I set the global log level to "<level>"
   When I inspect the QuickInput
   When I select QuickInput item "<label>"
   When I select "<label>" from the QuickInput
@@ -100,6 +102,8 @@ Then steps (assertions):
   Then progress "<title>" should be completed
   Then the editor should contain "<text>"
   Then the output channel "<name>" should contain "<text>"
+  Then the output channel "<name>" log level should be "<level>"
+  Then the global log level should be "<level>"
   Then the webview should contain "<text>"
   Then element "<css selector>" should exist
   Then I wait <N> seconds

@@ -480,11 +480,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'set_log_level',
-      description: 'Change the controller extension log level for more detailed diagnostics.',
+      description: 'Set VS Code\'s global log level or a named LogOutputChannel level for diagnostics.',
       parameters: {
         type: 'object',
         properties: {
-          level: { type: 'string', enum: ['error', 'warn', 'info', 'debug', 'trace'], description: 'Log level' },
+          level: { type: 'string', enum: ['off', 'error', 'warning', 'warn', 'info', 'debug', 'trace'], description: 'Log level' },
+          channel: { type: 'string', description: 'Optional visible LogOutputChannel name. Omit for the global level.' },
         },
         required: ['level'],
       },
@@ -934,9 +935,31 @@ async function toolTypeText(ctx: ToolContext, args: Record<string, unknown>): Pr
 }
 
 async function toolSetLogLevel(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
-  const client = requireClient(ctx);
-  await client.setLogLevel(args['level'] as string);
-  return `Log level set to ${args['level']}`;
+  const level = requiredString(args, 'level');
+  const channel = typeof args['channel'] === 'string' ? args['channel'] : undefined;
+  if (ctx.liveSession) {
+    const actual = await ctx.liveSession.setLogLevel(level, channel);
+    return channel
+      ? `Output channel ${channel} log level is ${actual}`
+      : `Global log level is ${actual}`;
+  }
+
+  const runner = new TestRunner(
+    requireClient(ctx),
+    ctx.env,
+    undefined,
+    undefined,
+    ctx.cdpPort ?? CDP_PORT,
+    ctx.targetPid,
+  );
+  try {
+    const actual = await runner.setLogLevel(level, channel);
+    return channel
+      ? `Output channel ${channel} log level is ${actual}`
+      : `Global log level is ${actual}`;
+  } finally {
+    runner.cleanup();
+  }
 }
 
 // ─── Local Tools (no Dev Host needed) ───────────────────────────────────────────

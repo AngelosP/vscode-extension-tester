@@ -12,6 +12,12 @@ import type {
 } from '../types.js';
 import { WS_CONNECT_TIMEOUT_MS } from '../types.js';
 
+export type LogLevelName = 'Trace' | 'Debug' | 'Info' | 'Warning' | 'Error' | 'Off';
+
+export type SetLogLevelResult =
+  | { status: 'ok'; scope: 'global'; actualLevel: LogLevelName }
+  | { status: 'applied'; scope: 'channel'; channel: string; channelCommand: string };
+
 /**
  * WebSocket client for communicating with the controller extension
  * running inside the VS Code instance under test.
@@ -184,8 +190,13 @@ export class ControllerClient {
     return this.send('getFullState');
   }
 
-  async setLogLevel(level: string): Promise<void> {
-    await this.send('setLogLevel', { level });
+  async setLogLevel(level: string, channel?: string): Promise<SetLogLevelResult> {
+    return this.send('setLogLevel', { level, channel }) as Promise<SetLogLevelResult>;
+  }
+
+  async getLogLevel(): Promise<LogLevelName> {
+    const result = await this.send('getLogLevel') as { level: LogLevelName };
+    return result.level;
   }
 
   async getExtensionStatus(): Promise<Array<{ id: string; isActive: boolean }>> {

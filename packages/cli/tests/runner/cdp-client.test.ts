@@ -201,6 +201,10 @@ describe('CdpClient', () => {
       expression: expect.stringContaining('.quick-input-widget'),
       returnByValue: true,
     }));
+    const expression = mockClientRef.current.Runtime.evaluate.mock.calls[0][0].expression as string;
+    expect(expression).toContain("replace(/\\s+/g, ' ')");
+    expect(expression).not.toContain("replace(/s+/g, ' ')");
+    expect(expression).toContain("replace(/\\\$\\([^)]+\\)\\s*/g, '')");
   });
 
   it('selects a workbench QuickInput item with real pointer events', async () => {

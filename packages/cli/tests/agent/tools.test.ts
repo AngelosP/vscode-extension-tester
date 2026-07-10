@@ -128,12 +128,14 @@ describe('tools', () => {
     it('should expose profile options and semantic webview click targets in tool schemas', () => {
       const startLive = TOOL_DEFINITIONS.find(tool => tool.function.name === 'start_live_session')!;
       const click = TOOL_DEFINITIONS.find(tool => tool.function.name === 'click')!;
+      const setLogLevel = TOOL_DEFINITIONS.find(tool => tool.function.name === 'set_log_level')!;
 
       expect(startLive.function.parameters.properties).toHaveProperty('reuseNamedProfile');
       expect(startLive.function.parameters.properties).toHaveProperty('reuseOrCreateNamedProfile');
       expect((click.function.parameters.properties.target as any).enum).toEqual(
         expect.arrayContaining(['webviewText', 'webviewAccessibleText']),
       );
+      expect(setLogLevel.function.parameters.properties).toHaveProperty('channel');
     });
 
     it('should include memory tools', () => {
@@ -283,6 +285,20 @@ describe('tools', () => {
 
       expect(result).toContain('ready');
       expect(liveSession.runExtensionHostScript).toHaveBeenCalledWith('return vscode.env.appName;', 5_000);
+    });
+
+    it('routes named log levels through the live verified setter', async () => {
+      const liveSession = {
+        setLogLevel: vi.fn().mockResolvedValue('Trace'),
+      };
+
+      const result = await executeToolCall('set_log_level', JSON.stringify({
+        level: 'trace',
+        channel: 'Kusto Workbench',
+      }), makeContextWith({ liveSession: liveSession as never }));
+
+      expect(result).toBe('Output channel Kusto Workbench log level is Trace');
+      expect(liveSession.setLogLevel).toHaveBeenCalledWith('trace', 'Kusto Workbench');
     });
 
     it('should route coordinate clicks through the live Dev Host window when a live session exists', async () => {

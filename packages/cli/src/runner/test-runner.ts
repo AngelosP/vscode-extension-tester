@@ -1,4 +1,4 @@
-import type { ControllerClient } from './controller-client.js';
+import type { ControllerClient, LogLevelName } from './controller-client.js';
 import type { ParsedFeature, ParsedScenario, ParsedStep } from './gherkin-parser.js';
 import type {
   FeatureResult,
@@ -43,6 +43,8 @@ export class TestRunner {
   private dispatchArtifacts: StepArtifact[] = [];
   /** Per-channel byte offsets recorded before each scenario starts. */
   private scenarioStartOffsets = new Map<string, number>();
+  /** Channel names read through the live assertion path in this scenario. */
+  private scenarioObservedOutputChannels = new Set<string>();
 
   constructor(
     private readonly client: ControllerClient,
@@ -82,6 +84,7 @@ export class TestRunner {
     this.currentScenarioName = scenario.name;
 
     // Snapshot per-channel offsets before the scenario so we can isolate its output later
+    this.scenarioObservedOutputChannels.clear();
     await this.recordChannelOffsets();
 
     const allSteps = [...backgroundSteps, ...scenario.steps];
@@ -129,6 +132,7 @@ export class TestRunner {
       : undefined;
     if (stepDir) fs.mkdirSync(stepDir, { recursive: true });
 
+    this.scenarioObservedOutputChannels.clear();
     await this.recordChannelOffsets();
     this.currentScenarioName = 'Live step';
     const result = await this.runStep(step, { captureFailureScreenshot: false });
@@ -421,6 +425,19 @@ export class TestRunner {
 
     match = text.match(/^I start command "([^"]+)" with args '([^']+)'$/);
     if (match) { await this.client.startCommand(match[1], JSON.parse(match[2])); return; }
+
+    // ─── Log levels ───
+    match = text.match(/^I set the output channel "([^"]+)" log level to "([^"]+)"$/);
+    if (match) { await this.setLogLevel(match[2], match[1]); return; }
+
+    match = text.match(/^the output channel "([^"]+)" log level should be "([^"]+)"$/);
+    if (match) { await this.assertOutputChannelLogLevel(match[1], match[2]); return; }
+
+    match = text.match(/^I set the global log level to "([^"]+)"$/);
+    if (match) { await this.setLogLevel(match[1]); return; }
+
+    match = text.match(/^the global log level should be "([^"]+)"$/);
+    if (match) { await this.assertGlobalLogLevel(match[1]); return; }
 
     // ─── QuickInput / QuickPick ───
     if (/^I inspect the QuickInput$/.test(text)) {
@@ -935,6 +952,96 @@ export class TestRunner {
     throw new Error(`QuickInput ${description} not found within ${timeoutMs}ms. Last state: ${JSON.stringify(lastState)}`);
   }
 
+  async setLogLevel(levelValue: string, channel?: string): Promise<LogLevelName> {
+    const expected = normalizeLogLevel(levelValue);
+    if (channel) {
+      await this.client.setLogLevel(expected, channel);
+      await this.assertOutputChannelLogLevel(channel, expected);
+      return expected;
+    }
+    await this.setGlobalLogLevel(expected);
+    return expected;
+  }
+
+  private async assertOutputChannelLogLevel(channel: string, levelValue: string): Promise<void> {
+    const expected = normalizeLogLevel(levelValue);
+    const actual = await this.readOutputChannelLogLevel(channel);
+    if (actual !== expected) {
+      throw new Error(`Output channel "${channel}" log level should be ${expected}, but actual level is ${actual}.`);
+    }
+  }
+
+  private async readOutputChannelLogLevel(channel: string): Promise<LogLevelName> {
+    const cdp = await this.requireCdp();
+    await this.client.startCommand('workbench.action.setLogLevel');
+    try {
+      const state = await this.waitForWorkbenchQuickInput(cdp, (candidate) =>
+        findExactQuickInputItem(candidate, channel) !== undefined,
+      );
+      const item = findExactQuickInputItem(state, channel)!;
+      return item.description
+        ? normalizeLogLevel(item.description)
+        : normalizeLogLevel(await this.client.getLogLevel());
+    } finally {
+      await this.client.executeCommand('workbench.action.closeQuickOpen').catch(() => undefined);
+    }
+  }
+
+  private async setGlobalLogLevel(levelValue: string): Promise<void> {
+    const expected = normalizeLogLevel(levelValue);
+    try {
+      const result = await this.client.setLogLevel(expected);
+      if (result.scope === 'global' && result.actualLevel === expected) return;
+    } catch { /* use the workbench fallback below */ }
+
+    const cdp = await this.requireCdp();
+    await this.client.startCommand('workbench.action.setLogLevel');
+    try {
+      await this.waitForWorkbenchQuickInput(cdp, (state) =>
+        findExactQuickInputItem(state, expected) !== undefined,
+      );
+      await cdp.selectWorkbenchQuickInputItem(expected);
+      await this.waitForGlobalLogLevel(expected);
+    } finally {
+      await this.client.executeCommand('workbench.action.closeQuickOpen').catch(() => undefined);
+    }
+  }
+
+  private async assertGlobalLogLevel(levelValue: string): Promise<void> {
+    const expected = normalizeLogLevel(levelValue);
+    const actual = normalizeLogLevel(await this.client.getLogLevel());
+    if (actual !== expected) {
+      throw new Error(`Global log level should be ${expected}, but actual level is ${actual}.`);
+    }
+  }
+
+  private async waitForGlobalLogLevel(expected: LogLevelName, timeoutMs = 10_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    let actual = normalizeLogLevel(await this.client.getLogLevel());
+    while (actual !== expected && Date.now() < deadline) {
+      await delay(100);
+      actual = normalizeLogLevel(await this.client.getLogLevel());
+    }
+    if (actual !== expected) {
+      throw new Error(`Global log level should be ${expected}, but actual level is ${actual} after ${timeoutMs}ms.`);
+    }
+  }
+
+  private async waitForWorkbenchQuickInput(
+    cdp: CdpClient,
+    predicate: (state: QuickInputState) => boolean,
+    timeoutMs = 10_000,
+  ): Promise<QuickInputState> {
+    const deadline = Date.now() + timeoutMs;
+    let lastState: QuickInputState = { active: false };
+    while (Date.now() < deadline) {
+      lastState = await cdp.getWorkbenchQuickInputState();
+      if (lastState.active && predicate(lastState)) return lastState;
+      await delay(100);
+    }
+    throw new Error(`Workbench log-level picker was not ready within ${timeoutMs}ms. Last state: ${JSON.stringify(lastState)}`);
+  }
+
   private async waitForCommand(commandId: string, timeoutSeconds?: string): Promise<void> {
     const timeoutMs = timeoutSeconds ? parseInt(timeoutSeconds, 10) * 1000 : 10_000;
     const deadline = Date.now() + timeoutMs;
@@ -1189,6 +1296,7 @@ export class TestRunner {
    * Returns undefined if CDP is unavailable or the channel wasn't found.
    */
   private async tryReadOutputViaCdp(name: string): Promise<string | undefined> {
+    this.scenarioObservedOutputChannels.add(name);
     // First try direct log file scan (most reliable — doesn't need CDP)
     const fromLogs = this.readFromVsCodeLogs(name);
     if (fromLogs !== undefined) return fromLogs;
@@ -1476,31 +1584,69 @@ export class TestRunner {
       } catch { /* skip unreadable files */ }
     }
 
-    // Merge: log file channels + controller channels (controller wins for its own channel)
-    const allChannels = new Map<string, string>();
-    for (const ch of logFileChannels) {
-      allChannels.set(ch.label, ch.content);
+    let cdpChannelNames: string[] = [];
+    try {
+      const descriptors = await (await this.requireCdp()).getOutputChannelDescriptors();
+      cdpChannelNames = descriptors.map((descriptor) => descriptor.label).filter(Boolean);
+    } catch { /* CDP is optional for artifact dumping */ }
+
+    // Prefer controller interception when it has content. If interception is
+    // empty, use the same live reader as output assertions so visible content
+    // is still persisted as a complete channel artifact.
+    const allChannels = new Map<string, { content: string; source: 'controller' | 'cdp-fallback' }>();
+    const controllerByName = new Map(controllerCaptured.map((channel) => [channel.name, channel.content]));
+    const fallbackCandidates = Array.from(new Set([
+      ...controllerChannels,
+      ...controllerCaptured.map((channel) => channel.name),
+      ...this.scenarioObservedOutputChannels,
+      ...cdpChannelNames,
+    ]));
+    for (const name of fallbackCandidates) {
+      const controllerContent = controllerByName.get(name) ?? '';
+      if (controllerContent) {
+        allChannels.set(name, { content: controllerContent, source: 'controller' });
+        continue;
+      }
+      const fallbackContent = await this.tryReadOutputViaCdp(name);
+      if (fallbackContent) {
+        allChannels.set(name, { content: fallbackContent, source: 'cdp-fallback' });
+      }
     }
-    for (const ch of controllerCaptured) {
-      if (ch.content) {
-        allChannels.set(ch.name, ch.content);
+    for (const channel of logFileChannels) {
+      if (!allChannels.has(channel.label)) {
+        allChannels.set(channel.label, { content: channel.content, source: 'cdp-fallback' });
       }
     }
 
     const knownChannelNames = Array.from(new Set([
       ...controllerChannels,
+      ...controllerCaptured.map((channel) => channel.name),
       ...logFileChannels.map(c => c.label),
+      ...this.scenarioObservedOutputChannels,
+      ...cdpChannelNames,
     ])).sort();
 
-    const capturedList = Array.from(allChannels.entries()).map(([name, content]) => ({
+    const capturedList = Array.from(allChannels.entries()).map(([name, capture]) => ({
       name,
-      length: content.length,
+      length: capture.content.length,
+      source: capture.source,
     }));
+
+    const channelCaptures = knownChannelNames.map((name) => {
+      const capture = allChannels.get(name);
+      return {
+        name,
+        length: capture?.content.length ?? 0,
+        source: capture?.source ?? 'none',
+        controllerLength: controllerByName.get(name)?.length ?? 0,
+      };
+    });
 
     const manifest = {
       scenario: scenarioName,
       knownChannels: knownChannelNames,
       capturedChannels: capturedList,
+      channelCaptures,
       diagnostics,
       logFileChannelCount: logFileChannels.length,
       userDataDir: this.userDataDir ?? null,
@@ -1516,13 +1662,13 @@ export class TestRunner {
       return;
     }
 
-    for (const [name, content] of allChannels) {
+    for (const [name, capture] of allChannels) {
       const file = sanitizeFilename(name) + '.log';
       // Cumulative - overwritten each scenario
-      fs.writeFileSync(path.join(cumulativeDir, file), content, 'utf-8');
+      fs.writeFileSync(path.join(cumulativeDir, file), capture.content, 'utf-8');
       // Per-scenario delta
       const startOffset = this.scenarioStartOffsets.get(name) ?? 0;
-      const delta = content.slice(startOffset);
+      const delta = capture.content.slice(startOffset);
       fs.writeFileSync(path.join(scenarioDir, file), delta, 'utf-8');
     }
 
@@ -1786,6 +1932,29 @@ function normalizeQuickInputText(text: string): string {
 
 function labelsMatch(actual: string, expected: string): boolean {
   return actual.toLowerCase() === expected.toLowerCase();
+}
+
+function normalizeLogLevel(value: string): LogLevelName {
+  const normalized = value.replace(/\$\([^)]+\)\s*/g, '').trim().toLowerCase();
+  switch (normalized) {
+    case 'trace': return 'Trace';
+    case 'debug': return 'Debug';
+    case 'info': return 'Info';
+    case 'warning':
+    case 'warn': return 'Warning';
+    case 'error': return 'Error';
+    case 'off': return 'Off';
+    default:
+      throw new Error(`Unsupported log level "${value}". Use Trace, Debug, Info, Warning, Error, or Off.`);
+  }
+}
+
+function findExactQuickInputItem(state: QuickInputState, label: string) {
+  const expected = normalizeQuickInputText(label);
+  return state.items?.find((item) =>
+    item.kind !== 'separator' &&
+    (normalizeQuickInputText(item.label) === expected || normalizeQuickInputText(item.matchLabel) === expected)
+  );
 }
 
 function findProgressByTitle(items: ProgressInfo[], title: string, status: ProgressInfo['status']): ProgressInfo | undefined {

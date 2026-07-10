@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "currentVersion": "0.2.3",
-  "updatedAt": "2026-05-27",
+  "currentVersion": "0.3.0",
+  "updatedAt": "2026-07-10",
   "packages": [
     "packages/controller-extension/package.json"
   ],
@@ -32,6 +32,13 @@
       "kind": "explicit",
       "previousVersion": "0.2.0",
       "notes": "Restore reliable named profile auth on VS Code 1.120+"
+    },
+    {
+      "version": "0.3.0",
+      "date": "2026-07-10",
+      "kind": "minor",
+      "previousVersion": "0.2.3",
+      "notes": "Add verified per-channel log-level control and output artifact fallback"
     }
   ]
 }

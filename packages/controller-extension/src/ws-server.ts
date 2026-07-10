@@ -4,6 +4,7 @@ import type { UIInterceptor } from './ui-interceptor.js';
 import type { StateReader } from './state-reader.js';
 import type { OutputMonitor } from './output-monitor.js';
 import type { AuthHandler } from './auth-handler.js';
+import { LogLevelController } from './log-level-controller.js';
 
 interface Services {
   commandExecutor: CommandExecutor;
@@ -23,6 +24,7 @@ interface JsonRpcRequest {
 export class WSServer {
   private wss: WebSocketServer | undefined;
   private clients = new Set<WebSocket>();
+  private readonly logLevels = new LogLevelController();
 
   constructor(
     private readonly port: number,
@@ -294,7 +296,13 @@ export class WSServer {
       }
 
       case 'setLogLevel':
-        return { status: 'ok', level: p['level'] };
+        return this.logLevels.setLogLevel(
+          p['level'] as string,
+          p['channel'] as string | undefined,
+        );
+
+      case 'getLogLevel':
+        return { level: await this.logLevels.getGlobalLogLevel() };
 
       case 'getExtensionStatus': {
         const vscode = require('vscode');

@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => {
     buildExtension: vi.fn(),
     runSingleStep: vi.fn(),
     runFeature: vi.fn(),
+    setLogLevel: vi.fn(),
     captureArtifactScreenshot: vi.fn(),
     cleanup: vi.fn(),
     runnerCtorArgs: [] as unknown[][],
@@ -52,6 +53,7 @@ vi.mock('../../src/runner/test-runner.js', () => ({
     }
     runSingleStep = mocks.runSingleStep;
     runFeature = mocks.runFeature;
+    setLogLevel = mocks.setLogLevel;
     captureArtifactScreenshot = mocks.captureArtifactScreenshot;
     cleanup = mocks.cleanup;
   },
@@ -111,6 +113,7 @@ describe('LiveTestSession', () => {
       stepIndex: 1,
       artifacts: { screenshots: [], logs: [], warnings: [] },
     });
+    mocks.setLogLevel.mockResolvedValue('Trace');
     mocks.captureArtifactScreenshot.mockImplementation(async () => {
       mocks.events.push('screenshot');
       return { kind: 'final-screenshot', path: 'final.png' };
@@ -210,6 +213,14 @@ describe('LiveTestSession', () => {
 
     expect(result).toEqual({ ok: true, value: 42, durationMs: 1 });
     expect(mocks.client.runExtensionHostScript).toHaveBeenCalledWith('return 42;', 5_000);
+  });
+
+  it('delegates verified log-level changes to the live runner', async () => {
+    const session = await LiveTestSession.start({ mode: 'launch', runOptions: runOptions(), finalScreenshot: false });
+
+    await expect(session.setLogLevel('Trace', 'Kusto Workbench')).resolves.toBe('Trace');
+
+    expect(mocks.setLogLevel).toHaveBeenCalledWith('Trace', 'Kusto Workbench');
   });
 
   it('should persist final screenshot failures as live summary warnings', async () => {

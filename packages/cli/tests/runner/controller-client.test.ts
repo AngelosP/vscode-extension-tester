@@ -114,6 +114,22 @@ describe('ControllerClient', () => {
               result: ['test.command1', 'test.command2'],
             }));
             break;
+          case 'setLogLevel':
+            ws.send(JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              result: request.params?.channel
+                ? { status: 'applied', scope: 'channel', channel: request.params.channel, channelCommand: 'workbench.action.output.show.test' }
+                : { status: 'ok', scope: 'global', actualLevel: request.params?.level },
+            }));
+            break;
+          case 'getLogLevel':
+            ws.send(JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              result: { level: 'Trace' },
+            }));
+            break;
           case 'resetState':
             ws.send(JSON.stringify({
               jsonrpc: '2.0',
@@ -177,6 +193,24 @@ describe('ControllerClient', () => {
 
       await expect((shortClient as any).send('neverResponds')).rejects.toThrow('timed out');
       shortClient.disconnect();
+    });
+  });
+
+  describe('log levels', () => {
+    it('passes named-channel scope and returns the controller result', async () => {
+      await client.connect();
+
+      await expect(client.setLogLevel('Trace', 'Kusto Workbench')).resolves.toMatchObject({
+        status: 'applied',
+        scope: 'channel',
+        channel: 'Kusto Workbench',
+      });
+    });
+
+    it('returns the observed global level', async () => {
+      await client.connect();
+
+      await expect(client.getLogLevel()).resolves.toBe('Trace');
     });
   });
 

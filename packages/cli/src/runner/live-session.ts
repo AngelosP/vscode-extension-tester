@@ -206,6 +206,13 @@ export class LiveTestSession {
     return this.enqueue(async () => this.client.getState());
   }
 
+  async setLogLevel(level: string, channel?: string): Promise<string> {
+    return this.enqueue(async () => {
+      if (!this.runner) throw new Error('Live session has not started');
+      return this.runner.setLogLevel(level, channel);
+    });
+  }
+
   async captureFinalScreenshot(): Promise<StepArtifact | undefined> {
     return this.enqueue(async () => this.captureFinalScreenshotNow());
   }
