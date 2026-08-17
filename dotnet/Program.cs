@@ -97,6 +97,7 @@ while ((line = Console.ReadLine()) != null)
                     expectedProcessId = p.TryGetProperty("expectedProcessId", out var expectedPid) && expectedPid.ValueKind == JsonValueKind.Number ? expectedPid.GetInt32() : (int?)null,
                     expectedTitle = p.TryGetProperty("expectedTitle", out var expectedTitle) && expectedTitle.ValueKind == JsonValueKind.String ? expectedTitle.GetString() : null,
                     expectedWindowHandle = p.TryGetProperty("expectedWindowHandle", out var expectedHandle) && expectedHandle.ValueKind == JsonValueKind.String ? expectedHandle.GetString() : null,
+                    preserveForeground = p.TryGetProperty("preserveForeground", out var preserveForeground) && preserveForeground.ValueKind == JsonValueKind.True,
                 }),
 
             "listWindows" => await automation.ListWindows(

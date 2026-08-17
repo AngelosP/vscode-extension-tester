@@ -23,24 +23,36 @@ function createMockClient() {
       dispatchKeyEvent: vi.fn().mockResolvedValue(undefined),
       insertText: vi.fn().mockResolvedValue(undefined),
     },
+    Page: {
+      enable: vi.fn().mockResolvedValue(undefined),
+      disable: vi.fn().mockResolvedValue(undefined),
+      bringToFront: vi.fn().mockResolvedValue(undefined),
+      captureScreenshot: vi.fn().mockResolvedValue({ data: 'guest-png' }),
+      getFrameTree: vi.fn().mockResolvedValue({ frameTree: { frame: { id: 'root' } } }),
+    },
     close: vi.fn(),
     on: vi.fn(),
     removeListener: vi.fn(),
   };
 }
 
-function setupSingleWebviewContext(contextId = 1): void {
-  let contextHandler: ((params: { context: { id: number } }) => void) | undefined;
+function setupSingleWebviewContext(contextId = 1, uniqueId?: string): void {
+  let contextHandler: ((params: { context: { id: number; uniqueId?: string } }) => void) | undefined;
   mockClientRef.current.on.mockImplementation((event: string, handler: typeof contextHandler) => {
     if (event === 'Runtime.executionContextCreated') contextHandler = handler;
   });
   mockClientRef.current.Runtime.enable.mockImplementation(() => {
-    contextHandler?.({ context: { id: contextId } });
+    contextHandler?.({ context: { id: contextId, uniqueId } });
     return Promise.resolve(undefined);
   });
   (mockCdpFactoryRef.current as any).List = vi.fn().mockResolvedValue([
     { type: 'page', url: 'vscode-webview://kusto', id: 'target-1', title: 'Kusto Workbench' },
   ]);
+}
+
+function captureMarkerValue(expression: string): string | undefined {
+  const match = expression.match(/globalThis\["(__vscodeExtTestCapture_[^"]+)"\] = "([^"]+)"/);
+  return match && match[1] === match[2] ? match[1] : undefined;
 }
 
 describe('CdpClient', () => {
@@ -321,7 +333,10 @@ describe('CdpClient', () => {
       if (attachCount === 1) {
         instance.Runtime.evaluate.mockResolvedValue({ result: { value: { __vscodeExtTestJsonArtifactError: '$.snapshot is undefined' } } });
       } else {
-        instance.Runtime.evaluate.mockResolvedValue({ result: { value: { measures: { readyMs: 123 } } } });
+        instance.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+          const marker = captureMarkerValue(expression);
+          return Promise.resolve({ result: { value: marker ?? { measures: { readyMs: 123 } } } });
+        });
       }
       return instance;
     });
@@ -334,6 +349,146 @@ describe('CdpClient', () => {
 
     expect(value).toEqual({ measures: { readyMs: 123 } });
     expect(attachCount).toBe(2);
+  });
+
+  it('synchronizes the exact target and context selected by webview evaluation', async () => {
+    setupSingleWebviewContext(17, 'unique-context-17');
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      const marker = captureMarkerValue(expression);
+      if (marker) return Promise.resolve({ result: { value: marker } });
+      if (expression.includes('requestAnimationFrame')) {
+        return Promise.resolve({ result: { value: { visibilityState: 'visible' } } });
+      }
+      return Promise.resolve({ result: { value: 'ready' } });
+    });
+    client.onActivateTab = vi.fn().mockResolvedValue('Kusto Workbench');
+
+    await client.evaluateInWebview('window.__ready', 'Kusto Workbench');
+    const synchronization = await client.synchronizeResolvedWebviewForNativeCapture();
+
+    expect(client.onActivateTab).toHaveBeenCalledWith('Kusto Workbench');
+    expect(mockCdpFactoryRef.current).toHaveBeenLastCalledWith({ port: 9333, target: 'target-1' });
+    expect(mockClientRef.current.Runtime.evaluate).toHaveBeenLastCalledWith(expect.objectContaining({
+      uniqueContextId: 'unique-context-17',
+      awaitPromise: true,
+      expression: expect.stringContaining('requestAnimationFrame'),
+    }));
+    expect(mockClientRef.current.Page.bringToFront).toHaveBeenCalled();
+    expect(mockClientRef.current.Page.captureScreenshot).toHaveBeenCalledWith({ format: 'png', fromSurface: true });
+    expect(synchronization).toMatchObject({
+      targetId: 'target-1',
+      targetTitle: 'Kusto Workbench',
+      contextId: 17,
+      uniqueContextId: 'unique-context-17',
+      activatedTab: 'Kusto Workbench',
+      visibilityState: 'visible',
+      barrier: 'animation-frame+Page.captureScreenshot',
+    });
+  });
+
+  it('uses the same unique context identity for evaluation, marker, and capture barrier', async () => {
+    setupSingleWebviewContext(17, 'stable-context');
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      const marker = captureMarkerValue(expression);
+      if (marker) return Promise.resolve({ result: { value: marker } });
+      if (expression.includes('requestAnimationFrame')) {
+        return Promise.resolve({ result: { value: { visibilityState: 'visible' } } });
+      }
+      return Promise.resolve({ result: { value: 'ready' } });
+    });
+    client.onActivateTab = vi.fn().mockResolvedValue('Kusto Workbench');
+
+    await client.evaluateInWebview('window.__ready', 'Kusto Workbench');
+    await client.synchronizeResolvedWebviewForNativeCapture();
+
+    const relevantCalls = mockClientRef.current.Runtime.evaluate.mock.calls
+      .map(([request]: [{ expression: string; uniqueContextId?: string; contextId?: number }]) => request)
+      .filter((request: { expression: string }) =>
+        request.expression === 'window.__ready' ||
+        request.expression.includes('__vscodeExtTestCapture_') ||
+        request.expression.includes('requestAnimationFrame'));
+    expect(relevantCalls).toHaveLength(3);
+    expect(relevantCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ expression: 'window.__ready', uniqueContextId: 'stable-context' }),
+      expect.objectContaining({ uniqueContextId: 'stable-context', expression: expect.stringContaining('globalThis[') }),
+      expect.objectContaining({ uniqueContextId: 'stable-context', expression: expect.stringContaining('requestAnimationFrame') }),
+    ]));
+    expect(relevantCalls.every((request: { contextId?: number }) => request.contextId === undefined)).toBe(true);
+  });
+
+  it('does not synchronize a guest compositor before a webview has been resolved', async () => {
+    await expect(client.synchronizeResolvedWebviewForNativeCapture()).resolves.toBeUndefined();
+    expect(mockClientRef.current.Page.captureScreenshot).not.toHaveBeenCalled();
+  });
+
+  it('clears a previous resolution before a later webview evaluation', async () => {
+    setupSingleWebviewContext(17);
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      const marker = captureMarkerValue(expression);
+      if (marker) return Promise.resolve({ result: { value: marker } });
+      return Promise.resolve({ result: { value: expression === 'window.__first' ? 'ready' : null } });
+    });
+
+    await client.evaluateInWebview('window.__first', 'Kusto Workbench');
+    await client.evaluateInWebview('window.__missing', 'Kusto Workbench');
+
+    await expect(client.synchronizeResolvedWebviewForNativeCapture()).resolves.toBeUndefined();
+  });
+
+  it('consumes a resolution only when its native capture is completed', async () => {
+    setupSingleWebviewContext(17);
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      const marker = captureMarkerValue(expression);
+      if (marker) return Promise.resolve({ result: { value: marker } });
+      if (expression.includes('requestAnimationFrame')) {
+        return Promise.resolve({ result: { value: { visibilityState: 'visible' } } });
+      }
+      return Promise.resolve({ result: { value: 'ready' } });
+    });
+    client.onActivateTab = vi.fn().mockResolvedValue('Kusto Workbench');
+
+    await client.evaluateInWebview('window.__ready', 'Kusto Workbench');
+    const synchronization = await client.synchronizeResolvedWebviewForNativeCapture();
+    expect(synchronization).toBeDefined();
+
+    client.completeResolvedWebviewNativeCapture(synchronization!);
+
+    await expect(client.synchronizeResolvedWebviewForNativeCapture()).resolves.toBeUndefined();
+  });
+
+  it('fails closed when tab activation cannot identify the resolved webview', async () => {
+    setupSingleWebviewContext(17);
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      const marker = captureMarkerValue(expression);
+      return Promise.resolve({ result: { value: marker ?? 'ready' } });
+    });
+    client.onActivateTab = vi.fn().mockRejectedValue(new Error('ambiguous tab'));
+
+    await client.evaluateInWebview('window.__ready', 'Kusto Workbench');
+
+    await expect(client.synchronizeResolvedWebviewForNativeCapture()).rejects.toThrow('ambiguous tab');
+    expect(mockClientRef.current.Page.captureScreenshot).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the resolved execution context was replaced', async () => {
+    setupSingleWebviewContext(17);
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      const marker = captureMarkerValue(expression);
+      if (marker) return Promise.resolve({ result: { value: marker } });
+      if (expression.includes('requestAnimationFrame')) {
+        return Promise.resolve({
+          result: { value: undefined },
+          exceptionDetails: { text: 'Resolved webview execution context was replaced before screenshot capture' },
+        });
+      }
+      return Promise.resolve({ result: { value: 'ready' } });
+    });
+    client.onActivateTab = vi.fn().mockResolvedValue('Kusto Workbench');
+
+    await client.evaluateInWebview('window.__ready', 'Kusto Workbench');
+
+    await expect(client.synchronizeResolvedWebviewForNativeCapture()).rejects.toThrow('execution context was replaced');
+    expect(mockClientRef.current.Page.captureScreenshot).not.toHaveBeenCalled();
   });
 
   it('uses DOM events before mouse dispatch for explicit webview selector clicks', async () => {

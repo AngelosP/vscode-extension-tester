@@ -320,6 +320,23 @@ describe('NativeUIClient', () => {
       });
     });
 
+    it('captures a prepared Dev Host without refocusing or rediscovering it', async () => {
+      respondWith([DEV_HOST_WINDOW]);
+      respondWith({ success: true });
+      respondWith({ success: true, filePath: 'C:\\tmp\\prepared.png' });
+
+      const prepared = await client.prepareDevHostScreenshot();
+      await client.capturePreparedDevHostScreenshot('C:\\tmp\\prepared.png', prepared);
+
+      expect(stdinWrites).toHaveLength(3);
+      expect(JSON.parse(stdinWrites[0])).toMatchObject({ method: 'listWindows' });
+      expect(JSON.parse(stdinWrites[1])).toMatchObject({ method: 'focusWindow' });
+      expect(JSON.parse(stdinWrites[2])).toMatchObject({
+        method: 'captureWindowScreenshot',
+        params: { windowId: 'devhost_1', filePath: 'C:\\tmp\\prepared.png', preserveForeground: true },
+      });
+    });
+
     it('setText() should send correct JSON', async () => {
       respondWith({ success: true });
       await client.setText('elem_1', 'hello.txt');

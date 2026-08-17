@@ -82,6 +82,7 @@ export class TestRunner {
   private async runScenario(scenario: ParsedScenario, backgroundSteps: ParsedStep[]): Promise<ScenarioResult> {
     const startTime = Date.now();
     this.currentScenarioName = scenario.name;
+    this.cdp?.clearResolvedWebviewForNativeCapture();
 
     // Snapshot per-channel offsets before the scenario so we can isolate its output later
     this.scenarioObservedOutputChannels.clear();
@@ -1496,7 +1497,7 @@ export class TestRunner {
       // Wire controller's tab activation so CDP can bring a webview to front
       // before probing its DOM title.
       this.cdp.onActivateTab = async (title: string) => {
-        await this.client.activateTab(title);
+        return await this.activateWebviewTab(title);
       };
     }
     if (!this.cdp.isConnected) {
@@ -1512,6 +1513,32 @@ export class TestRunner {
       }
     }
     return this.cdp;
+  }
+
+  private async activateWebviewTab(title: string): Promise<string> {
+    const needle = title.trim().toLowerCase();
+    const tabs = await this.client.getWebviewTabs();
+    const exact = tabs.filter((tab) => tab.label.trim().toLowerCase() === needle);
+    const matches = exact.length > 0
+      ? exact
+      : tabs.filter((tab) => tab.label.trim().toLowerCase().includes(needle));
+    if (matches.length === 0) {
+      throw new Error(`No webview tab found matching "${title}"`);
+    }
+    if (matches.length > 1) {
+      throw new Error(
+        `Webview tab "${title}" is ambiguous: ${matches.map((tab) => `"${tab.label}"`).join(', ')}`,
+      );
+    }
+
+    const expectedLabel = matches[0].label;
+    const activatedLabel = await this.client.activateTab(expectedLabel);
+    if (activatedLabel.trim().toLowerCase() !== expectedLabel.trim().toLowerCase()) {
+      throw new Error(
+        `Controller activated "${activatedLabel}" instead of resolved webview tab "${expectedLabel}"`,
+      );
+    }
+    return activatedLabel;
   }
 
   /** Call after all features are done to clean up the FlaUI process and CDP client. */
@@ -1752,17 +1779,36 @@ export class TestRunner {
     const filePath = path.join(targetDir, name);
     fs.mkdirSync(targetDir, { recursive: true });
 
-    const result = await (await this.requireNativeUI()).captureDevHostScreenshot(filePath);
+    const nativeUI = await this.requireNativeUI();
+    const synchronizeWebview = this.cdp?.isConnected === true && this.cdp.hasResolvedWebviewForNativeCapture;
+    const preparedDevHost = synchronizeWebview
+      ? await nativeUI.prepareDevHostScreenshot()
+      : undefined;
+    const webviewSynchronization = synchronizeWebview
+      ? await this.cdp!.synchronizeResolvedWebviewForNativeCapture()
+      : undefined;
+    let result;
+    try {
+      result = preparedDevHost
+        ? await nativeUI.capturePreparedDevHostScreenshot(filePath, preparedDevHost)
+        : await nativeUI.captureDevHostScreenshot(filePath);
+    } catch (error) {
+      discardScreenshot(filePath);
+      throw error;
+    }
     if (!result?.success) {
+      discardScreenshot(filePath);
       throw new Error(`Screenshot capture did not report success for ${filePath}`);
     }
     if (!fs.existsSync(filePath) || fs.statSync(filePath).size === 0) {
+      discardScreenshot(filePath);
       throw new Error(`Screenshot capture reported success but did not create a non-empty PNG: ${filePath}`);
     }
     const validation = result.metadata?.validation as Record<string, unknown> | undefined;
     const targetMatchesForeground = validation?.['targetMatchesForegroundAtCapture'] === true;
     const strategy = result.strategy ?? 'unknown';
-    if (!targetMatchesForeground && strategy !== 'CopyFromScreen') {
+    if (!targetMatchesForeground) {
+      discardScreenshot(filePath);
       throw new Error(
         `Screenshot capture used ${strategy} while the foreground window did not match the Dev Host target. ` +
         'The artifact is not trustworthy visual evidence; see native capture metadata for target/foreground details.'
@@ -1775,9 +1821,13 @@ export class TestRunner {
       width: result.width,
       height: result.height,
       warnings,
+      webviewSynchronization,
       native: result.metadata,
       ...(result.metadata ?? {}),
     };
+    if (webviewSynchronization) {
+      this.cdp?.completeResolvedWebviewNativeCapture(webviewSynchronization);
+    }
     return {
       kind,
       path: filePath,
@@ -1895,6 +1945,10 @@ function cloneArtifacts(artifacts: LiveStepArtifacts | undefined): MutableLiveSt
 
 function isScreenshotArtifact(artifact: StepArtifact): boolean {
   return artifact.kind === 'screenshot' || artifact.kind === 'failure-screenshot' || artifact.kind === 'final-screenshot';
+}
+
+function discardScreenshot(filePath: string): void {
+  try { fs.rmSync(filePath, { force: true }); } catch { /* best effort */ }
 }
 
 interface MutableLiveStepArtifacts extends LiveStepArtifacts {

@@ -162,6 +162,42 @@ export interface CdpEvaluationOptions {
   timeoutMs?: number;
 }
 
+export interface WebviewCaptureSynchronization {
+  resolutionId: number;
+  targetId: string;
+  targetTitle: string;
+  targetUrl: string;
+  contextId: number;
+  uniqueContextId?: string;
+  requestedTitle?: string;
+  activatedTab: string;
+  visibilityState: string;
+  barrier: 'animation-frame+Page.captureScreenshot';
+}
+
+interface ResolvedWebviewContext {
+  resolutionId: number;
+  targetId: string;
+  targetTitle: string;
+  targetUrl: string;
+  contextId: number;
+  uniqueContextId?: string;
+  captureMarker: string;
+  requestedTitle?: string;
+}
+
+interface WebviewFrameEvaluation {
+  value: unknown;
+  contextId?: number;
+  uniqueContextId?: string;
+  captureMarker?: string;
+}
+
+interface WebviewExecutionContext {
+  id: number;
+  uniqueId?: string;
+}
+
 interface WebviewClientOptions {
   operationTimeoutMs?: number;
   retries?: number;
@@ -176,6 +212,26 @@ interface WebviewTryOptions extends CdpEvaluationOptions {
 
 const CDP_PROTOCOL_TIMEOUT_MS = 5_000;
 
+function webviewCompositorFrameBarrier(captureMarker: string): string {
+  return `(() => {
+  if (globalThis[${JSON.stringify(captureMarker)}] !== ${JSON.stringify(captureMarker)}) {
+    throw new Error('Resolved webview execution context was replaced before screenshot capture');
+  }
+  if (document.visibilityState !== 'visible') {
+    return Promise.resolve({ visibilityState: document.visibilityState });
+  }
+  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
+    setTimeout(() => resolve({ visibilityState: document.visibilityState }), 0);
+  })));
+})()`;
+}
+
+function tabTitleMatches(actual: string, requested: string): boolean {
+  const normalizedActual = actual.trim().toLowerCase();
+  const normalizedRequested = requested.trim().toLowerCase();
+  return normalizedActual === normalizedRequested || normalizedActual.includes(normalizedRequested);
+}
+
 /**
  * Chrome DevTools Protocol client for sending real input events to VS Code.
  * Works with any focused element - regular editors, webview Monaco, dialogs, etc.
@@ -186,12 +242,14 @@ const CDP_PROTOCOL_TIMEOUT_MS = 5_000;
  */
 export class CdpClient {
   private client?: CDP.Client;
+  private resolvedWebviewContext?: ResolvedWebviewContext;
+  private nextWebviewResolutionId = 0;
   /**
    * Optional callback to activate a VS Code tab by title before probing.
    * Injected by the test runner so the CDP client can ask the controller
    * extension to bring a tab to the foreground.
    */
-  onActivateTab?: (title: string) => Promise<void>;
+  onActivateTab?: (title: string) => Promise<string | void>;
 
   constructor(private readonly port: number) {}
 
@@ -208,10 +266,25 @@ export class CdpClient {
   disconnect(): void {
     this.client?.close();
     this.client = undefined;
+    this.resolvedWebviewContext = undefined;
   }
 
   get isConnected(): boolean {
     return this.client !== undefined;
+  }
+
+  get hasResolvedWebviewForNativeCapture(): boolean {
+    return this.resolvedWebviewContext !== undefined;
+  }
+
+  clearResolvedWebviewForNativeCapture(): void {
+    this.resolvedWebviewContext = undefined;
+  }
+
+  completeResolvedWebviewNativeCapture(synchronization: WebviewCaptureSynchronization): void {
+    if (this.resolvedWebviewContext?.resolutionId === synchronization.resolutionId) {
+      this.resolvedWebviewContext = undefined;
+    }
   }
 
   /**
@@ -731,6 +804,7 @@ export class CdpClient {
    * propagates.
    */
   async evaluateInWebview(expression: string, webviewTitle?: string, options: CdpEvaluationOptions = {}): Promise<unknown> {
+    this.clearResolvedWebviewForNativeCapture();
     const targets = await this.getWebviewTargets(webviewTitle, 5_000);
     if (targets.length === 0) {
       throw new Error(
@@ -743,10 +817,24 @@ export class CdpClient {
     let lastError: Error | undefined;
     for (const target of targets) {
       try {
-        const value = await this.withWebviewClient(target.id, async (wv) => {
-          return await this.evaluateAcrossFrames(wv, expression, options);
+        const evaluation = await this.withWebviewClient(target.id, async (wv) => {
+          const result = await this.evaluateAcrossFramesWithContext(wv, expression, options);
+          if (result.value === null || result.value === undefined || result.contextId === undefined) return result;
+          return { ...result, captureMarker: await this.markResolvedWebviewContext(wv, result) };
         }, options.timeoutMs ? { operationTimeoutMs: options.timeoutMs, retries: 1, retryOperationTimeouts: false } : undefined);
-        if (value !== null && value !== undefined) return value;
+        if (evaluation.value !== null && evaluation.value !== undefined && evaluation.contextId !== undefined && evaluation.captureMarker) {
+          this.resolvedWebviewContext = {
+            resolutionId: ++this.nextWebviewResolutionId,
+            targetId: target.id,
+            targetTitle: target.title,
+            targetUrl: target.url,
+            contextId: evaluation.contextId,
+            uniqueContextId: evaluation.uniqueContextId,
+            captureMarker: evaluation.captureMarker,
+            requestedTitle: webviewTitle,
+          };
+          return evaluation.value;
+        }
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
       }
@@ -762,6 +850,7 @@ export class CdpClient {
    * from failing a collector before the intended webview is tried.
    */
   async evaluateJsonArtifactInWebview(expression: string, webviewTitle?: string, options: CdpEvaluationOptions = {}): Promise<unknown> {
+    this.clearResolvedWebviewForNativeCapture();
     const targets = await this.getWebviewTargets(webviewTitle, 5_000);
     if (targets.length === 0) {
       throw new Error(
@@ -775,13 +864,33 @@ export class CdpClient {
     const artifactErrors: string[] = [];
     for (const target of targets) {
       try {
-        const value = await this.withWebviewClient(target.id, async (wv) => {
-          return await this.evaluateAcrossFrames(wv, expression, options);
+        const evaluation = await this.withWebviewClient(target.id, async (wv) => {
+          const result = await this.evaluateAcrossFramesWithContext(wv, expression, options);
+          if (
+            result.value === null ||
+            result.value === undefined ||
+            result.contextId === undefined ||
+            isJsonArtifactErrorValue(result.value)
+          ) return result;
+          return { ...result, captureMarker: await this.markResolvedWebviewContext(wv, result) };
         }, options.timeoutMs ? { operationTimeoutMs: options.timeoutMs, retries: 1, retryOperationTimeouts: false } : undefined);
+        const value = evaluation.value;
         if (value === null || value === undefined) continue;
         if (isJsonArtifactErrorValue(value)) {
           artifactErrors.push(`${target.title || target.url}: ${value.__vscodeExtTestJsonArtifactError}`);
           continue;
+        }
+        if (evaluation.contextId !== undefined && evaluation.captureMarker) {
+          this.resolvedWebviewContext = {
+            resolutionId: ++this.nextWebviewResolutionId,
+            targetId: target.id,
+            targetTitle: target.title,
+            targetUrl: target.url,
+            contextId: evaluation.contextId,
+            uniqueContextId: evaluation.uniqueContextId,
+            captureMarker: evaluation.captureMarker,
+            requestedTitle: webviewTitle,
+          };
         }
         return value;
       } catch (err) {
@@ -793,6 +902,81 @@ export class CdpClient {
     }
     if (lastError) throw lastError;
     return undefined;
+  }
+
+  /**
+   * Flush the guest compositor for the exact target/context selected by the
+   * most recent successful webview evaluation before a native window capture.
+   */
+  async synchronizeResolvedWebviewForNativeCapture(): Promise<WebviewCaptureSynchronization | undefined> {
+    const resolved = this.resolvedWebviewContext;
+    if (!resolved) return undefined;
+
+    const activationTitle = resolved.requestedTitle || resolved.targetTitle;
+    if (!this.onActivateTab || !activationTitle) {
+      throw new Error(`Cannot synchronize resolved webview target ${resolved.targetId} without a tab activation identity`);
+    }
+    const activated = await this.onActivateTab(activationTitle);
+    if (typeof activated !== 'string' || !activated.trim()) {
+      throw new Error(`Tab activation did not identify the active tab for resolved webview target ${resolved.targetId}`);
+    }
+    const activatedTab = activated.trim();
+    if (!tabTitleMatches(activatedTab, activationTitle)) {
+      throw new Error(
+        `Tab activation returned "${activatedTab}" instead of the resolved webview identity "${activationTitle}"`,
+      );
+    }
+
+    return this.withWebviewClient(resolved.targetId, async (wv) => {
+      const page = (wv as any).Page;
+      if (!page?.enable || !page?.captureScreenshot) {
+        throw new Error(`CDP Page domain is unavailable for resolved webview target ${resolved.targetId}`);
+      }
+
+      await this.withProtocolTimeout(page.enable(), `CDP Page.enable for webview target ${resolved.targetId}`);
+      if (page.bringToFront) {
+        await this.withProtocolTimeout(page.bringToFront(), `CDP Page.bringToFront for webview target ${resolved.targetId}`);
+      }
+      const contextSelector = resolved.uniqueContextId
+        ? { uniqueContextId: resolved.uniqueContextId }
+        : { contextId: resolved.contextId };
+      const frame = await this.withProtocolTimeout(wv.Runtime.evaluate({
+        expression: webviewCompositorFrameBarrier(resolved.captureMarker),
+        returnByValue: true,
+        awaitPromise: true,
+        ...contextSelector,
+      } as any), `CDP guest compositor frame for context ${resolved.contextId}`);
+      if (frame.exceptionDetails) {
+        throw new Error(`Could not synchronize resolved webview context ${resolved.contextId}: ${frame.exceptionDetails.text ?? 'evaluation failed'}`);
+      }
+      const visibilityState = String(frame.result.value?.visibilityState ?? 'unknown');
+      if (visibilityState !== 'visible') {
+        throw new Error(
+          `Resolved webview target ${resolved.targetId} remained ${visibilityState} before native screenshot capture`,
+        );
+      }
+
+      const guestCapture = await this.withProtocolTimeout<{ data?: string }>(
+        page.captureScreenshot({ format: 'png', fromSurface: true }),
+        `CDP Page.captureScreenshot barrier for webview target ${resolved.targetId}`,
+      );
+      if (!guestCapture?.data) {
+        throw new Error(`CDP compositor barrier returned no image data for resolved webview target ${resolved.targetId}`);
+      }
+
+      return {
+        resolutionId: resolved.resolutionId,
+        targetId: resolved.targetId,
+        targetTitle: resolved.targetTitle,
+        targetUrl: resolved.targetUrl,
+        contextId: resolved.contextId,
+        uniqueContextId: resolved.uniqueContextId,
+        requestedTitle: resolved.requestedTitle,
+        activatedTab,
+        visibilityState,
+        barrier: 'animation-frame+Page.captureScreenshot',
+      };
+    }, { retries: 1, retryOperationTimeouts: false });
   }
 
   /**
@@ -987,7 +1171,7 @@ export class CdpClient {
     return String(value);
   }
 
-  /** Check whether a selector exists in any matching webview. Never throws. */
+  /** Check whether a selector exists in any matching webview. */
   async elementExistsInWebview(selector: string, webviewTitle?: string): Promise<boolean> {
     const safe = escapeSelector(selector);
     const expr = `(() => (${DEEP_QS})('${safe}') ? true : null)()`;
@@ -1070,10 +1254,16 @@ export class CdpClient {
    *    context events (inner iframes in some VS Code versions take longer to
    *    report their execution contexts).
    */
-  private async discoverFrameContextIds(client: CDP.Client): Promise<number[]> {
-    const contextIds: number[] = [];
-    const handler = (params: { context: { id: number } }) => {
-      contextIds.push(params.context.id);
+  private async discoverFrameContexts(client: CDP.Client): Promise<WebviewExecutionContext[]> {
+    const contexts: WebviewExecutionContext[] = [];
+    const contextKeys = new Set<string>();
+    const handler = (params: { context: { id: number; uniqueId?: string } }) => {
+      const key = params.context.uniqueId
+        ? `unique:${params.context.uniqueId}`
+        : `numeric:${params.context.id}`;
+      if (contextKeys.has(key)) return;
+      contextKeys.add(key);
+      contexts.push({ id: params.context.id, uniqueId: params.context.uniqueId });
     };
 
     (client as any).on('Runtime.executionContextCreated', handler);
@@ -1085,9 +1275,9 @@ export class CdpClient {
 
       // If we found ≤ 1 context, the inner content frame may not have reported
       // yet.  Use Page.getFrameTree() to check for additional child frames.
-      if (contextIds.length <= 1) {
+      if (contexts.length <= 1) {
         const expectedFrames = await countTargetFrames(client);
-        if (expectedFrames > contextIds.length) {
+        if (expectedFrames > contexts.length) {
           // More frames exist than contexts — wait longer for late-arriving events
           await delay(300);
         }
@@ -1096,7 +1286,11 @@ export class CdpClient {
       (client as any).removeListener('Runtime.executionContextCreated', handler);
     }
 
-    return contextIds;
+    return contexts;
+  }
+
+  private async discoverFrameContextIds(client: CDP.Client): Promise<number[]> {
+    return (await this.discoverFrameContexts(client)).map((context) => context.id);
   }
 
   /**
@@ -1108,24 +1302,54 @@ export class CdpClient {
     expression: string,
     options: CdpEvaluationOptions = {},
   ): Promise<unknown> {
-    const contextIds = await this.discoverFrameContextIds(client);
+    return (await this.evaluateAcrossFramesWithContext(client, expression, options)).value;
+  }
 
-    for (const contextId of contextIds) {
+  private async evaluateAcrossFramesWithContext(
+    client: CDP.Client,
+    expression: string,
+    options: CdpEvaluationOptions = {},
+  ): Promise<WebviewFrameEvaluation> {
+    const contexts = await this.discoverFrameContexts(client);
+
+    for (const context of contexts) {
       try {
+        const contextSelector = context.uniqueId
+          ? { uniqueContextId: context.uniqueId }
+          : { contextId: context.id };
         const r = await this.withProtocolTimeout(client.Runtime.evaluate({
           expression,
           returnByValue: true,
           awaitPromise: true,
-          contextId,
-        }), `CDP Runtime.evaluate context ${contextId}`, options.timeoutMs);
+          ...contextSelector,
+        } as any), `CDP Runtime.evaluate context ${context.id}`, options.timeoutMs);
         if (!r.exceptionDetails && r.result.value !== null && r.result.value !== undefined) {
-          return r.result.value;
+          return { value: r.result.value, contextId: context.id, uniqueContextId: context.uniqueId };
         }
       } catch {
         // Context may have been destroyed (navigation, GC), skip
       }
     }
-    return null;
+    return { value: null };
+  }
+
+  private async markResolvedWebviewContext(
+    client: CDP.Client,
+    evaluation: WebviewFrameEvaluation,
+  ): Promise<string> {
+    const captureMarker = `__vscodeExtTestCapture_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const contextSelector = evaluation.uniqueContextId
+      ? { uniqueContextId: evaluation.uniqueContextId }
+      : { contextId: evaluation.contextId };
+    const marked = await this.withProtocolTimeout(client.Runtime.evaluate({
+      expression: `globalThis[${JSON.stringify(captureMarker)}] = ${JSON.stringify(captureMarker)}`,
+      returnByValue: true,
+      ...contextSelector,
+    } as any), `CDP mark resolved webview context ${evaluation.contextId}`);
+    if (marked.exceptionDetails || marked.result.value !== captureMarker) {
+      throw new Error(`Could not retain resolved webview context ${evaluation.contextId} for screenshot capture`);
+    }
+    return captureMarker;
   }
 
   /**
@@ -1304,7 +1528,6 @@ export class CdpClient {
       return null;
     });
   }
-
 
   /**
    * Connect to a webview target, run a callback, then disconnect.

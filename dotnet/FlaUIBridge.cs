@@ -417,8 +417,12 @@ namespace FlaUIBridge
             if (!_elementCache.TryGetValue(windowId, out var element))
                 throw new Exception($"Window {windowId} not found in cache");
 
+            var nativeHandle = element.Properties.NativeWindowHandle.ValueOrDefault;
+            if (nativeHandle != 0 && IsIconic(new IntPtr(nativeHandle)))
+                ShowWindow(new IntPtr(nativeHandle), SW_RESTORE);
             var window = element.AsWindow();
             window.SetForeground();
+            await Task.Delay(200);
             return new { success = true };
         }
 
@@ -478,6 +482,7 @@ namespace FlaUIBridge
             int? expectedProcessId = input.expectedProcessId == null ? null : Convert.ToInt32(input.expectedProcessId);
             string? expectedTitle = input.expectedTitle as string;
             string? expectedWindowHandle = input.expectedWindowHandle as string;
+            bool preserveForeground = Convert.ToBoolean(input.preserveForeground);
 
             if (!_elementCache.TryGetValue(windowId, out var element))
                 throw new Exception($"Window {windowId} not found in cache");
@@ -486,14 +491,34 @@ namespace FlaUIBridge
             var warnings = new List<string>();
             Exception? lastError = null;
 
+            if (preserveForeground)
+            {
+                try
+                {
+                    var capture = await PrepareCapture(element, expectedProcessId, expectedTitle, expectedWindowHandle, true, warnings);
+                    if (!IsSameHwnd(GetForegroundWindow(), capture.Hwnd))
+                    {
+                        throw new Exception($"Foreground window at capture is {FormatHwnd(GetForegroundWindow())}, expected target {FormatHwnd(capture.Hwnd)}; skipped CopyFromScreen to avoid capturing the wrong window");
+                    }
+                    SaveCopyFromScreen(capture.X, capture.Y, capture.Width, capture.Height, filePath);
+                    attempts.Add(new { attempt = 1, strategy = "CopyFromScreen", success = true });
+                    return CaptureSuccess(filePath, capture, "CopyFromScreen", attempts, warnings);
+                }
+                catch (Exception ex)
+                {
+                    attempts.Add(new { attempt = 1, strategy = "CopyFromScreen", success = false, message = ex.Message });
+                    throw new Exception($"Synchronized screenshot capture failed without retry: {ex.Message}", ex);
+                }
+            }
+
             for (int attempt = 1; attempt <= 3; attempt++)
             {
                 try
                 {
-                    var capture = await PrepareCapture(element, expectedProcessId, expectedTitle, expectedWindowHandle, warnings);
+                    var capture = await PrepareCapture(element, expectedProcessId, expectedTitle, expectedWindowHandle, false, warnings);
                     if (!IsSameHwnd(GetForegroundWindow(), capture.Hwnd))
                     {
-                        throw new Exception($"Foreground window after focus is {FormatHwnd(GetForegroundWindow())}, expected target {FormatHwnd(capture.Hwnd)}; skipped CopyFromScreen to avoid capturing the wrong window");
+                        throw new Exception($"Foreground window at capture is {FormatHwnd(GetForegroundWindow())}, expected target {FormatHwnd(capture.Hwnd)}; skipped CopyFromScreen to avoid capturing the wrong window");
                     }
                     SaveCopyFromScreen(capture.X, capture.Y, capture.Width, capture.Height, filePath);
                     attempts.Add(new { attempt, strategy = "CopyFromScreen", success = true });
@@ -513,7 +538,7 @@ namespace FlaUIBridge
             {
                 try
                 {
-                    var capture = await PrepareCapture(element, expectedProcessId, expectedTitle, expectedWindowHandle, warnings);
+                    var capture = await PrepareCapture(element, expectedProcessId, expectedTitle, expectedWindowHandle, false, warnings);
                     SaveWindowDcBitBlt(capture.Hwnd, capture.Width, capture.Height, filePath);
                     attempts.Add(new { attempt = 4, strategy = "WindowDC-BitBlt", success = true });
                     warnings.Add("Used WindowDC BitBlt fallback after CopyFromScreen failures.");
@@ -528,7 +553,7 @@ namespace FlaUIBridge
 
                 try
                 {
-                    var capture = await PrepareCapture(element, expectedProcessId, expectedTitle, expectedWindowHandle, warnings);
+                    var capture = await PrepareCapture(element, expectedProcessId, expectedTitle, expectedWindowHandle, false, warnings);
                     SavePrintWindow(capture.Hwnd, capture.Width, capture.Height, filePath);
                     attempts.Add(new { attempt = 5, strategy = "PrintWindow", success = true });
                     warnings.Add("Used PrintWindow fallback after CopyFromScreen and WindowDC BitBlt failures; Chromium content can render blank on some systems.");
@@ -545,18 +570,27 @@ namespace FlaUIBridge
             throw new Exception($"Screenshot capture failed after retries: {lastError?.Message}; attempts: {string.Join(" | ", attempts.Select(a => a.ToString()))}", lastError);
         }
 
-        private static async Task<CaptureContext> PrepareCapture(AutomationElement element, int? expectedProcessId, string? expectedTitle, string? expectedWindowHandle, List<string> warnings)
+        private static async Task<CaptureContext> PrepareCapture(AutomationElement element, int? expectedProcessId, string? expectedTitle, string? expectedWindowHandle, bool preserveForeground, List<string> warnings)
         {
-            var window = element.AsWindow();
             var nativeHandle = element.Properties.NativeWindowHandle.ValueOrDefault;
             if (nativeHandle == 0) throw new Exception("Target window has no native HWND; cannot validate screenshot target");
             var hwnd = new IntPtr(nativeHandle);
             var foregroundBefore = GetWindowInfo(GetForegroundWindow());
             ValidateTargetWindow(hwnd, expectedProcessId, expectedTitle, expectedWindowHandle, warnings);
 
-            if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
-            window.SetForeground();
-            await Task.Delay(200);
+            if (preserveForeground)
+            {
+                if (IsIconic(hwnd))
+                    throw new Exception("Prepared screenshot target became minimized after compositor synchronization");
+                if (!IsSameHwnd(GetForegroundWindow(), hwnd))
+                    throw new Exception($"Prepared screenshot target lost foreground after compositor synchronization: foreground {FormatHwnd(GetForegroundWindow())}, expected {FormatHwnd(hwnd)}");
+            }
+            else
+            {
+                if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+                element.AsWindow().SetForeground();
+                await Task.Delay(200);
+            }
             ValidateTargetWindow(hwnd, expectedProcessId, expectedTitle, expectedWindowHandle, warnings);
 
             if (element.Properties.IsOffscreen.ValueOrDefault)
@@ -583,7 +617,7 @@ namespace FlaUIBridge
                 ForegroundAfter = GetWindowInfo(GetForegroundWindow()),
                 Monitor = GetMonitorMetadata(hwnd),
                 Dpi = TryGetDpi(hwnd),
-                Expected = new { hwnd = expectedWindowHandle, processId = expectedProcessId, title = expectedTitle }
+                Expected = new { hwnd = expectedWindowHandle, processId = expectedProcessId, title = expectedTitle, preserveForeground }
             };
         }
 

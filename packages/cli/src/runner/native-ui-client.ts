@@ -138,6 +138,7 @@ export class NativeUIClient {
     windowId: string,
     filePath: string,
     expected?: { processId?: number; title?: string; windowHandle?: string },
+    options: { preserveForeground?: boolean } = {},
   ): Promise<ScreenshotCaptureResult> {
     return this.call('captureWindowScreenshot', {
       windowId,
@@ -145,6 +146,7 @@ export class NativeUIClient {
       expectedProcessId: expected?.processId,
       expectedTitle: expected?.title,
       expectedWindowHandle: expected?.windowHandle,
+      preserveForeground: options.preserveForeground,
     }) as Promise<ScreenshotCaptureResult>;
   }
 
@@ -272,6 +274,20 @@ export class NativeUIClient {
   async moveDevHost(x: number, y: number): Promise<void> {
     const win = await this.findDevHostWindow();
     await this.moveWindow(win.id, x, y);
+  }
+
+  /** Resolve and focus the Dev Host window before a synchronized screenshot. */
+  async prepareDevHostScreenshot(): Promise<NativeWindow> {
+    return this.findDevHostWindow({ includeOffscreen: true });
+  }
+
+  /** Capture a previously resolved Dev Host window without changing focus. */
+  async capturePreparedDevHostScreenshot(filePath: string, win: NativeWindow): Promise<ScreenshotCaptureResult> {
+    return this.captureWindowScreenshot(win.id, filePath, {
+      processId: win.processId,
+      title: win.title,
+      windowHandle: win.nativeHandle,
+    }, { preserveForeground: true });
   }
 
   /** Capture the Dev Host window to a PNG file. */

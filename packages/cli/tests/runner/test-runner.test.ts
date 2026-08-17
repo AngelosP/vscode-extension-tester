@@ -66,6 +66,30 @@ function resetMockNativeUI(): void {
     focusInDevHost: vi.fn().mockResolvedValue(undefined),
     resizeDevHost: vi.fn().mockResolvedValue(undefined),
     moveDevHost: vi.fn().mockResolvedValue(undefined),
+    prepareDevHostScreenshot: vi.fn().mockResolvedValue({
+      id: 'devhost_1',
+      title: 'Extension Development Host',
+      processId: 4242,
+      nativeHandle: '0x1234',
+      bounds: { x: 0, y: 0, width: 800, height: 600 },
+      isVisible: true,
+    }),
+    capturePreparedDevHostScreenshot: vi.fn().mockImplementation(async (filePath: string) => {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, 'png', 'utf-8');
+      return {
+        success: true,
+        filePath,
+        width: 800,
+        height: 600,
+        strategy: 'CopyFromScreen',
+        metadata: {
+          target: { hwnd: '0x1234', processId: 4242, title: 'Extension Development Host', bounds: { x: 0, y: 0, width: 800, height: 600 } },
+          foregroundAtCapture: { hwnd: '0x1234', processId: 4242, title: 'Extension Development Host' },
+          validation: { targetMatchesForegroundAtCapture: true },
+        },
+      };
+    }),
     captureDevHostScreenshot: vi.fn().mockImplementation(async (filePath: string) => {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
       fs.writeFileSync(filePath, 'png', 'utf-8');
@@ -143,6 +167,10 @@ function resetMockCdp(): void {
     pressKey: vi.fn().mockResolvedValue(undefined),
     moveMouse: vi.fn().mockResolvedValue(undefined),
     clickAt: vi.fn().mockResolvedValue(undefined),
+    synchronizeResolvedWebviewForNativeCapture: vi.fn().mockResolvedValue(undefined),
+    clearResolvedWebviewForNativeCapture: vi.fn(),
+    completeResolvedWebviewNativeCapture: vi.fn(),
+    hasResolvedWebviewForNativeCapture: false,
   };
 }
 
@@ -202,6 +230,8 @@ function createMockClient(): ControllerClient {
     getDiagnostics: vi.fn().mockResolvedValue({ diag: [], channelSummary: {} }),
     getAllOutputContent: vi.fn().mockResolvedValue(''),
     handleAuth: vi.fn().mockResolvedValue({ status: 'ok' }),
+    getWebviewTabs: vi.fn().mockResolvedValue([]),
+    activateTab: vi.fn().mockImplementation(async (title: string) => title),
     ping: vi.fn().mockResolvedValue({ status: 'ok' }),
     closeWindow: vi.fn().mockResolvedValue(undefined),
     listCommands: vi.fn().mockResolvedValue([]),
@@ -2872,7 +2902,7 @@ Feature: Inline JSON
       try {
         const result = await screenshotRunner.runFeature(feature);
         expect(getMockNativeUI().captureDevHostScreenshot).toHaveBeenCalledWith(
-          path.join(artifactsDir, '1-resource_picker.png')
+          path.join(artifactsDir, '1-resource_picker.png'),
         );
         const artifact = result.scenarios[0].steps[0].artifacts?.screenshots[0];
         expect(artifact?.metadata).toMatchObject({
@@ -2882,6 +2912,112 @@ Feature: Inline JSON
           target: { hwnd: '0x1234', processId: 4242 },
           foregroundAtCapture: { hwnd: '0x1234', processId: 4242 },
         });
+      } finally {
+        screenshotRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should synchronize the evaluated webview before native Dev Host capture', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-artifacts-'));
+      const screenshotRunner = new TestRunner(client, {}, artifactsDir);
+      getMockCdp().evaluateInWebview.mockResolvedValue('ready');
+      getMockCdp().hasResolvedWebviewForNativeCapture = true;
+      getMockCdp().synchronizeResolvedWebviewForNativeCapture.mockResolvedValue({
+        resolutionId: 7,
+        targetId: 'target-17',
+        targetTitle: 'Resource Picker',
+        targetUrl: 'vscode-webview://resource-picker',
+        contextId: 23,
+        activatedTab: 'Resource Picker',
+        visibilityState: 'visible',
+        barrier: 'animation-frame+Page.captureScreenshot',
+      });
+      const feature = makeFeature('Test', [
+        makeScenario('Evaluated webview screenshot', [
+          makeStep('When ', 'I evaluate "window.__ready" in the webview "Resource Picker"'),
+          makeStep('When ', 'I take a screenshot "resource picker"'),
+        ]),
+      ]);
+
+      try {
+        const result = await screenshotRunner.runFeature(feature);
+        expect(getMockCdp().synchronizeResolvedWebviewForNativeCapture).toHaveBeenCalledOnce();
+        expect(getMockNativeUI().prepareDevHostScreenshot.mock.invocationCallOrder[0]).toBeLessThan(
+          getMockCdp().synchronizeResolvedWebviewForNativeCapture.mock.invocationCallOrder[0],
+        );
+        expect(getMockCdp().synchronizeResolvedWebviewForNativeCapture.mock.invocationCallOrder[0]).toBeLessThan(
+          getMockNativeUI().capturePreparedDevHostScreenshot.mock.invocationCallOrder[0],
+        );
+        expect(getMockCdp().completeResolvedWebviewNativeCapture).toHaveBeenCalledWith(
+          expect.objectContaining({ resolutionId: 7, targetId: 'target-17', contextId: 23 }),
+        );
+        expect(result.scenarios[0].steps[1].artifacts?.screenshots[0]?.metadata).toMatchObject({
+          webviewSynchronization: {
+            targetId: 'target-17',
+            contextId: 23,
+            barrier: 'animation-frame+Page.captureScreenshot',
+          },
+        });
+      } finally {
+        screenshotRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should not perform native capture when resolved webview synchronization fails', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-artifacts-'));
+      const screenshotRunner = new TestRunner(client, {}, artifactsDir);
+      getMockCdp().evaluateInWebview.mockResolvedValue('ready');
+      getMockCdp().hasResolvedWebviewForNativeCapture = true;
+      getMockCdp().synchronizeResolvedWebviewForNativeCapture.mockRejectedValue(
+        new Error('Resolved webview execution context was replaced before screenshot capture'),
+      );
+      const feature = makeFeature('Test', [
+        makeScenario('Replaced webview context', [
+          makeStep('When ', 'I evaluate "window.__ready" in the webview "Resource Picker"'),
+          makeStep('When ', 'I take a screenshot "resource picker"'),
+        ]),
+      ]);
+
+      try {
+        const result = await screenshotRunner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('failed');
+        expect(result.scenarios[0].steps[1].error?.message).toContain('execution context was replaced');
+        expect(getMockNativeUI().prepareDevHostScreenshot).toHaveBeenCalledTimes(2);
+        expect(getMockNativeUI().capturePreparedDevHostScreenshot).not.toHaveBeenCalled();
+        expect(getMockCdp().completeResolvedWebviewNativeCapture).not.toHaveBeenCalled();
+      } finally {
+        screenshotRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should fail closed when a webview title matches multiple controller tabs', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-artifacts-'));
+      const screenshotRunner = new TestRunner(client, {}, artifactsDir);
+      vi.mocked(client.getWebviewTabs).mockResolvedValue([
+        { label: 'Resource Picker - Left', isActive: true },
+        { label: 'Resource Picker - Right', isActive: false },
+      ]);
+      getMockCdp().evaluateInWebview.mockResolvedValue('ready');
+      getMockCdp().hasResolvedWebviewForNativeCapture = true;
+      getMockCdp().synchronizeResolvedWebviewForNativeCapture.mockImplementation(async function (this: any) {
+        await this.onActivateTab('Resource Picker');
+      });
+      const feature = makeFeature('Test', [
+        makeScenario('Ambiguous webview tabs', [
+          makeStep('When ', 'I evaluate "window.__ready" in the webview "Resource Picker"'),
+          makeStep('When ', 'I take a screenshot "resource picker"'),
+        ]),
+      ]);
+
+      try {
+        const result = await screenshotRunner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('failed');
+        expect(result.scenarios[0].steps[1].error?.message).toContain('is ambiguous');
+        expect(client.activateTab).not.toHaveBeenCalled();
+        expect(getMockNativeUI().capturePreparedDevHostScreenshot).not.toHaveBeenCalled();
       } finally {
         screenshotRunner.cleanup();
         fs.rmSync(artifactsDir, { recursive: true, force: true });
@@ -2935,6 +3071,41 @@ Feature: Inline JSON
         const result = await screenshotRunner.runFeature(feature);
         expect(result.scenarios[0].status).toBe('failed');
         expect(result.scenarios[0].steps[0].error?.message).toContain('not trustworthy visual evidence');
+        expect(fs.existsSync(filePath)).toBe(false);
+      } finally {
+        screenshotRunner.cleanup();
+        fs.rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should reject and delete CopyFromScreen captures that lose foreground validation', async () => {
+      const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscode-ext-test-artifacts-'));
+      const screenshotRunner = new TestRunner(client, {}, artifactsDir);
+      const filePath = path.join(artifactsDir, '1-unverified_copy.png');
+      getMockNativeUI().captureDevHostScreenshot.mockImplementationOnce(async () => {
+        fs.writeFileSync(filePath, 'png', 'utf-8');
+        return {
+          success: true,
+          filePath,
+          strategy: 'CopyFromScreen',
+          metadata: {
+            validation: { targetMatchesForegroundAtCapture: false },
+            target: { hwnd: '0x1234', processId: 4242, title: 'Extension Development Host' },
+            foregroundAtCapture: { hwnd: '0x9999', processId: 9999, title: 'Other App' },
+          },
+        };
+      });
+      const feature = makeFeature('Test', [
+        makeScenario('Unverified CopyFromScreen', [
+          makeStep('When ', 'I take a screenshot "unverified copy"'),
+        ]),
+      ]);
+
+      try {
+        const result = await screenshotRunner.runFeature(feature);
+        expect(result.scenarios[0].status).toBe('failed');
+        expect(result.scenarios[0].steps[0].error?.message).toContain('not trustworthy visual evidence');
+        expect(fs.existsSync(filePath)).toBe(false);
       } finally {
         screenshotRunner.cleanup();
         fs.rmSync(artifactsDir, { recursive: true, force: true });
