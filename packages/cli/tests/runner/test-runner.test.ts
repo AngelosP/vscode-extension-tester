@@ -316,7 +316,7 @@ describe('TestRunner', () => {
       // Background step + scenario step
       expect(result.scenarios[0].steps).toHaveLength(2);
       expect(result.scenarios[0].status).toBe('passed');
-      expect((client.resetState as any)).toHaveBeenCalled();
+      expect((client.resetState as any)).toHaveBeenCalledWith({ discardDirty: true });
     });
 
     it('should track duration', async () => {
@@ -1097,6 +1097,9 @@ describe('TestRunner', () => {
           makeStep('When ', 'I wait for ".ready" in the webview'),
           makeStep('Then ', 'the VS Code is in a clean state'),
         ]),
+        makeScenario('Must Not Run After Timeout', [
+          makeStep('When ', 'I execute command "late.command"'),
+        ]),
       ]);
 
       try {
@@ -1108,11 +1111,33 @@ describe('TestRunner', () => {
         expect(result.scenarios[0].steps[0].status).toBe('failed');
         expect(result.scenarios[0].steps[0].error?.message).toContain('Step timed out after 100ms');
         expect(result.scenarios[0].steps[1].status).toBe('skipped');
+        expect(result.scenarios[1].status).toBe('skipped');
+        expect(result.scenarios[1].steps[0].status).toBe('skipped');
+        expect(client.executeCommand).not.toHaveBeenCalledWith('late.command', undefined);
         expect(getMockCdp().disconnect).toHaveBeenCalled();
       } finally {
         timeoutRunner.cleanup();
         vi.useRealTimers();
       }
+    });
+
+    it('poisons the runner when the controller request timeout arrives first', async () => {
+      (client.executeCommand as any).mockRejectedValueOnce(new Error('Request executeCommand timed out'));
+      const feature = makeFeature('Test', [
+        makeScenario('Controller Timeout', [
+          makeStep('When ', 'I execute command "hanging.command"'),
+        ]),
+        makeScenario('Must Not Run', [
+          makeStep('When ', 'I execute command "later.command"'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.timedOut).toBe(true);
+      expect(result.scenarios[0].steps[0].error?.message).toContain('Step timed out before completion');
+      expect(result.scenarios[1].status).toBe('skipped');
+      expect(client.executeCommand).not.toHaveBeenCalledWith('later.command', undefined);
     });
   });
 
@@ -1140,6 +1165,40 @@ describe('TestRunner', () => {
 
       expect(fs.existsSync(filePath)).toBe(true);
       expect(fs.readFileSync(filePath, 'utf-8')).toBe('hello world');
+    });
+
+    it('should not touch an existing file when fixture content is unchanged', async () => {
+      const filePath = path.join(tmpDir, 'unchanged-file.txt');
+      fs.writeFileSync(filePath, 'stable content', 'utf-8');
+      const originalTime = new Date('2020-01-02T03:04:05.000Z');
+      fs.utimesSync(filePath, originalTime, originalTime);
+
+      const feature = makeFeature('Test', [
+        makeScenario('Keep Existing File', [
+          makeStep('Given ', `a file "${filePath}" exists with content "stable content"`),
+        ]),
+      ]);
+
+      await runner.runFeature(feature);
+
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('stable content');
+      expect(fs.statSync(filePath).mtimeMs).toBe(originalTime.getTime());
+    });
+
+    it('should force-rewrite an existing file when watcher behavior is required', async () => {
+      const filePath = path.join(tmpDir, 'rewritten-file.txt');
+      fs.writeFileSync(filePath, 'stable content', 'utf-8');
+      const originalTime = new Date('2020-01-02T03:04:05.000Z');
+      fs.utimesSync(filePath, originalTime, originalTime);
+
+      await runner.runFeature(makeFeature('Test', [
+        makeScenario('Rewrite Existing File', [
+          makeStep('Given ', `a file "${filePath}" is rewritten with content "stable content"`),
+        ]),
+      ]));
+
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('stable content');
+      expect(fs.statSync(filePath).mtimeMs).toBeGreaterThan(originalTime.getTime());
     });
 
     it('should create a file with escaped quote content from parsed Gherkin', async () => {
@@ -1214,6 +1273,52 @@ Feature: Inline JSON
         await runner.runFeature(feature);
 
         expect(fs.readFileSync(tempFilePath, 'utf-8')).toBe('{"temp":true}');
+      } finally {
+        fs.rmSync(tempFilePath, { force: true });
+      }
+    });
+
+    it('should not touch an existing temp file when fixture content is unchanged', async () => {
+      const tempFileName = `vscode-ext-test-${Date.now()}-unchanged.txt`;
+      const tempFilePath = path.join(os.tmpdir(), tempFileName);
+
+      try {
+        fs.writeFileSync(tempFilePath, 'stable temp content', 'utf-8');
+        const originalTime = new Date('2020-01-02T03:04:05.000Z');
+        fs.utimesSync(tempFilePath, originalTime, originalTime);
+
+        const feature = makeFeature('Test', [
+          makeScenario('Keep Existing Temp File', [
+            makeStep('Given ', `a temp file "${tempFileName}" exists with content "stable temp content"`),
+          ]),
+        ]);
+
+        await runner.runFeature(feature);
+
+        expect(fs.readFileSync(tempFilePath, 'utf-8')).toBe('stable temp content');
+        expect(fs.statSync(tempFilePath).mtimeMs).toBe(originalTime.getTime());
+      } finally {
+        fs.rmSync(tempFilePath, { force: true });
+      }
+    });
+
+    it('should force-rewrite an existing temp file when watcher behavior is required', async () => {
+      const tempFileName = `vscode-ext-test-${Date.now()}-rewrite.txt`;
+      const tempFilePath = path.join(os.tmpdir(), tempFileName);
+
+      try {
+        fs.writeFileSync(tempFilePath, 'stable temp content', 'utf-8');
+        const originalTime = new Date('2020-01-02T03:04:05.000Z');
+        fs.utimesSync(tempFilePath, originalTime, originalTime);
+
+        await runner.runFeature(makeFeature('Test', [
+          makeScenario('Rewrite Existing Temp File', [
+            makeStep('Given ', `a temp file "${tempFileName}" is rewritten with content "stable temp content"`),
+          ]),
+        ]));
+
+        expect(fs.readFileSync(tempFilePath, 'utf-8')).toBe('stable temp content');
+        expect(fs.statSync(tempFilePath).mtimeMs).toBeGreaterThan(originalTime.getTime());
       } finally {
         fs.rmSync(tempFilePath, { force: true });
       }

@@ -34,6 +34,7 @@ export class LiveTestSession {
   private stepsRun = 0;
   private failedSteps = 0;
   private closed = false;
+  private poisoned = false;
   private finalScreenshot?: StepArtifact;
   private readonly warnings: string[] = [];
 
@@ -129,7 +130,7 @@ export class LiveTestSession {
       for (const step of steps) {
         const result = await this.runParsedStep(step);
         results.push(result);
-        if (result.status === 'failed' && stopOnFailure) {
+        if (this.poisoned || (result.status === 'failed' && stopOnFailure)) {
           stoppedOnFailure = true;
           break;
         }
@@ -148,22 +149,29 @@ export class LiveTestSession {
   async runExtensionHostScript(script: string, timeoutMs?: number): Promise<ExtensionHostScriptResult> {
     return this.enqueue(async () => {
       if (!this.lifecycle) throw new Error('Live session has not started');
-      return this.lifecycle.client.runExtensionHostScript(script, timeoutMs);
+      this.assertNotPoisoned();
+      const result = await this.lifecycle.client.runExtensionHostScript(script, timeoutMs);
+      if (!result.ok && /timed out/i.test(result.error?.message ?? '')) this.poisoned = true;
+      return result;
     });
   }
 
   async runFeatureFile(filePath: string): Promise<FeatureResult> {
     return this.enqueue(async () => {
       if (!this.runner) throw new Error('Live session has not started');
+      this.assertNotPoisoned();
       const feature = await this.parser.parseFile(filePath);
-      return this.runner.runFeature(feature);
+      const result = await this.runner.runFeature(feature);
+      if (result.timedOut) this.poisoned = true;
+      return result;
     });
   }
 
   async runFeatures(): Promise<TestRunResult> {
     return this.enqueue(async () => {
       if (!this.lifecycle) throw new Error('Live session has not started');
-      return runFeatures(
+      this.assertNotPoisoned();
+      const result = await runFeatures(
         this.lifecycle.client,
         this.options.runOptions,
         Date.now(),
@@ -173,6 +181,8 @@ export class LiveTestSession {
         this.lifecycle.targetPid,
         { coordinateOrigin: 'devHostWindow', stepTimeoutMs: this.options.runOptions.timeout },
       );
+      if (result.timedOut) this.poisoned = true;
+      return result;
     });
   }
 
@@ -180,7 +190,8 @@ export class LiveTestSession {
     await this.enqueue(async () => {
       if (!this.lifecycle || !this.runner) throw new Error('Live session has not started');
       if (mode === 'cleanState') {
-        await this.lifecycle.client.resetState();
+        this.assertNotPoisoned();
+        await this.lifecycle.client.resetState({ discardDirty: true });
         return;
       }
 
@@ -199,6 +210,7 @@ export class LiveTestSession {
         this.lifecycle.targetPid,
         { coordinateOrigin: 'devHostWindow', stepTimeoutMs: this.options.runOptions.timeout },
       );
+      this.poisoned = false;
     });
   }
 
@@ -209,6 +221,7 @@ export class LiveTestSession {
   async setLogLevel(level: string, channel?: string): Promise<string> {
     return this.enqueue(async () => {
       if (!this.runner) throw new Error('Live session has not started');
+      this.assertNotPoisoned();
       return this.runner.setLogLevel(level, channel);
     });
   }
@@ -270,6 +283,7 @@ export class LiveTestSession {
   private async runParsedStep(step: ParsedStep): Promise<LiveStepResult> {
     if (!this.runner) throw new Error('Live session has not started');
     if (this.closed) throw new Error('Live session is closed');
+    this.assertNotPoisoned();
     const result = await this.runner.runSingleStep(step, {
       stepIndex: this.stepsRun + 1,
       screenshotPolicy: this.options.screenshotPolicy ?? 'always',
@@ -278,11 +292,23 @@ export class LiveTestSession {
     });
     this.stepsRun++;
     if (result.status === 'failed') this.failedSteps++;
+    if (result.error?.message.includes('Step timed out after')) this.poisoned = true;
     return result;
+  }
+
+  private assertNotPoisoned(): void {
+    if (this.poisoned) {
+      throw new Error('Live session timed out and cannot run more operations until reset("reload") completes');
+    }
   }
 
   private async captureFinalScreenshotNow(): Promise<StepArtifact | undefined> {
     if (!this.runner || this.finalScreenshot) return this.finalScreenshot;
+    if (this.poisoned) {
+      const message = 'Skipped final screenshot because the live session timed out and the Dev Host state is uncertain.';
+      if (!this.warnings.includes(message)) this.warnings.push(message);
+      return undefined;
+    }
     try {
       const targetDir = path.join(this.artifactsDir, 'final');
       this.finalScreenshot = await this.runner.captureArtifactScreenshot('final', 'final-screenshot', targetDir);

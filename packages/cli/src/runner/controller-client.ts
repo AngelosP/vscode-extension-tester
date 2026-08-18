@@ -227,8 +227,8 @@ export class ControllerClient {
     return this.send('getSetting', { key }) as Promise<{ key: string; value: unknown }>;
   }
 
-  async resetState(): Promise<void> {
-    await this.send('resetState');
+  async resetState(options: { discardDirty: boolean }): Promise<void> {
+    await this.send('resetState', options);
   }
 
   private send(method: string, params?: unknown, requestTimeoutMs = this.requestTimeoutMs): Promise<unknown> {

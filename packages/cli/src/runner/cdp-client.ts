@@ -226,6 +226,17 @@ function webviewCompositorFrameBarrier(captureMarker: string): string {
 })()`;
 }
 
+class WebviewTargetAmbiguityError extends Error {
+  constructor(count: number) {
+    super(`Tab activation matched ${count} visible webviews; targeting is ambiguous`);
+    this.name = 'WebviewTargetAmbiguityError';
+  }
+}
+
+function isWebviewTargetAmbiguityError(error: unknown): boolean {
+  return error instanceof WebviewTargetAmbiguityError || errorMessage(error).toLowerCase().includes('ambiguous');
+}
+
 function tabTitleMatches(actual: string, requested: string): boolean {
   const normalizedActual = actual.trim().toLowerCase();
   const normalizedRequested = requested.trim().toLowerCase();
@@ -1149,7 +1160,10 @@ export class CdpClient {
     const expr = `(() => (${DEEP_QS})('${safe}') ? true : null)()`;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const found = await this.tryInWebviews(expr, webviewTitle).catch(() => false);
+      const found = await this.tryInWebviews(expr, webviewTitle).catch((error) => {
+        if (isWebviewTargetAmbiguityError(error)) throw error;
+        return false;
+      });
       if (found) return;
       await delay(250);
     }
@@ -1171,14 +1185,15 @@ export class CdpClient {
     return String(value);
   }
 
-  /** Check whether a selector exists in any matching webview. */
+  /** Check whether a selector exists in any matching webview. Throws when title targeting is ambiguous. */
   async elementExistsInWebview(selector: string, webviewTitle?: string): Promise<boolean> {
     const safe = escapeSelector(selector);
     const expr = `(() => (${DEEP_QS})('${safe}') ? true : null)()`;
     try {
       const v = await this.tryInWebviews(expr, webviewTitle);
       return v === true;
-    } catch {
+    } catch (error) {
+      if (isWebviewTargetAmbiguityError(error)) throw error;
       return false;
     }
   }
@@ -1444,8 +1459,22 @@ export class CdpClient {
     waitMs?: number,
   ): Promise<Array<{ id: string; url: string; title: string }>> {
     const deadline = waitMs ? Date.now() + waitMs : 0;
+    let activationAttempted = false;
+    let activated = false;
 
     while (true) {
+      if (titleFilter && this.onActivateTab && !activationAttempted) {
+        activationAttempted = true;
+        try {
+          await this.onActivateTab(titleFilter);
+          activated = true;
+          await delay(200);
+        } catch (error) {
+          if (isWebviewTargetAmbiguityError(error)) throw error;
+          // A title can identify a sidebar/panel webview without a matching editor tab.
+        }
+      }
+
       let targets: Array<{ type: string; url: string; id: string; title: string }>;
       try {
         targets = await this.withProtocolTimeout(CDP.List({ port: this.port }) as Promise<any>, 'CDP target list') as any;
@@ -1455,7 +1484,7 @@ export class CdpClient {
         await delay(250);
         continue;
       }
-      const webviews = targets.filter(
+      let webviews = targets.filter(
         (t: { type: string; url: string }) =>
           (t.type === 'page' || t.type === 'iframe') &&
           isWebviewUrl(t.url)
@@ -1467,23 +1496,54 @@ export class CdpClient {
       } else {
         const needle = titleFilter.toLowerCase();
         // Fast path: match by CDP target title or URL
-        matched = (webviews as Array<{ id: string; url: string; title: string }>).filter(
-          (t) => (t.title ?? '').toLowerCase().includes(needle) || t.url.toLowerCase().includes(needle),
+        const exactTitleMatches = (webviews as Array<{ id: string; url: string; title: string }>).filter(
+          (t) => (t.title ?? '').toLowerCase() === needle,
         );
+        matched = exactTitleMatches.length > 0
+          ? exactTitleMatches
+          : (webviews as Array<{ id: string; url: string; title: string }>).filter(
+              (t) => (t.title ?? '').toLowerCase().includes(needle) || t.url.toLowerCase().includes(needle),
+            );
 
         // Slow path: probe document.title inside each webview's frames
         if (matched.length === 0) {
-          // Ask the controller extension to activate the tab first (if callback set).
-          // This ensures the target webview is in the foreground so its DOM is live.
-          if (this.onActivateTab) {
-            try { await this.onActivateTab(titleFilter); } catch { /* best effort */ }
-            await delay(200); // give VS Code a moment to bring the tab to front
+          if (activated) {
+            try {
+              const refreshed = await this.withProtocolTimeout(CDP.List({ port: this.port }) as Promise<any>, 'CDP target list after tab activation') as any;
+              webviews = refreshed.filter(
+                (t: { type: string; url: string }) =>
+                  (t.type === 'page' || t.type === 'iframe') &&
+                  isWebviewUrl(t.url)
+              );
+            } catch { /* keep the original target list */ }
           }
           matched = await this.probeWebviewsByTitle(
             webviews as Array<{ id: string; url: string; title: string }>,
             needle,
           );
+          if (matched.length === 0 && activated) {
+            matched = await this.probeVisibleWebviews(
+              webviews as Array<{ id: string; url: string; title: string }>,
+            );
+          }
         }
+      }
+
+      if (titleFilter && matched.length > 1) {
+        if (!activated) {
+          if (!this.onActivateTab) throw new WebviewTargetAmbiguityError(matched.length);
+          try {
+            await this.onActivateTab(titleFilter);
+            activated = true;
+          } catch (error) {
+            if (isWebviewTargetAmbiguityError(error)) throw error;
+            throw new WebviewTargetAmbiguityError(matched.length);
+          }
+          await delay(200);
+        }
+        const visible = await this.probeVisibleWebviews(matched);
+        if (visible.length !== 1) throw new WebviewTargetAmbiguityError(matched.length);
+        matched = visible;
       }
 
       if (matched.length > 0 || !waitMs || Date.now() >= deadline) return matched;
@@ -1499,19 +1559,22 @@ export class CdpClient {
     webviews: Array<{ id: string; url: string; title: string }>,
     needle: string,
   ): Promise<Array<{ id: string; url: string; title: string }>> {
-    const matched: Array<{ id: string; url: string; title: string }> = [];
+    const exact: Array<{ id: string; url: string; title: string }> = [];
+    const partial: Array<{ id: string; url: string; title: string }> = [];
     for (const wv of webviews) {
       try {
         const docTitle = await this.probeDocumentTitle(wv.id);
-        if (docTitle && docTitle.toLowerCase().includes(needle)) {
+        if (docTitle && docTitle.toLowerCase() === needle) {
           // Replace the CDP title with the probed title so downstream code sees the real name
-          matched.push({ ...wv, title: docTitle });
+          exact.push({ ...wv, title: docTitle });
+        } else if (docTitle && docTitle.toLowerCase().includes(needle)) {
+          partial.push({ ...wv, title: docTitle });
         }
       } catch {
         // Target may not be connectable yet — skip
       }
     }
-    return matched;
+    return exact.length > 0 ? exact : partial;
   }
 
   /**
@@ -1528,6 +1591,30 @@ export class CdpClient {
       return null;
     });
   }
+
+  private async probeVisibleWebviews(
+    webviews: Array<{ id: string; url: string; title: string }>,
+  ): Promise<Array<{ id: string; url: string; title: string }>> {
+    const visible: Array<{ id: string; url: string; title: string }> = [];
+    for (const webview of webviews) {
+      try {
+        const isVisible = await this.withWebviewClient(webview.id, async (client) => {
+          return await this.evaluateAcrossFrames(
+            client,
+            `document.visibilityState === 'visible' ? true : null`,
+          );
+        });
+        if (isVisible === true) visible.push(webview);
+      } catch {
+        // Target may be navigating or have no live frame yet.
+      }
+    }
+    if (visible.length > 1) {
+      throw new WebviewTargetAmbiguityError(visible.length);
+    }
+    return visible;
+  }
+
 
   /**
    * Connect to a webview target, run a callback, then disconnect.

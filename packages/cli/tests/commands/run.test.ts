@@ -94,6 +94,28 @@ describe('runCommand', () => {
     expect(process.exitCode).toBe(0);
   });
 
+  it('stops attach-mode iterations after a timed-out result', async () => {
+    mocks.attachMode.mockResolvedValueOnce({
+      ...makeResult(),
+      timedOut: true,
+      totalPassed: 0,
+      totalFailed: 1,
+    });
+
+    await runCommand({
+      attachDevhost: true,
+      extensionPath: tempDir,
+      features: 'tests/vscode-extension-tester/e2e',
+      iterations: '3',
+      build: false,
+      reporter: 'console',
+    });
+
+    expect(mocks.attachMode).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls.map((call) => call.join(' ')).join('\n')).toContain('Stopping attach-mode iterations');
+    expect(process.exitCode).toBe(1);
+  });
+
   it('warns and strips launch-only flags in single-run attach mode', async () => {
     await runCommand({
       attachDevhost: true,

@@ -225,24 +225,24 @@ export class StateReader {
 
   async activateTab(titleSubstring: string): Promise<string> {
     const needle = titleSubstring.toLowerCase();
-    for (const group of vscode.window.tabGroups.all) {
-      for (const tab of group.tabs) {
-        if (tab.label.toLowerCase().includes(needle)) {
-          const input = tab.input;
-          if (input instanceof vscode.TabInputCustom) {
-            await vscode.window.showTextDocument(input.uri, { preview: false, preserveFocus: false });
-          } else {
-            await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
-            const index = group.tabs.indexOf(tab);
-            if (index >= 0) {
-              await vscode.commands.executeCommand('workbench.action.openEditorAtIndex', index + 1);
-            }
-          }
-          return tab.label;
-        }
-      }
+    const groups = vscode.window.tabGroups.all;
+    const tabs = groups.flatMap((group) => group.tabs.map((tab) => ({ group, tab })));
+    const exact = tabs.filter(({ tab }) => tab.label.toLowerCase() === needle);
+    const matches = exact.length > 0
+      ? exact
+      : tabs.filter(({ tab }) => tab.label.toLowerCase().includes(needle));
+    if (matches.length > 1) {
+      throw new Error(
+        `Tab activation is ambiguous for "${titleSubstring}": ${matches.map(({ tab }) => tab.label).join(', ')}`,
+      );
     }
-    const available = vscode.window.tabGroups.all
+    if (matches.length === 1) {
+      const { group, tab } = matches[0];
+      await activateTab(group, tab);
+      await waitForTabActivation(group, tab);
+      return tab.label;
+    }
+    const available = groups
       .flatMap((group) => group.tabs)
       .map((tab) => tab.label)
       .join(', ');
@@ -394,6 +394,57 @@ export class StateReader {
       isDirty: editor.document.isDirty,
     };
   }
+}
+
+async function activateTab(group: vscode.TabGroup, tab: vscode.Tab): Promise<void> {
+  const input = tab.input;
+  if (input instanceof vscode.TabInputCustom) {
+    await vscode.commands.executeCommand('vscode.openWith', input.uri, input.viewType, {
+      viewColumn: group.viewColumn,
+      preview: false,
+      preserveFocus: false,
+    });
+    return;
+  }
+  const focusCommands = [
+    'workbench.action.focusFirstEditorGroup',
+    'workbench.action.focusSecondEditorGroup',
+    'workbench.action.focusThirdEditorGroup',
+    'workbench.action.focusFourthEditorGroup',
+    'workbench.action.focusFifthEditorGroup',
+    'workbench.action.focusSixthEditorGroup',
+    'workbench.action.focusSeventhEditorGroup',
+    'workbench.action.focusEighthEditorGroup',
+  ];
+  const focusCommand = group.isActive
+    ? 'workbench.action.focusActiveEditorGroup'
+    : focusCommands[(group.viewColumn ?? 1) - 1] ?? 'workbench.action.focusLastEditorGroup';
+  await vscode.commands.executeCommand(focusCommand);
+  const index = group.tabs.indexOf(tab);
+  if (index >= 0) await vscode.commands.executeCommand('workbench.action.openEditorAtIndex', index + 1);
+}
+
+async function waitForTabActivation(group: vscode.TabGroup, tab: vscode.Tab): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    const currentGroup = vscode.window.tabGroups.all.find((candidate) => candidate.viewColumn === group.viewColumn);
+    const currentTab = currentGroup?.tabs.find((candidate) => sameTab(candidate, tab));
+    if (currentGroup?.isActive && currentTab?.isActive) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`VS Code did not activate tab "${tab.label}" in its owning editor group`);
+}
+
+function sameTab(candidate: vscode.Tab, expected: vscode.Tab): boolean {
+  if (candidate === expected) return true;
+  if (candidate.label !== expected.label) return false;
+  if (candidate.input instanceof vscode.TabInputCustom && expected.input instanceof vscode.TabInputCustom) {
+    return candidate.input.viewType === expected.input.viewType && candidate.input.uri.toString() === expected.input.uri.toString();
+  }
+  if (candidate.input instanceof vscode.TabInputWebview && expected.input instanceof vscode.TabInputWebview) {
+    return candidate.input.viewType === expected.input.viewType;
+  }
+  return candidate.input === expected.input;
 }
 
 function extractMessageActions(args: unknown[]): MessageAction[] {

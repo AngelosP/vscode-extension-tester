@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => {
     buildExtension: vi.fn(),
     runSingleStep: vi.fn(),
     runFeature: vi.fn(),
+    hasTimedOut: false,
     setLogLevel: vi.fn(),
     captureArtifactScreenshot: vi.fn(),
     cleanup: vi.fn(),
@@ -53,6 +54,7 @@ vi.mock('../../src/runner/test-runner.js', () => ({
     }
     runSingleStep = mocks.runSingleStep;
     runFeature = mocks.runFeature;
+    get hasTimedOut() { return mocks.hasTimedOut; }
     setLogLevel = mocks.setLogLevel;
     captureArtifactScreenshot = mocks.captureArtifactScreenshot;
     cleanup = mocks.cleanup;
@@ -86,6 +88,7 @@ describe('LiveTestSession', () => {
     vi.clearAllMocks();
     mocks.events.length = 0;
     mocks.runnerCtorArgs.length = 0;
+    mocks.hasTimedOut = false;
     mocks.detectDevHost.mockResolvedValue(null);
     mocks.createLaunchDevHostSession.mockResolvedValue({
       mode: 'launch',
@@ -140,6 +143,62 @@ describe('LiveTestSession', () => {
       expect.objectContaining({ stepIndex: 1, screenshotPolicy: 'always' }),
     );
     expect(session.getSummary().stepsRun).toBe(1);
+  });
+
+  it('requires a reload after a live step timeout', async () => {
+    mocks.runSingleStep.mockResolvedValueOnce({
+      keyword: 'When ',
+      text: 'I wait forever',
+      status: 'failed',
+      durationMs: 100,
+      stepIndex: 1,
+      error: { message: 'Step timed out after 100ms: "I wait forever"' },
+      artifacts: { screenshots: [], logs: [], warnings: [] },
+    });
+    const session = await LiveTestSession.start({ mode: 'attach', runOptions: { ...runOptions(), attachDevhost: true }, finalScreenshot: false });
+
+    await session.runStep({ keyword: 'When ', text: 'I wait forever' });
+    await expect(session.runStep({ keyword: 'When ', text: 'I execute command "next"' })).rejects.toThrow('reset("reload")');
+
+    await session.reset('reload');
+    await expect(session.runStep({ keyword: 'When ', text: 'I execute command "next"' })).resolves.toMatchObject({ status: 'passed' });
+  });
+
+  it('stops a live script and skips final screenshot after timeout poison', async () => {
+    mocks.runSingleStep.mockResolvedValueOnce({
+      keyword: 'When ',
+      text: 'I wait forever',
+      status: 'failed',
+      durationMs: 100,
+      stepIndex: 1,
+      error: { message: 'Step timed out after 100ms: "I wait forever"' },
+      artifacts: { screenshots: [], logs: [], warnings: [] },
+    });
+    const session = await LiveTestSession.start({ mode: 'attach', runOptions: { ...runOptions(), attachDevhost: true }, finalScreenshot: true });
+
+    const result = await session.runScript('When I wait forever\nWhen I execute command "next"', false);
+    await session.close();
+
+    expect(result.steps).toHaveLength(1);
+    expect(result.stoppedOnFailure).toBe(true);
+    expect(mocks.captureArtifactScreenshot).not.toHaveBeenCalled();
+    expect(session.getSummary().warnings?.join('\n')).toContain('Skipped final screenshot');
+  });
+
+  it('poisons a live session when runFeatures reports a timeout', async () => {
+    mocks.runFeatures.mockResolvedValueOnce({
+      features: [],
+      totalPassed: 0,
+      totalFailed: 1,
+      totalSkipped: 0,
+      durationMs: 100,
+      timedOut: true,
+    });
+    const session = await LiveTestSession.start({ mode: 'attach', runOptions: { ...runOptions(), attachDevhost: true }, finalScreenshot: false });
+
+    await session.runFeatures();
+
+    await expect(session.runFeatures()).rejects.toThrow('reset("reload")');
   });
 
   it('should capture final screenshot before closing a launched session', async () => {
@@ -213,6 +272,19 @@ describe('LiveTestSession', () => {
 
     expect(result).toEqual({ ok: true, value: 42, durationMs: 1 });
     expect(mocks.client.runExtensionHostScript).toHaveBeenCalledWith('return 42;', 5_000);
+  });
+
+  it('poisons the live session when an extension-host script times out', async () => {
+    mocks.client.runExtensionHostScript.mockResolvedValueOnce({
+      ok: false,
+      error: { message: 'Extension-host script timed out after 100ms' },
+      durationMs: 100,
+    });
+    const session = await LiveTestSession.start({ mode: 'attach', runOptions: { ...runOptions(), attachDevhost: true }, finalScreenshot: false });
+
+    await session.runExtensionHostScript('await new Promise(() => {})', 100);
+
+    await expect(session.runStep('When I execute command "next"')).rejects.toThrow('reset("reload")');
   });
 
   it('delegates verified log-level changes to the live runner', async () => {

@@ -199,6 +199,7 @@ export async function runFeatures(
     totalFailed,
     totalSkipped,
     durationMs: Date.now() - startTime,
+    timedOut: runner.hasTimedOut || undefined,
   };
 }
 

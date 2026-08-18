@@ -217,6 +217,10 @@ async function runIterations(options: RunOptions, runDir: string): Promise<TestR
       label,
       artifactsDir,
     });
+    if (options.attachDevhost && result.timedOut) {
+      console.warn('Stopping attach-mode iterations after a step timeout; reload the Dev Host before another run.');
+      break;
+    }
   }
 
   return aggregateIterations(iterations, Date.now() - started);
@@ -230,6 +234,7 @@ function aggregateIterations(iterations: IterationResult[], durationMs: number):
     totalFailed: iterations.reduce((sum, iteration) => sum + iteration.totalFailed, 0),
     totalSkipped: iterations.reduce((sum, iteration) => sum + iteration.totalSkipped, 0),
     durationMs,
+    timedOut: iterations.some((iteration) => iteration.timedOut) || undefined,
     iterations,
   };
 }

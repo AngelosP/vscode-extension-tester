@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import * as vscode from 'vscode';
 import type { CommandExecutor } from './command-executor.js';
 import type { UIInterceptor } from './ui-interceptor.js';
 import type { StateReader } from './state-reader.js';
@@ -112,7 +113,6 @@ export class WSServer {
 
       // ─── Open file in editor (via code, no dialog) ───
       case 'openFile': {
-        const vscode = require('vscode');
         const filePath = p['filePath'] as string;
         const uri = vscode.Uri.file(filePath);
         // Force VS Code to recognize the file on disk before opening
@@ -133,7 +133,6 @@ export class WSServer {
 
       // ─── Add folder to workspace (no reload) ───
       case 'addWorkspaceFolder': {
-        const vscode = require('vscode');
         const folderPath = p['folderPath'] as string;
         const uri = vscode.Uri.file(folderPath);
         const index = vscode.workspace.workspaceFolders?.length ?? 0;
@@ -224,16 +223,13 @@ export class WSServer {
       // ─── Close Dev Host window ───
       case 'closeWindow':
         setTimeout(() => {
-          const vscode = require('vscode');
           vscode.commands.executeCommand('workbench.action.closeWindow');
         }, 500);
         return { status: 'closing' };
 
       // ─── Reset to clean state ───
       case 'resetState': {
-        const vscode = require('vscode');
-        // Close all editors
-        await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+        await this.services.commandExecutor.closeAllEditors({ discardDirty: p['discardDirty'] === true });
         // Dismiss all notifications
         await vscode.commands.executeCommand('notifications.clearAll');
         // Close any open panels (terminal, output, etc.)
@@ -251,7 +247,6 @@ export class WSServer {
 
       // ─── Input automation ───
       case 'typeText': {
-        const vscode = require('vscode');
         const text = p['text'] as string;
         for (const char of text) {
           await vscode.commands.executeCommand('type', { text: char });
@@ -261,7 +256,6 @@ export class WSServer {
       }
 
       case 'pressKey': {
-        const vscode = require('vscode');
         const key = p['key'] as string;
         const lower = key.toLowerCase();
 
@@ -283,7 +277,6 @@ export class WSServer {
 
       // ─── Agent tools ───
       case 'listCommands': {
-        const vscode = require('vscode');
         const allCmds: string[] = await vscode.commands.getCommands(true);
         const cmdFilter = p['filter'] as string | undefined;
         return cmdFilter ? allCmds.filter((c: string) => c.includes(cmdFilter)) : allCmds;
@@ -305,7 +298,6 @@ export class WSServer {
         return { level: await this.logLevels.getGlobalLogLevel() };
 
       case 'getExtensionStatus': {
-        const vscode = require('vscode');
         return vscode.extensions.all
           .filter((e: { id: string }) => !e.id.startsWith('vscode.'))
           .map((e: { id: string; isActive: boolean }) => ({ id: e.id, isActive: e.isActive }));
@@ -313,7 +305,6 @@ export class WSServer {
 
       // ─── Settings ───
       case 'setSetting': {
-        const vscode = require('vscode');
         const key = p['key'] as string;
         const value = p['value'];
         const target = (p['target'] as number) ?? vscode.ConfigurationTarget.Global;
@@ -322,7 +313,6 @@ export class WSServer {
       }
 
       case 'getSetting': {
-        const vscode = require('vscode');
         const key = p['key'] as string;
         const value = vscode.workspace.getConfiguration().get(key);
         return { key, value };

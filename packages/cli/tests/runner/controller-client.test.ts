@@ -294,7 +294,7 @@ describe('ControllerClient', () => {
   describe('resetState()', () => {
     it('should reset state', async () => {
       await client.connect();
-      await client.resetState();
+      await client.resetState({ discardDirty: true });
       // No error thrown
     });
   });

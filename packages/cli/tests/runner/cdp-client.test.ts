@@ -456,7 +456,7 @@ describe('CdpClient', () => {
     await expect(client.synchronizeResolvedWebviewForNativeCapture()).resolves.toBeUndefined();
   });
 
-  it('fails closed when tab activation cannot identify the resolved webview', async () => {
+  it('fails closed before evaluation when tab activation is ambiguous', async () => {
     setupSingleWebviewContext(17);
     mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
       const marker = captureMarkerValue(expression);
@@ -464,9 +464,7 @@ describe('CdpClient', () => {
     });
     client.onActivateTab = vi.fn().mockRejectedValue(new Error('ambiguous tab'));
 
-    await client.evaluateInWebview('window.__ready', 'Kusto Workbench');
-
-    await expect(client.synchronizeResolvedWebviewForNativeCapture()).rejects.toThrow('ambiguous tab');
+    await expect(client.evaluateInWebview('window.__ready', 'Kusto Workbench')).rejects.toThrow('ambiguous tab');
     expect(mockClientRef.current.Page.captureScreenshot).not.toHaveBeenCalled();
   });
 
@@ -489,6 +487,108 @@ describe('CdpClient', () => {
 
     await expect(client.synchronizeResolvedWebviewForNativeCapture()).rejects.toThrow('execution context was replaced');
     expect(mockClientRef.current.Page.captureScreenshot).not.toHaveBeenCalled();
+  });
+
+  it('uses the visible webview after tab activation when the HTML title is generic', async () => {
+    setupSingleWebviewContext();
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      if (expression === 'document.title || null') {
+        return Promise.resolve({ result: { value: 'Kusto Workbench' } });
+      }
+      if (expression.includes('document.visibilityState')) {
+        return Promise.resolve({ result: { value: true } });
+      }
+      return Promise.resolve({ result: { value: null } });
+    });
+    client.onActivateTab = vi.fn().mockResolvedValue(undefined);
+
+    const targets = await (client as any).getWebviewTargets('single-many.kqlx');
+
+    expect(client.onActivateTab).toHaveBeenCalledWith('single-many.kqlx');
+    expect(targets).toEqual([
+      { type: 'page', url: 'vscode-webview://kusto', id: 'target-1', title: 'Kusto Workbench' },
+    ]);
+  });
+
+  it('prefers an exact webview title over an overlapping extension title', async () => {
+    (mockCdpFactoryRef.current as any).List = vi.fn().mockResolvedValue([
+      { type: 'page', url: 'vscode-webview://kqlx', id: 'target-kqlx', title: 'smoke.kqlx' },
+      { type: 'page', url: 'vscode-webview://kql', id: 'target-kql', title: 'smoke.kql' },
+    ]);
+
+    const targets = await (client as any).getWebviewTargets('smoke.kql');
+
+    expect(targets).toEqual([
+      { type: 'page', url: 'vscode-webview://kql', id: 'target-kql', title: 'smoke.kql' },
+    ]);
+  });
+
+  it('rejects multiple exact CDP title matches before evaluating either target', async () => {
+    (mockCdpFactoryRef.current as any).List = vi.fn().mockResolvedValue([
+      { type: 'page', url: 'vscode-webview://left', id: 'target-left', title: 'Results' },
+      { type: 'page', url: 'vscode-webview://right', id: 'target-right', title: 'Results' },
+    ]);
+    client.onActivateTab = vi.fn().mockRejectedValue(new Error('Tab activation is ambiguous for "Results"'));
+
+    await expect(client.evaluateInWebview('window.__value', 'Results')).rejects.toThrow('ambiguous');
+    expect(mockCdpFactoryRef.current).not.toHaveBeenCalled();
+  });
+
+  it('rejects controller ambiguity even when only one matching CDP target is live', async () => {
+    (mockCdpFactoryRef.current as any).List = vi.fn().mockResolvedValue([
+      { type: 'page', url: 'vscode-webview://visible', id: 'target-visible', title: 'Resource Picker' },
+    ]);
+    client.onActivateTab = vi.fn().mockRejectedValue(
+      new Error('Tab activation is ambiguous for "Resource Picker": Resource Picker - Left, Resource Picker - Right'),
+    );
+
+    await expect(client.evaluateInWebview('window.__value', 'Resource Picker')).rejects.toThrow('ambiguous');
+    expect((mockCdpFactoryRef.current as any).List).not.toHaveBeenCalled();
+    expect(mockCdpFactoryRef.current).not.toHaveBeenCalled();
+  });
+
+  it('allows a titled sidebar webview when controller activation finds no matching tab', async () => {
+    setupSingleWebviewContext();
+    client.onActivateTab = vi.fn().mockRejectedValue(new Error('No webview tab found matching "Sidebar"'));
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      const marker = captureMarkerValue(expression);
+      return Promise.resolve({ result: { value: marker ?? 'sidebar-value' } });
+    });
+
+    await expect(client.evaluateInWebview('window.__value', 'Kusto Workbench')).resolves.toBe('sidebar-value');
+  });
+
+  it('propagates controller ambiguity instead of falling through to DOM probing', async () => {
+    setupSingleWebviewContext();
+    client.onActivateTab = vi.fn().mockRejectedValue(new Error('Tab activation is ambiguous for "Picker"'));
+
+    await expect(client.evaluateInWebview('window.__value', 'Picker')).rejects.toThrow('ambiguous');
+    expect(mockClientRef.current.Runtime.evaluate).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when tab activation leaves multiple webviews visible', async () => {
+    setupSingleWebviewContext();
+    (mockCdpFactoryRef.current as any).List = vi.fn().mockResolvedValue([
+      { type: 'page', url: 'vscode-webview://left', id: 'target-left', title: 'Kusto Workbench' },
+      { type: 'page', url: 'vscode-webview://right', id: 'target-right', title: 'Kusto Workbench' },
+    ]);
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      if (expression === 'document.title || null') {
+        return Promise.resolve({ result: { value: 'Kusto Workbench' } });
+      }
+      if (expression.includes('document.visibilityState')) {
+        return Promise.resolve({ result: { value: true } });
+      }
+      return Promise.resolve({ result: { value: null } });
+    });
+    client.onActivateTab = vi.fn().mockResolvedValue(undefined);
+
+    await expect(client.waitForSelectorInWebview('kw-query-section', 1_000, 'right-file.kqlx')).rejects.toThrow(
+      'Tab activation matched 2 visible webviews; targeting is ambiguous',
+    );
+    await expect(client.elementExistsInWebview('kw-query-section', 'right-file.kqlx')).rejects.toThrow(
+      'Tab activation matched 2 visible webviews; targeting is ambiguous',
+    );
   });
 
   it('uses DOM events before mouse dispatch for explicit webview selector clicks', async () => {

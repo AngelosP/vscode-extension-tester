@@ -65,7 +65,7 @@ Connect to an already-running Dev Host (e.g. launched via F5):
 vscode-ext-test run --attach-devhost --test-id smoke-test
 ```
 
-Attach mode reuses the already-running Dev Host. Repeat runs and JSON artifact collection still work, but `--env` and `--vscode-arg` cannot affect that existing VS Code process.
+Attach mode reuses the already-running Dev Host. Repeat runs and JSON artifact collection still work, but `--env` and `--vscode-arg` cannot affect that existing VS Code process. If a step times out, later scenarios and feature files are skipped. Attach-mode iterations stop immediately, and live sessions require `reset("reload")` before another operation, because the timed-out command cannot be canceled safely.
 
 ### Performance runs
 
@@ -81,14 +81,20 @@ Warmup iterations are written under `warmup-001/`, measured iterations under `it
 
 | Step | Description |
 |------|-------------|
-| `Given the extension is in a clean state` | Reset UI: close all editors, dismiss notifications, clear output channels |
+| `Given the extension is in a clean state` | Reset UI and explicitly discard dirty test editors so unattended save prompts cannot block the run |
 | `Given a file "<path>" exists` | Create an empty file for test setup |
-| `Given a file "<path>" exists with content "<text>"` | Create a file with content |
-| `Given a file "<path>" exists with content:` | Create a file from a doc string; use this for JSON or multiline content |
+| `Given a file "<path>" exists with content "<text>"` | Create/update a file only when its content differs |
+| `Given a file "<path>" exists with content:` | Create/update a file from a doc string only when its content differs |
+| `Given a file "<path>" is rewritten with content "<text>"` | Force a write even when content is unchanged; use for filesystem-watcher tests |
+| `Given a file "<path>" is rewritten with content:` | Force a doc-string write even when content is unchanged |
 | `Given a temp file "<name>" exists` | Create an empty file in the OS temp directory |
-| `Given a temp file "<name>" exists with content "<text>"` | Create a temp file with content |
-| `Given a temp file "<name>" exists with content:` | Create a temp file from a doc string; use this for JSON or multiline content |
+| `Given a temp file "<name>" exists with content "<text>"` | Create/update a temp file only when its content differs |
+| `Given a temp file "<name>" exists with content:` | Create/update a temp file from a doc string only when its content differs |
+| `Given a temp file "<name>" is rewritten with content "<text>"` | Force a temp-file write even when content is unchanged |
+| `Given a temp file "<name>" is rewritten with content:` | Force a temp-file doc-string write even when content is unchanged |
 | `Given I capture the output channel "<name>"` | Declare an output channel to capture |
+
+Ordinary content setup preserves the modification time when the requested bytes already exist, avoiding unnecessary invalidation of retained VS Code editor models. Use the explicit rewritten forms when the filesystem event itself is under test.
 
 Inline file content supports escaped quotes and common escapes such as `\"`, `\\`, `\n`, `\r`, and `\t`. Literal backslashes in inline content must be escaped as `\\`, so write Windows-style content as `C:\\temp\\new.txt`. For JSON or multiline fixtures, prefer a doc string:
 

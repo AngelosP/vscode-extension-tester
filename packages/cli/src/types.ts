@@ -61,6 +61,7 @@ export interface FeatureResult {
   readonly failed: number;
   readonly skipped: number;
   readonly durationMs: number;
+  readonly timedOut?: boolean;
 }
 
 /** Complete test run result. */
@@ -70,6 +71,7 @@ export interface TestRunResult {
   readonly totalFailed: number;
   readonly totalSkipped: number;
   readonly durationMs: number;
+  readonly timedOut?: boolean;
   readonly iterations?: IterationResult[];
   readonly artifacts?: StepArtifact[];
 }

@@ -1,12 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock vscode module
-vi.mock('vscode', () => ({
+vi.mock('vscode', () => {
+  class MockTabInputCustom {
+    constructor(readonly uri: unknown, readonly viewType: string) {}
+  }
+  return {
   commands: {
     executeCommand: vi.fn().mockResolvedValue(undefined),
     getCommands: vi.fn().mockResolvedValue(['test.command', 'editor.action.copy', 'workbench.action.openSettings']),
   },
-}));
+  window: {
+    tabGroups: { all: [] },
+  },
+  TabInputCustom: MockTabInputCustom,
+  };
+});
 
 import { CommandExecutor } from '../src/command-executor.js';
 
@@ -18,6 +27,7 @@ describe('CommandExecutor', () => {
     executor = new CommandExecutor();
     vscode = await import('vscode');
     vi.clearAllMocks();
+    vscode.window.tabGroups.all = [];
   });
 
   describe('execute()', () => {
@@ -58,6 +68,105 @@ describe('CommandExecutor', () => {
       vscode.commands.executeCommand.mockRejectedValue(new Error('Command failed'));
 
       await expect(executor.execute('bad.command')).rejects.toThrow('Command failed');
+    });
+
+    it('rejects closeAllEditors before mutating dirty custom editors', async () => {
+      const uri = { toString: () => 'file:///dirty.kqlx' };
+      const tab = {
+        label: 'dirty.kqlx', isDirty: true, isActive: true,
+        input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor'),
+      };
+      const group = { viewColumn: 1, isActive: true, tabs: [tab] };
+      vscode.window.tabGroups.all = [group];
+      await expect(executor.execute('workbench.action.closeAllEditors')).rejects.toThrow(
+        'Dirty editors prevent closeAllEditors: dirty.kqlx',
+      );
+
+      expect(tab.isDirty).toBe(true);
+      expect(group.tabs).toContain(tab);
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalled();
+    });
+
+    it('reset cleanup discards dirty editors without failing', async () => {
+      const tab = { label: 'dirty.txt', isDirty: true, isActive: true, input: {} };
+      const group = { viewColumn: 1, isActive: true, tabs: [tab] };
+      vscode.window.tabGroups.all = [group];
+      vscode.commands.executeCommand.mockImplementation(async (command: string) => {
+        if (command === 'workbench.action.focusActiveEditorGroup') {
+          group.isActive = true;
+          tab.isActive = true;
+        }
+        if (command === 'workbench.action.revertAndCloseActiveEditor') {
+          tab.isDirty = false;
+          group.tabs.splice(group.tabs.indexOf(tab), 1);
+        }
+        return undefined;
+      });
+
+      await expect(executor.closeAllEditors({ discardDirty: true })).resolves.toEqual({
+        closed: true,
+        discarded: ['dirty.txt'],
+      });
+    });
+
+    it('verifies a dirty custom editor is active before discarding it', async () => {
+      const uri = { toString: () => 'file:///dirty.kqlx' };
+      const tab = {
+        label: 'dirty.kqlx', isDirty: true, isActive: false,
+        input: new vscode.TabInputCustom(uri, 'kusto.kqlxEditor'),
+      };
+      const group = { viewColumn: 2, isActive: false, tabs: [tab] };
+      vscode.window.tabGroups.all = [group];
+      vscode.commands.executeCommand.mockImplementation(async (command: string) => {
+        if (command === 'vscode.openWith') {
+          group.isActive = true;
+          tab.isActive = true;
+        }
+        if (command === 'workbench.action.revertAndCloseActiveEditor') {
+          expect(group.isActive).toBe(true);
+          expect(tab.isActive).toBe(true);
+          tab.isDirty = false;
+          group.tabs.splice(group.tabs.indexOf(tab), 1);
+        }
+        return undefined;
+      });
+
+      await expect(executor.closeAllEditors({ discardDirty: true })).resolves.toEqual({
+        closed: true,
+        discarded: ['dirty.kqlx'],
+      });
+    });
+
+    it('reset cleanup recovers when close first blocks and then exposes a dirty editor', async () => {
+      vi.useFakeTimers();
+      try {
+        const tab = { label: 'late-dirty.txt', isDirty: false, isActive: true, input: {} };
+        const group = { viewColumn: 1, isActive: true, tabs: [tab] };
+        vscode.window.tabGroups.all = [group];
+        let closeCalls = 0;
+        vscode.commands.executeCommand.mockImplementation((command: string) => {
+          if (command === 'workbench.action.closeAllEditors') {
+            closeCalls += 1;
+            if (closeCalls === 1) {
+              tab.isDirty = true;
+              return new Promise<void>(() => {});
+            }
+          }
+          if (command === 'workbench.action.revertAndCloseActiveEditor') {
+            tab.isDirty = false;
+            group.tabs.splice(group.tabs.indexOf(tab), 1);
+          }
+          return Promise.resolve(undefined);
+        });
+
+        const cleanup = executor.closeAllEditors({ discardDirty: true });
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        await expect(cleanup).resolves.toEqual({ closed: true, discarded: ['late-dirty.txt'] });
+        expect(closeCalls).toBe(2);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

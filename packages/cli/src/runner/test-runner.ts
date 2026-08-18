@@ -41,6 +41,7 @@ export class TestRunner {
   private diagnosticCounter = 0;
   private currentScenarioName: string | undefined;
   private dispatchArtifacts: StepArtifact[] = [];
+  private timedOut = false;
   /** Per-channel byte offsets recorded before each scenario starts. */
   private scenarioStartOffsets = new Map<string, number>();
   /** Channel names read through the live assertion path in this scenario. */
@@ -59,11 +60,30 @@ export class TestRunner {
     this.envData = loadEnv(process.cwd());
   }
 
+  get hasTimedOut(): boolean {
+    return this.timedOut;
+  }
+
   async runFeature(feature: ParsedFeature): Promise<FeatureResult> {
     const startTime = Date.now();
     const scenarioResults: ScenarioResult[] = [];
 
     for (const scenario of feature.scenarios) {
+      if (this.timedOut) {
+        scenarioResults.push({
+          name: scenario.name,
+          status: 'skipped',
+          steps: [...feature.backgroundSteps, ...scenario.steps].map((step) => ({
+            keyword: step.keyword,
+            text: step.text,
+            status: 'skipped' as const,
+            durationMs: 0,
+          })),
+          durationMs: 0,
+          tags: scenario.tags,
+        });
+        continue;
+      }
       const result = await this.runScenario(scenario, feature.backgroundSteps);
       scenarioResults.push(result);
     }
@@ -76,6 +96,7 @@ export class TestRunner {
       failed: scenarioResults.filter((s) => s.status === 'failed').length,
       skipped: scenarioResults.filter((s) => s.status === 'skipped').length,
       durationMs: Date.now() - startTime,
+      timedOut: this.timedOut || undefined,
     };
   }
 
@@ -126,6 +147,9 @@ export class TestRunner {
   }
 
   async runSingleStep(step: ParsedStep, options: RunSingleStepOptions = {}): Promise<LiveStepResult> {
+    if (this.timedOut) {
+      throw new Error('Test runner cannot execute more steps after a timeout; reload the Dev Host and create a new session');
+    }
     const stepIndex = options.stepIndex ?? 1;
     const label = options.label ?? `${step.keyword}${step.text}`;
     const stepDir = this.artifactsDir
@@ -222,7 +246,7 @@ export class TestRunner {
 
     try {
       const dispatchLog = await this.withStepTimeout(
-        this.dispatch(resolvedText, docString, rawText),
+        () => this.dispatch(resolvedText, docString, rawText),
         resolvedText,
       );
 
@@ -242,7 +266,11 @@ export class TestRunner {
       const artifacts = this.buildArtifacts(this.dispatchArtifacts);
       return { keyword: step.keyword, text: step.text, status: 'passed', durationMs: Date.now() - startTime, outputLog, artifacts };
     } catch (err: unknown) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      let error = err instanceof Error ? err : new Error(String(err));
+      if (isNonCancellableTimeout(error)) {
+        this.poisonAfterTimeout();
+        error = new Error(`Step timed out before completion: "${resolvedText}" (${error.message})`);
+      }
       const diagnosticArtifacts = this.diagnosticArtifactsFromError(error);
 
       let outputLog: string | undefined;
@@ -254,7 +282,9 @@ export class TestRunner {
 
       const warnings: string[] = [];
       const screenshots = [...this.dispatchArtifacts];
-      if (options.captureFailureScreenshot !== false && this.artifactsDir) {
+      if (this.timedOut) {
+        warnings.push('Failure screenshot skipped because the step timed out and Dev Host state is uncertain.');
+      } else if (options.captureFailureScreenshot !== false && this.artifactsDir) {
         try {
           screenshots.push(await this.captureArtifactScreenshot(
             `failure-${sanitizeFilename(this.currentScenarioName ?? 'scenario', 40)}-${sanitizeFilename(step.text, 60)}`,
@@ -269,28 +299,23 @@ export class TestRunner {
     }
   }
 
-  private async withStepTimeout<T>(operation: Promise<T>, stepText: string): Promise<T> {
+  private async withStepTimeout<T>(operation: () => Promise<T>, stepText: string): Promise<T> {
     const timeoutMs = this.options.stepTimeoutMs ?? STEP_TIMEOUT_MS;
-    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return operation;
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return operation();
 
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
-    const observedOperation = operation.catch((err) => {
-      if (timedOut) return new Promise<never>(() => undefined);
-      throw err;
-    });
     const timeout = new Promise<never>((_, reject) => {
       timeoutHandle = setTimeout(() => {
         timedOut = true;
-        this.cdp?.disconnect();
-        this.cdp = undefined;
-        if (this.nativeUI?.isRunning) {
-          this.nativeUI.stop();
-          this.nativeUI = undefined;
-        }
+        this.poisonAfterTimeout();
         reject(new Error(`Step timed out after ${timeoutMs}ms: "${stepText}"`));
       }, timeoutMs);
       unrefTimer(timeoutHandle);
+    });
+    const observedOperation = operation().catch((err) => {
+      if (timedOut) return new Promise<never>(() => undefined);
+      throw err;
     });
 
     try {
@@ -300,12 +325,22 @@ export class TestRunner {
     }
   }
 
+  private poisonAfterTimeout(): void {
+    this.timedOut = true;
+    this.cdp?.disconnect();
+    this.cdp = undefined;
+    if (this.nativeUI?.isRunning) {
+      this.nativeUI.stop();
+      this.nativeUI = undefined;
+    }
+  }
+
   private async dispatch(text: string, docString?: string, rawText = text): Promise<string | void> {
     let match: RegExpMatchArray | null;
 
     // ─── Reset state ───
     if (/^(?:the )?(?:VS Code|Dev Host|extension) is in a clean state$/.test(text)) {
-      await this.client.resetState();
+      await this.client.resetState({ discardDirty: true });
       await delay(500); // Let VS Code settle
       return;
     }
@@ -314,9 +349,17 @@ export class TestRunner {
     match = rawText.match(/^a file "([^"]+)" exists with content "((?:\\.|[^"\\])*)"$/);
     if (match) { this.createFile(this.resolveEnvVars(match[1]), this.resolveEnvVars(unescapeQuotedStepText(match[2]))); return; }
 
+    // ─── Utility: force-rewrite file with content (inline) ───
+    match = rawText.match(/^a file "([^"]+)" is rewritten with content "((?:\\.|[^"\\])*)"$/);
+    if (match) { this.createFile(this.resolveEnvVars(match[1]), this.resolveEnvVars(unescapeQuotedStepText(match[2])), true); return; }
+
     // ─── Utility: create file with content (doc string) ───
     match = rawText.match(/^a file "([^"]+)" exists with content:?$/);
     if (match && docString !== undefined) { this.createFile(this.resolveEnvVars(match[1]), docString); return; }
+
+    // ─── Utility: force-rewrite file with content (doc string) ───
+    match = rawText.match(/^a file "([^"]+)" is rewritten with content:?$/);
+    if (match && docString !== undefined) { this.createFile(this.resolveEnvVars(match[1]), docString, true); return; }
 
     // ─── Utility: create empty file ───
     match = text.match(/^a file "([^"]+)" exists$/);
@@ -326,9 +369,17 @@ export class TestRunner {
     match = rawText.match(/^a temp file "([^"]+)" exists with content "((?:\\.|[^"\\])*)"$/);
     if (match) { this.createTempFile(this.resolveEnvVars(match[1]), this.resolveEnvVars(unescapeQuotedStepText(match[2]))); return; }
 
+    // ─── Utility: force-rewrite temp file with content (inline) ───
+    match = rawText.match(/^a temp file "([^"]+)" is rewritten with content "((?:\\.|[^"\\])*)"$/);
+    if (match) { this.createTempFile(this.resolveEnvVars(match[1]), this.resolveEnvVars(unescapeQuotedStepText(match[2])), true); return; }
+
     // ─── Utility: create temp file with content (doc string) ───
     match = rawText.match(/^a temp file "([^"]+)" exists with content:?$/);
     if (match && docString !== undefined) { this.createTempFile(this.resolveEnvVars(match[1]), docString); return; }
+
+    // ─── Utility: force-rewrite temp file with content (doc string) ───
+    match = rawText.match(/^a temp file "([^"]+)" is rewritten with content:?$/);
+    if (match && docString !== undefined) { this.createTempFile(this.resolveEnvVars(match[1]), docString, true); return; }
 
     // ─── Utility: create empty temp file ───
     match = text.match(/^a temp file "([^"]+)" exists$/);
@@ -1895,17 +1946,21 @@ export class TestRunner {
   }
 
   /** Create a file (and parent dirs) via code - no UI. */
-  private createFile(filePath: string, content: string): void {
+  private createFile(filePath: string, content: string, force = false): void {
     const resolved = this.resolveFilePath(filePath);
-    fs.mkdirSync(path.dirname(resolved), { recursive: true });
-    fs.writeFileSync(resolved, content, 'utf-8');
+    this.writeFixtureFile(resolved, content, force);
   }
 
   /** Create a file in the OS temp directory. */
-  private createTempFile(fileName: string, content: string): void {
+  private createTempFile(fileName: string, content: string, force = false): void {
     const os = require('node:os');
     const resolved = path.join(os.tmpdir(), fileName);
+    this.writeFixtureFile(resolved, content, force);
+  }
+
+  private writeFixtureFile(resolved: string, content: string, force: boolean): void {
     fs.mkdirSync(path.dirname(resolved), { recursive: true });
+    if (!force && fs.existsSync(resolved) && fs.readFileSync(resolved, 'utf-8') === content) return;
     fs.writeFileSync(resolved, content, 'utf-8');
   }
 
@@ -1965,6 +2020,10 @@ function sanitizeFilename(name: string, maxLength = 120): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isNonCancellableTimeout(error: Error): boolean {
+  return /^Request .+ timed out$/i.test(error.message) || /Extension-host script timed out after/i.test(error.message);
 }
 
 function unescapeQuotedStepText(value: string): string {
