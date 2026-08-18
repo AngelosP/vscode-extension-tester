@@ -10,6 +10,7 @@ file together.
 
 | Version | Date | Kind | Notes |
 | ------- | ---- | ---- | ----- |
+| 0.3.1 | 2026-08-18 | patch | Harden dirty-editor cleanup and verified tab activation |
 | 0.3.0 | 2026-07-10 | minor | Add verified per-channel log-level control and output artifact fallback |
 | 0.2.3 | 2026-05-27 | explicit | Restore reliable named profile auth on VS Code 1.120+ |
 | 0.2.0 | 2026-04-30 | minor | Add extension-host diagnostic script RPC for live sessions |
