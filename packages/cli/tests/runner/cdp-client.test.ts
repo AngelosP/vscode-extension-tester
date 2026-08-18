@@ -36,7 +36,7 @@ function createMockClient() {
   };
 }
 
-function setupSingleWebviewContext(contextId = 1, uniqueId?: string): void {
+function setupSingleWebviewContext(contextId = 1, uniqueId?: string, targetType: 'page' | 'iframe' = 'page'): void {
   let contextHandler: ((params: { context: { id: number; uniqueId?: string } }) => void) | undefined;
   mockClientRef.current.on.mockImplementation((event: string, handler: typeof contextHandler) => {
     if (event === 'Runtime.executionContextCreated') contextHandler = handler;
@@ -46,7 +46,7 @@ function setupSingleWebviewContext(contextId = 1, uniqueId?: string): void {
     return Promise.resolve(undefined);
   });
   (mockCdpFactoryRef.current as any).List = vi.fn().mockResolvedValue([
-    { type: 'page', url: 'vscode-webview://kusto', id: 'target-1', title: 'Kusto Workbench' },
+    { type: targetType, url: 'vscode-webview://kusto', id: 'target-1', title: 'Kusto Workbench' },
   ]);
 }
 
@@ -373,16 +373,50 @@ describe('CdpClient', () => {
       awaitPromise: true,
       expression: expect.stringContaining('requestAnimationFrame'),
     }));
-    expect(mockClientRef.current.Page.bringToFront).toHaveBeenCalled();
+    expect(mockClientRef.current.Page.bringToFront).not.toHaveBeenCalled();
     expect(mockClientRef.current.Page.captureScreenshot).toHaveBeenCalledWith({ format: 'png', fromSurface: true });
     expect(synchronization).toMatchObject({
       targetId: 'target-1',
+      targetType: 'page',
       targetTitle: 'Kusto Workbench',
       contextId: 17,
       uniqueContextId: 'unique-context-17',
       activatedTab: 'Kusto Workbench',
       visibilityState: 'visible',
       barrier: 'animation-frame+Page.captureScreenshot',
+    });
+  });
+
+  it('synchronizes an OOPIF target without top-level Page commands', async () => {
+    setupSingleWebviewContext(17, 'oopif-context-17', 'iframe');
+    mockClientRef.current.Page.bringToFront.mockRejectedValue(
+      new Error('Command can only be executed on top-level targets'),
+    );
+    mockClientRef.current.Page.captureScreenshot.mockRejectedValue(
+      new Error('Command can only be executed on top-level targets'),
+    );
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      const marker = captureMarkerValue(expression);
+      if (marker) return Promise.resolve({ result: { value: marker } });
+      if (expression.includes('requestAnimationFrame')) {
+        return Promise.resolve({ result: { value: { visibilityState: 'visible' } } });
+      }
+      return Promise.resolve({ result: { value: 'ready' } });
+    });
+    client.onActivateTab = vi.fn().mockResolvedValue('Kusto Workbench');
+
+    await client.evaluateInWebview('window.__ready', 'Kusto Workbench');
+    const pageEnableCallsBeforeSynchronization = mockClientRef.current.Page.enable.mock.calls.length;
+    const synchronization = await client.synchronizeResolvedWebviewForNativeCapture();
+
+    expect(mockClientRef.current.Page.enable).toHaveBeenCalledTimes(pageEnableCallsBeforeSynchronization);
+    expect(mockClientRef.current.Page.bringToFront).not.toHaveBeenCalled();
+    expect(mockClientRef.current.Page.captureScreenshot).not.toHaveBeenCalled();
+    expect(synchronization).toMatchObject({
+      targetId: 'target-1',
+      targetType: 'iframe',
+      uniqueContextId: 'oopif-context-17',
+      barrier: 'animation-frame',
     });
   });
 
@@ -414,6 +448,34 @@ describe('CdpClient', () => {
       expect.objectContaining({ uniqueContextId: 'stable-context', expression: expect.stringContaining('requestAnimationFrame') }),
     ]));
     expect(relevantCalls.every((request: { contextId?: number }) => request.contextId === undefined)).toBe(true);
+  });
+
+  it('does not activate a raw CDP URL when implicit targeting has no editor tab', async () => {
+    setupSingleWebviewContext();
+    (mockCdpFactoryRef.current as any).List = vi.fn().mockResolvedValue([
+      { type: 'iframe', url: 'vscode-webview://sidebar-id', id: 'target-1', title: 'vscode-webview://sidebar-id' },
+    ]);
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression }: { expression: string }) => {
+      const marker = captureMarkerValue(expression);
+      if (marker) return Promise.resolve({ result: { value: marker } });
+      if (expression.includes('requestAnimationFrame')) {
+        return Promise.resolve({ result: { value: { visibilityState: 'visible' } } });
+      }
+      return Promise.resolve({ result: { value: 'ready' } });
+    });
+    client.onActivateTab = vi.fn();
+
+    await client.evaluateInWebview('window.__ready');
+    const synchronization = await client.synchronizeResolvedWebviewForNativeCapture();
+
+    expect(client.onActivateTab).not.toHaveBeenCalled();
+    expect(synchronization).toMatchObject({
+      targetType: 'iframe',
+      targetTitle: 'vscode-webview://sidebar-id',
+      barrier: 'animation-frame',
+    });
+    expect(synchronization?.activationTitle).toBeUndefined();
+    expect(synchronization?.activatedTab).toBeUndefined();
   });
 
   it('does not synchronize a guest compositor before a webview has been resolved', async () => {

@@ -165,25 +165,29 @@ export interface CdpEvaluationOptions {
 export interface WebviewCaptureSynchronization {
   resolutionId: number;
   targetId: string;
+  targetType: 'page' | 'iframe';
   targetTitle: string;
   targetUrl: string;
   contextId: number;
   uniqueContextId?: string;
   requestedTitle?: string;
-  activatedTab: string;
+  activationTitle?: string;
+  activatedTab?: string;
   visibilityState: string;
-  barrier: 'animation-frame+Page.captureScreenshot';
+  barrier: 'animation-frame' | 'animation-frame+Page.captureScreenshot';
 }
 
 interface ResolvedWebviewContext {
   resolutionId: number;
   targetId: string;
+  targetType: 'page' | 'iframe';
   targetTitle: string;
   targetUrl: string;
   contextId: number;
   uniqueContextId?: string;
   captureMarker: string;
   requestedTitle?: string;
+  activationTitle?: string;
 }
 
 interface WebviewFrameEvaluation {
@@ -255,6 +259,7 @@ export class CdpClient {
   private client?: CDP.Client;
   private resolvedWebviewContext?: ResolvedWebviewContext;
   private nextWebviewResolutionId = 0;
+  private readonly webviewTargetTypes = new Map<string, 'page' | 'iframe'>();
   /**
    * Optional callback to activate a VS Code tab by title before probing.
    * Injected by the test runner so the CDP client can ask the controller
@@ -278,6 +283,7 @@ export class CdpClient {
     this.client?.close();
     this.client = undefined;
     this.resolvedWebviewContext = undefined;
+    this.webviewTargetTypes.clear();
   }
 
   get isConnected(): boolean {
@@ -837,12 +843,14 @@ export class CdpClient {
           this.resolvedWebviewContext = {
             resolutionId: ++this.nextWebviewResolutionId,
             targetId: target.id,
+            targetType: this.webviewTargetTypes.get(target.id) ?? 'iframe',
             targetTitle: target.title,
             targetUrl: target.url,
             contextId: evaluation.contextId,
             uniqueContextId: evaluation.uniqueContextId,
             captureMarker: evaluation.captureMarker,
             requestedTitle: webviewTitle,
+            activationTitle: webviewTitle?.trim() || undefined,
           };
           return evaluation.value;
         }
@@ -895,12 +903,14 @@ export class CdpClient {
           this.resolvedWebviewContext = {
             resolutionId: ++this.nextWebviewResolutionId,
             targetId: target.id,
+            targetType: this.webviewTargetTypes.get(target.id) ?? 'iframe',
             targetTitle: target.title,
             targetUrl: target.url,
             contextId: evaluation.contextId,
             uniqueContextId: evaluation.uniqueContextId,
             captureMarker: evaluation.captureMarker,
             requestedTitle: webviewTitle,
+            activationTitle: webviewTitle?.trim() || undefined,
           };
         }
         return value;
@@ -923,30 +933,31 @@ export class CdpClient {
     const resolved = this.resolvedWebviewContext;
     if (!resolved) return undefined;
 
-    const activationTitle = resolved.requestedTitle || resolved.targetTitle;
-    if (!this.onActivateTab || !activationTitle) {
-      throw new Error(`Cannot synchronize resolved webview target ${resolved.targetId} without a tab activation identity`);
-    }
-    const activated = await this.onActivateTab(activationTitle);
-    if (typeof activated !== 'string' || !activated.trim()) {
-      throw new Error(`Tab activation did not identify the active tab for resolved webview target ${resolved.targetId}`);
-    }
-    const activatedTab = activated.trim();
-    if (!tabTitleMatches(activatedTab, activationTitle)) {
-      throw new Error(
-        `Tab activation returned "${activatedTab}" instead of the resolved webview identity "${activationTitle}"`,
-      );
+    const activationTitle = resolved.activationTitle;
+    let activatedTab: string | undefined;
+    if (activationTitle) {
+      if (!this.onActivateTab) {
+        throw new Error(`Cannot synchronize resolved webview target ${resolved.targetId} without tab activation support`);
+      }
+      const activated = await this.onActivateTab(activationTitle);
+      if (typeof activated !== 'string' || !activated.trim()) {
+        throw new Error(`Tab activation did not identify the active tab for resolved webview target ${resolved.targetId}`);
+      }
+      activatedTab = activated.trim();
+      if (!tabTitleMatches(activatedTab, activationTitle)) {
+        throw new Error(
+          `Tab activation returned "${activatedTab}" instead of the resolved webview identity "${activationTitle}"`,
+        );
+      }
     }
 
     return this.withWebviewClient(resolved.targetId, async (wv) => {
       const page = (wv as any).Page;
-      if (!page?.enable || !page?.captureScreenshot) {
-        throw new Error(`CDP Page domain is unavailable for resolved webview target ${resolved.targetId}`);
-      }
-
-      await this.withProtocolTimeout(page.enable(), `CDP Page.enable for webview target ${resolved.targetId}`);
-      if (page.bringToFront) {
-        await this.withProtocolTimeout(page.bringToFront(), `CDP Page.bringToFront for webview target ${resolved.targetId}`);
+      if (resolved.targetType === 'page') {
+        if (!page?.enable || !page?.captureScreenshot) {
+          throw new Error(`CDP Page domain is unavailable for resolved webview target ${resolved.targetId}`);
+        }
+        await this.withProtocolTimeout(page.enable(), `CDP Page.enable for webview target ${resolved.targetId}`);
       }
       const contextSelector = resolved.uniqueContextId
         ? { uniqueContextId: resolved.uniqueContextId }
@@ -967,25 +978,31 @@ export class CdpClient {
         );
       }
 
-      const guestCapture = await this.withProtocolTimeout<{ data?: string }>(
-        page.captureScreenshot({ format: 'png', fromSurface: true }),
-        `CDP Page.captureScreenshot barrier for webview target ${resolved.targetId}`,
-      );
-      if (!guestCapture?.data) {
-        throw new Error(`CDP compositor barrier returned no image data for resolved webview target ${resolved.targetId}`);
+      let barrier: WebviewCaptureSynchronization['barrier'] = 'animation-frame';
+      if (resolved.targetType === 'page') {
+        const guestCapture = await this.withProtocolTimeout<{ data?: string }>(
+          page.captureScreenshot({ format: 'png', fromSurface: true }),
+          `CDP Page.captureScreenshot barrier for webview target ${resolved.targetId}`,
+        );
+        if (!guestCapture?.data) {
+          throw new Error(`CDP compositor barrier returned no image data for resolved webview target ${resolved.targetId}`);
+        }
+        barrier = 'animation-frame+Page.captureScreenshot';
       }
 
       return {
         resolutionId: resolved.resolutionId,
         targetId: resolved.targetId,
+        targetType: resolved.targetType,
         targetTitle: resolved.targetTitle,
         targetUrl: resolved.targetUrl,
         contextId: resolved.contextId,
         uniqueContextId: resolved.uniqueContextId,
         requestedTitle: resolved.requestedTitle,
+        activationTitle,
         activatedTab,
         visibilityState,
-        barrier: 'animation-frame+Page.captureScreenshot',
+        barrier,
       };
     }, { retries: 1, retryOperationTimeouts: false });
   }
@@ -1489,6 +1506,7 @@ export class CdpClient {
           (t.type === 'page' || t.type === 'iframe') &&
           isWebviewUrl(t.url)
       );
+          this.rememberWebviewTargetTypes(webviews);
 
       let matched: Array<{ id: string; url: string; title: string }>;
       if (!titleFilter) {
@@ -1515,6 +1533,7 @@ export class CdpClient {
                   (t.type === 'page' || t.type === 'iframe') &&
                   isWebviewUrl(t.url)
               );
+                  this.rememberWebviewTargetTypes(webviews);
             } catch { /* keep the original target list */ }
           }
           matched = await this.probeWebviewsByTitle(
@@ -1575,6 +1594,16 @@ export class CdpClient {
       }
     }
     return exact.length > 0 ? exact : partial;
+  }
+
+  private rememberWebviewTargetTypes(
+    targets: Array<{ id: string; type: string }>,
+  ): void {
+    for (const target of targets) {
+      if (target.type === 'page' || target.type === 'iframe') {
+        this.webviewTargetTypes.set(target.id, target.type);
+      }
+    }
   }
 
   /**
