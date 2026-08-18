@@ -2018,6 +2018,24 @@ Feature: Inline JSON
       );
     });
 
+    it('should fail generic webview evaluation when JavaScript throws', async () => {
+      getMockCdp().evaluateInWebview.mockRejectedValue(
+        new Error('JS eval failed in webview context 17: ReferenceError: missingValue is not defined'),
+      );
+      const feature = makeFeature('Test', [
+        makeScenario('JavaScript exception', [
+          makeStep('When ', 'I evaluate "missingValue" in the webview'),
+        ]),
+      ]);
+
+      const result = await runner.runFeature(feature);
+
+      expect(result.scenarios[0].status).toBe('failed');
+      expect(result.scenarios[0].steps[0].error?.message).toContain(
+        'ReferenceError: missingValue is not defined',
+      );
+    });
+
     it('should reject webview eval timeouts that consume the whole step budget', async () => {
       const feature = makeFeature('Test', [
         makeScenario('Too long eval', [

@@ -317,6 +317,60 @@ describe('CdpClient', () => {
     }
   });
 
+  it('throws a JavaScript exception when no webview frame succeeds', async () => {
+    setupSingleWebviewContext(17, 'exception-context');
+    mockClientRef.current.Runtime.evaluate.mockResolvedValue({
+      result: { type: 'object', subtype: 'error' },
+      exceptionDetails: {
+        exceptionId: 1,
+        text: 'Uncaught',
+        lineNumber: 4,
+        columnNumber: 8,
+        url: 'vscode-webview://kusto/app.js',
+        exception: { description: 'ReferenceError: missingValue is not defined' },
+      },
+    });
+
+    await expect(client.evaluateInWebview('missingValue', 'Kusto Workbench')).rejects.toThrow(
+      'JS eval failed in webview context 17: ReferenceError: missingValue is not defined (vscode-webview://kusto/app.js:5:9)',
+    );
+  });
+
+  it('continues past a throwing frame when a later frame succeeds', async () => {
+    let contextHandler: ((params: { context: { id: number; uniqueId?: string } }) => void) | undefined;
+    mockClientRef.current.on.mockImplementation((event: string, handler: typeof contextHandler) => {
+      if (event === 'Runtime.executionContextCreated') contextHandler = handler;
+    });
+    mockClientRef.current.Runtime.enable.mockImplementation(() => {
+      contextHandler?.({ context: { id: 17, uniqueId: 'outer-context' } });
+      contextHandler?.({ context: { id: 23, uniqueId: 'inner-context' } });
+      return Promise.resolve(undefined);
+    });
+    (mockCdpFactoryRef.current as any).List = vi.fn().mockResolvedValue([
+      { type: 'iframe', url: 'vscode-webview://kusto', id: 'target-1', title: 'Kusto Workbench' },
+    ]);
+    mockClientRef.current.Runtime.evaluate.mockImplementation(({ expression, uniqueContextId }: { expression: string; uniqueContextId?: string }) => {
+      const marker = captureMarkerValue(expression);
+      if (marker) return Promise.resolve({ result: { value: marker } });
+      if (uniqueContextId === 'outer-context') {
+        return Promise.resolve({
+          result: { type: 'object', subtype: 'error' },
+          exceptionDetails: {
+            exceptionId: 1,
+            text: 'Uncaught',
+            lineNumber: 0,
+            columnNumber: 0,
+            exception: { description: 'ReferenceError: not available in outer frame' },
+          },
+        });
+      }
+      return Promise.resolve({ result: { value: 'inner-value' } });
+    });
+    client.onActivateTab = vi.fn().mockResolvedValue('Kusto Workbench');
+
+    await expect(client.evaluateInWebview('frameSpecificValue', 'Kusto Workbench')).resolves.toBe('inner-value');
+  });
+
   it('continues past JSON artifact errors from unrelated webviews', async () => {
     let attachCount = 0;
     mockCdpFactoryRef.current.mockImplementation(async () => {

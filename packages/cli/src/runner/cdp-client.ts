@@ -202,6 +202,14 @@ interface WebviewExecutionContext {
   uniqueId?: string;
 }
 
+interface JavaScriptExceptionDetails {
+  text: string;
+  lineNumber?: number;
+  columnNumber?: number;
+  url?: string;
+  exception?: { description?: string; value?: unknown };
+}
+
 interface WebviewClientOptions {
   operationTimeoutMs?: number;
   retries?: number;
@@ -1343,6 +1351,7 @@ export class CdpClient {
     options: CdpEvaluationOptions = {},
   ): Promise<WebviewFrameEvaluation> {
     const contexts = await this.discoverFrameContexts(client);
+    let lastException: { contextId: number; details: JavaScriptExceptionDetails } | undefined;
 
     for (const context of contexts) {
       try {
@@ -1355,12 +1364,19 @@ export class CdpClient {
           awaitPromise: true,
           ...contextSelector,
         } as any), `CDP Runtime.evaluate context ${context.id}`, options.timeoutMs);
-        if (!r.exceptionDetails && r.result.value !== null && r.result.value !== undefined) {
+        if (r.exceptionDetails) {
+          lastException = { contextId: context.id, details: r.exceptionDetails };
+          continue;
+        }
+        if (r.result.value !== null && r.result.value !== undefined) {
           return { value: r.result.value, contextId: context.id, uniqueContextId: context.uniqueId };
         }
       } catch {
         // Context may have been destroyed (navigation, GC), skip
       }
+    }
+    if (lastException) {
+      throw javaScriptEvaluationError(lastException.contextId, lastException.details);
     }
     return { value: null };
   }
@@ -2062,6 +2078,16 @@ function formatDiagnosticSummary(entries: AutomationDiagnosticEntry[]): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function javaScriptEvaluationError(contextId: number, details: JavaScriptExceptionDetails): Error {
+  const description = details.exception?.description;
+  const value = details.exception?.value;
+  const message = description || (value !== undefined ? String(value) : details.text) || 'Unknown JavaScript exception';
+  const location = details.url
+    ? ` (${details.url}:${(details.lineNumber ?? 0) + 1}:${(details.columnNumber ?? 0) + 1})`
+    : '';
+  return new Error(`JS eval failed in webview context ${contextId}: ${message}${location}`);
 }
 
 function buttonMask(button: CdpMouseButton): number {
